@@ -48,30 +48,6 @@ pub const Class = struct {
         return self.createChild(name);
     }
 
-    pub fn waitForChild(self: Class, name: []const u8, parser: ?*Parser, options: SearchOptions) !?Class {
-        self.tree.mutex.lock();
-        defer self.tree.mutex.unlock();
-
-        while (true) {
-            const class_id = try self.tree.validateHandleInternal(self.handle);
-            if (self.tree.navigation.findChild(class_id, name, options)) |child_id| {
-                const child = self.tree.store.getClass(child_id).?;
-                return Class.init(self.tree, .{
-                    .id = child_id,
-                    .generation = child.generation,
-                });
-            }
-
-            if (parser) |p| {
-                if (!p.hasActiveParsers()) {
-                    return null;
-                }
-            }
-
-            self.tree.thread_manager.wait(&self.tree.mutex);
-        }
-    }
-
     pub fn setI32(self: Class, name: []const u8, value: i32) !void {
         log.debug("Facade: setI32 '{s}' = {} for class {}", .{ name, value, self.handle });
         try self.tree.setParam(self.handle, name, Value.initI32(value));
@@ -169,22 +145,30 @@ pub const Class = struct {
         });
     }
 
-    pub fn waitForBase(self: Class) !Class {
+    pub fn waitForClass(self: Class, name: []const u8, parser: ?*Parser, options: SearchOptions) !?Class {
         self.tree.mutex.lock();
         defer self.tree.mutex.unlock();
 
         while (true) {
             const class_id = try self.tree.validateHandleInternal(self.handle);
-            if (self.tree.inheritance.getBase(class_id)) |base_id| {
-                const base = self.tree.store.getClass(base_id).?;
+            if (self.tree.navigation.findChild(class_id, name, options)) |child_id| {
+                const child = self.tree.store.getClass(child_id).?;
                 return Class.init(self.tree, .{
-                    .id = base_id,
-                    .generation = base.generation,
+                    .id = child_id,
+                    .generation = child.generation,
                 });
             }
+
+            if (parser) |p| {
+                if (!p.hasActiveParsers()) {
+                    return null;
+                }
+            }
+
             self.tree.thread_manager.wait(&self.tree.mutex);
         }
     }
+
 
     pub fn waitForParam(self: Class, name: []const u8) !Value {
         self.tree.mutex.lock();

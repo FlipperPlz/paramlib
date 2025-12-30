@@ -2,8 +2,10 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Class = @import("../core/facade.zig").Class;
 const SourceBuffer = @import("source_buffer.zig").SourceBuffer;
+const SourcePosition = @import("position.zig").SourcePosition;
 
 pub const ClassJob = struct {
+    sequence: usize,
     class_name: []const u8,
     base_name: ?[]const u8,
     body: ?[]const u8,
@@ -14,8 +16,10 @@ pub const ClassJob = struct {
 
     start_line: usize,
     start_col: usize,
+    start_index: usize,
 
     pub fn init(
+        sequence: usize,
         class_name: []const u8,
         base_name: ?[]const u8,
         body: ?[]const u8,
@@ -24,15 +28,18 @@ pub const ClassJob = struct {
         debug_name: []const u8,
         start_line: usize,
         start_col: usize,
+        start_index: usize,
         allocator: Allocator,
     ) !ClassJob {
         return .{
+            .sequence = sequence,
             .class_name = try allocator.dupe(u8, class_name),
             .base_name = if (base_name) |bn| try allocator.dupe(u8, bn) else null,
             .body = if (body) |b| try allocator.dupe(u8, b) else null,
             .parent = parent,
             .file_buffer = file_buffer,
             .debug_name = try allocator.dupe(u8, debug_name),
+            .start_index = start_index,
             .start_line = start_line,
             .start_col = start_col,
         };
@@ -93,6 +100,28 @@ pub const JobQueue = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
         return self.jobs.items.len == 0;
+    }
+
+    pub fn hasLowerSequence(self: *JobQueue, sequence: usize) bool {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        for (self.jobs.items) |job| {
+            if (job.sequence < sequence) return true;
+        }
+        return false;
+    }
+
+    pub fn hasEarlierJobsInBuffer(self: *JobQueue, current_job: *const ClassJob) bool {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        for (self.jobs.items) |*job| {
+            if (job.file_buffer != current_job.file_buffer) continue;
+
+            if (job.start_index < current_job.start_index) return true;
+        }
+
+        return false;
     }
 
     pub fn broadcast(self: *JobQueue) void {

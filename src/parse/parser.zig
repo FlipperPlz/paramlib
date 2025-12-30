@@ -17,8 +17,16 @@ const SourceBuffer = @import("source_buffer.zig").SourceBuffer;
 const job_system = @import("job_system.zig");
 const ClassJob = job_system.ClassJob;
 const JobQueue = job_system.JobQueue;
-
+const AtomicUsize = std.atomic.Value(usize);
+const AtomicBool = std.atomic.Value(bool);
 const time_mod = @import("../utils/time.zig");
+
+const ActiveParserInfo = struct {
+    sequence: usize,
+    file_buffer: *SourceBuffer,
+    source_index: usize,
+};
+
 
 pub const ClassDefinition = struct {
     class_name: []const u8,
@@ -26,14 +34,17 @@ pub const ClassDefinition = struct {
     body: ?[]const u8,
     start_line: usize,
     start_col: usize,
+    start_index: usize,
 
     pub fn toJob(
         self: ClassDefinition,
+        sequence: usize,
         file_buffer: *SourceBuffer,
         parent: Class,
         allocator: Allocator,
     ) !ClassJob {
         return ClassJob.init(
+            sequence,
             self.class_name,
             self.base_name,
             self.body,
@@ -42,6 +53,7 @@ pub const ClassDefinition = struct {
             file_buffer.source.name,
             self.start_line,
             self.start_col,
+            self.start_index,
             allocator,
         );
     }
@@ -51,12 +63,14 @@ pub const Parser = struct {
     tree: *ParamTree,
     store: *DataStore,
     mutex: std.Thread.Mutex,
-    active_parsers: std.AutoHashMapUnmanaged(std.Thread.Id, void),
+    active_parsers: std.AutoHashMapUnmanaged(std.Thread.Id, ActiveParserInfo),
     allocator: Allocator,
 
     job_queue: JobQueue,
     worker_threads: std.ArrayList(std.Thread),
-    shutdown: std.atomic.Value(bool),
+    shutdown: AtomicBool,
+    
+    sequence_counter: AtomicUsize,
 
     pub fn init(tree: *ParamTree, num_threads: ?usize) !Parser {
         const thread_count = num_threads orelse @max(1, std.Thread.getCpuCount() catch 4);
@@ -70,7 +84,8 @@ pub const Parser = struct {
             .allocator = allocator,
             .job_queue = JobQueue.init(allocator),
             .worker_threads = std.ArrayList(std.Thread).init(allocator),
-            .shutdown = std.atomic.Value(bool).init(false),
+            .shutdown = AtomicBool.init(false),
+            .sequence_counter = AtomicUsize.init(1),
         };
 
         try parser.worker_threads.ensureTotalCapacity(thread_count);
@@ -110,11 +125,11 @@ pub const Parser = struct {
         try self.parseBuffer(file_buffer, parent);
     }
 
-    pub fn registerParserThread(self: *Parser) !void {
+    pub fn registerParserThread(self: *Parser, sequence: usize) !void {
         const thread_id = std.Thread.getCurrentId();
         self.mutex.lock();
         defer self.mutex.unlock();
-        try self.active_parsers.put(self.allocator, thread_id, {});
+        try self.active_parsers.put(self.allocator, thread_id, sequence);
     }
 
     pub fn unregisterParserThread(self: *Parser) void {
@@ -131,6 +146,36 @@ pub const Parser = struct {
         return self.active_parsers.count() > 0;
     }
 
+    pub fn hasPreviousJobs(self: *Parser, job: *const ClassJob) bool {
+        if (self.job_queue.hasLowerSequence(job.sequence)) return true;
+
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        
+        var iter = self.active_parsers.iterator();
+        while (iter.next()) |entry| {
+            if (entry.value_ptr.* < job.sequence) return true;
+        }
+        
+        return false;
+    }
+
+    pub fn hasPreviousJobsInBuffer(self: *Parser, job: *const ClassJob) bool {
+        if (self.job_queue.hasEarlierJobsInBuffer(job)) return true;
+
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        var iter = self.active_parsers.iterator();
+        while (iter.next()) |entry| {
+            const info = entry.value_ptr.*;
+            if (info.file_buffer != job.file_buffer) continue;
+            if (info.source_index < job.source_index) return true;
+        }
+
+        return false;
+    }
+
     pub fn waitForCompletion(self: *Parser) !void {
         while (true) {
             const has_jobs = !self.job_queue.isEmpty();
@@ -143,7 +188,7 @@ pub const Parser = struct {
     }
 
     fn parseBuffer(self: *Parser, file_buffer: *SourceBuffer, parent: Class) !void {
-        try self.registerParserThread();
+        try self.registerParserThread(std.math.maxInt(usize));
         defer self.unregisterParserThread();
 
         const input = try file_buffer.source.contents(self.allocator);
@@ -157,29 +202,7 @@ pub const Parser = struct {
 
         while (position.index < input.len) {
             lexer.skipWhitespace(input, &position);
-            if (position.index >= position.input.len) break;
-
-            const c = input[position.index];
-
-            if (c == '#') {
-                // TODO: Handle directives
-                continue;
-            }
-
-            if (c == '}') {
-                position.index += 1;
-                if (position.index < input.len and input[position.index] == ';') {
-                    position.index += 1;
-                } else {
-                    std.log.warn("[{s}] Error at line {}, col {}: expected ';' after class ending.", .{
-                        file_buffer.source.name,
-                        position.line,
-                        position.index - position.line_start,
-                    });
-                    return error.SyntaxError;
-                }
-                break;
-            }
+            if (position.index >= input.len) break;
 
             const word = lexer.getAlphaWord(input, &position);
 
@@ -202,10 +225,16 @@ pub const Parser = struct {
         return error.NotImplemented;
     }
 
-    fn handleClass(self: *Parser, input: []const u8, buf: *SourceBuffer, parent: Class, pos: *SourcePosition ) !void {
+    fn handleClass(self: *Parser, input: []const u8, buf: *SourceBuffer, parent: Class, pos: *SourcePosition) !void {
+        const start_index = pos.index;
         const class_def = try lexer.extractClassDefinition(input, pos);
         buf.retain();
-        const job = try class_def.toJob(buf, parent, self.allocator);
+        const sequence = self.sequence_counter.fetchAdd(1, .monotonic);
+
+        var job_def = class_def;
+        job_def.start_index = start_index;
+
+        const job = try job_def.toJob(sequence, buf, parent, self.allocator);
         try self.job_queue.push(job);
     }
 
@@ -214,12 +243,13 @@ pub const Parser = struct {
             if (self.shutdown.load(.acquire)) break;
 
             var job = self.job_queue.waitForJob(&self.shutdown) orelse break;
+            const sequence = job.sequence;
             defer {
                 job.deinit(self.allocator);
                 job.file_buffer.release(self.allocator);
             }
 
-            self.registerParserThread() catch continue;
+            self.registerParserThread(sequence) catch continue;
             defer self.unregisterParserThread();
 
             self.processClassJob(&job) catch |err| {
@@ -236,20 +266,7 @@ pub const Parser = struct {
         const class = try job.parent.getOrCreateChild(job.class_name);
 
         if (job.base_name) |base_name| {
-            if (try job.parent.findChild(base_name, .{ .recursive = true })) |base| {
-                try class.setBase(base);
-            } else {
-                if (try job.parent.waitForChild(base_name, self, .{ .recursive = true })) |base| {
-                    try class.setBase(base);
-                } else {
-                    std.log.warn("[{s}:{d}] Base class '{s}' not found for '{s}'", .{
-                        job.debug_name,
-                        job.start_line,
-                        base_name,
-                        job.class_name,
-                    });
-                }
-            }
+            class.setBase(try self.waitForBase(base_name, job));
         }
 
         if (job.body) |body| {
@@ -259,7 +276,6 @@ pub const Parser = struct {
                 .line_start = 0,
             };
 
-
             try self.parseClassBody(
                 body,
                 job.file_buffer,
@@ -267,6 +283,24 @@ pub const Parser = struct {
                 &body_positon,
             );
         }
+    }
+
+    fn waitForBase(self: *Parser, name: []const u8, job: *const ClassJob) !?Class {
+        while (true) {
+            const class_id = try self.tree.validateHandle(job.parent);
+
+            if (try self.tree.navigation.findChild(class_id, name, .{ .look_in_parent = true })) |base| {
+                return base;
+            } else {
+                if (self.hasPreviousJobsInBuffer(job.sequence)) {
+                    self.tree.mutex.lock();
+                    self.tree.thread_manager.wait(&self.tree.mutex);
+                    self.tree.mutex.unlock();
+                    continue;
+                }
+                return error.BaseClassNotFound;
+            }
+        }   
     }
 
     fn parseClassBody(self: *Parser, input: []const u8, buf: *SourceBuffer, parent: Class, pos: *SourcePosition) !void {
@@ -295,5 +329,4 @@ pub const Parser = struct {
         std.log.warn("[{s}] Param not yet implemented", .{dbg_name});
         return error.NotImplemented;
     }
-
 };

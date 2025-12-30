@@ -362,7 +362,7 @@ test "thread safe class creation and waiting" {
         err: ?anyerror = null,
 
         pub fn run(self: *@This()) void {
-            self.result = self.root.waitForChild(self.name, null, .{}) catch |e| {
+            self.result = self.root.waitForClass(self.name, null, .{}) catch |e| {
                 self.err = e;
                 return;
             };
@@ -404,7 +404,7 @@ test "thread safe base setting and waiting" {
         err: ?anyerror = null,
 
         pub fn run(self: *@This()) void {
-            self.result = self.derived.waitForBase() catch |e| {
+            self.result = self.derived.waitForClass("Base", null, .{.look_in_parent = true}) catch |e| {
                 self.err = e;
                 return;
             };
