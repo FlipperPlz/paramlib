@@ -110,6 +110,38 @@ pub const Parser = struct {
         try self.parseBuffer(file_buffer, parent);
     }
 
+    pub fn registerParserThread(self: *Parser) !void {
+        const thread_id = std.Thread.getCurrentId();
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        try self.active_parsers.put(self.allocator, thread_id, {});
+    }
+
+    pub fn unregisterParserThread(self: *Parser) void {
+        const thread_id = std.Thread.getCurrentId();
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        _ = self.active_parsers.remove(thread_id);
+        self.tree.thread_manager.notifyAll();
+    }
+
+    pub fn hasActiveParsers(self: *Parser) bool {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        return self.active_parsers.count() > 0;
+    }
+
+    pub fn waitForCompletion(self: *Parser) !void {
+        while (true) {
+            const has_jobs = !self.job_queue.isEmpty();
+            const has_parsers = self.hasActiveParsers();
+
+            if (!has_jobs and !has_parsers) break;
+
+            try time_mod.sleepNs(1);
+        }
+    }
+
     fn parseBuffer(self: *Parser, file_buffer: *SourceBuffer, parent: Class) !void {
         try self.registerParserThread();
         defer self.unregisterParserThread();
@@ -264,35 +296,4 @@ pub const Parser = struct {
         return error.NotImplemented;
     }
 
-    pub fn registerParserThread(self: *Parser) !void {
-        const thread_id = std.Thread.getCurrentId();
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        try self.active_parsers.put(self.allocator, thread_id, {});
-    }
-
-    pub fn unregisterParserThread(self: *Parser) void {
-        const thread_id = std.Thread.getCurrentId();
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        _ = self.active_parsers.remove(thread_id);
-        self.tree.thread_manager.notifyAll();
-    }
-
-    pub fn hasActiveParsers(self: *Parser) bool {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        return self.active_parsers.count() > 0;
-    }
-
-    pub fn waitForCompletion(self: *Parser) !void {
-        while (true) {
-            const has_jobs = !self.job_queue.isEmpty();
-            const has_parsers = self.hasActiveParsers();
-
-            if (!has_jobs and !has_parsers) break;
-
-            try time_mod.sleepNs(1);
-        }
-    }
 };

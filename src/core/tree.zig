@@ -143,6 +143,46 @@ pub const ParamTree = struct {
         return child_handle;
     }
 
+    pub fn deleteClass(
+        self: *ParamTree,
+        handle: ClassHandle,
+    ) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const class_id = try self.validateHandleInternal(handle);
+
+        if (!self.access.canWrite(class_id)) {
+            return error.AccessDenied;
+        }
+
+        try self.destroyClassInternal(class_id);
+
+        self.thread_manager.notifyAll();
+    }
+
+    pub fn getClass(
+        self: *ParamTree,
+        handle: ClassHandle,
+        name: []const u8,
+    ) !?Class {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const class_id = try self.validateHandleInternal(handle);
+
+        const child_id = try self.navigation.get(class_id, name);
+
+        const child = self.store.getClass(child_id).?;
+        const child_handle = ClassHandle{
+            .id = child_id,
+            .generation = child.generation,
+        };
+        try self.retainInternal(child_handle);
+
+        return child_handle;
+    }
+
     pub fn setParam(
         self: *ParamTree,
         handle: ClassHandle,

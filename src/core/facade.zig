@@ -330,6 +330,16 @@ pub const Class = struct {
         return self.handle.isValid() and
             self.tree.store.getClass(self.handle.id) != null;
     }
+    
+    pub fn deleteClass(self: Class, name: []const u8) !void {
+        if(try self.getClass(name)) |found| {
+            try self.tree.deleteClass(found.handle);
+        }
+    }
+
+    pub fn getClass(self: Class, name: []const u8) !?Class {
+        return try self.tree.getClass(self.handle, name);
+    }
 
     pub fn getHandle(self: Class) ClassHandle {
         return self.handle;
