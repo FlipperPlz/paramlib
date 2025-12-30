@@ -83,16 +83,16 @@ pub const Parser = struct {
             .active_parsers = .empty,
             .allocator = allocator,
             .job_queue = JobQueue.init(allocator),
-            .worker_threads = std.ArrayList(std.Thread).init(allocator),
+            .worker_threads = std.ArrayList(std.Thread).empty,
             .shutdown = AtomicBool.init(false),
             .sequence_counter = AtomicUsize.init(1),
         };
 
-        try parser.worker_threads.ensureTotalCapacity(thread_count);
+        try parser.worker_threads.ensureTotalCapacity(allocator, thread_count, );
         var i: usize = 0;
         while (i < thread_count) : (i += 1) {
             const thread = try std.Thread.spawn(.{}, workerThreadFn, .{&parser});
-            try parser.worker_threads.append(thread);
+            try parser.worker_threads.append(allocator, thread);
         }
 
         return parser;
@@ -106,7 +106,7 @@ pub const Parser = struct {
             thread.join();
         }
 
-        self.worker_threads.deinit();
+        self.worker_threads.deinit(self.allocator);
         self.job_queue.deinit(self.allocator);
         self.active_parsers.deinit(self.allocator);
     }
@@ -204,25 +204,34 @@ pub const Parser = struct {
             lexer.skipWhitespace(input, &position);
             if (position.index >= input.len) break;
 
+            if(input[position.index] == '#') {
+                //todo
+                return error.DirectivesNotImplemented;
+            }
+
             const word = lexer.getAlphaWord(input, &position);
 
             if (std.mem.eql(u8, word, "class")) {
-                try self.handleClass(input, file_buffer, parent, &position);
+                try handleClass(self, input, file_buffer, parent, &position);
             } else if (std.mem.eql(u8, word, "delete")) {
-                try self.handleDelete(input, file_buffer.source.name, parent, &position);
+                try handleDelete(input, file_buffer.source.name, parent, &position);
             } else {
-                try self.handleParam(input, file_buffer.source.name, parent, word, &position);
+                try handleParam(self, input, file_buffer.source.name, parent, word, &position);
             }
         }
     }
 
-    fn handleDelete(self: *Parser, input: []const u8, debug_name: []const u8, parent: Class, pos: SourcePosition ) !void {
-        _ = self;
-        _ = input;
-        _ = parent;
-        _ = pos;
-        std.log.warn("[{s}] Delete not yet implemented", .{debug_name});
-        return error.NotImplemented;
+    fn handleDelete(input: []const u8, debug_name: []const u8, parent: Class, pos: *SourcePosition ) !void {
+        const target_name = lexer.getAlphaWord(input, &pos);
+        lexer.skipWhitespace(input, &pos);
+
+        if(input[pos.index] != ';') {
+            std.log.err("[{s}] Expected ';' after delete statement for class '{s}'", .{debug_name, target_name});
+            return error.ExpectedSemicolon;
+        }
+        pos.index += 1;
+        
+        try parent.deleteClass(target_name);
     }
 
     fn handleClass(self: *Parser, input: []const u8, buf: *SourceBuffer, parent: Class, pos: *SourcePosition) !void {
