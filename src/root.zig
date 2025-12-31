@@ -20,8 +20,7 @@ pub const values = struct {
 
 test "facade basic operations" {
     const testing = std.testing;
-
-    var tree = try ParamTree.init(testing.allocator);
+    var tree = try ParamTree.init(testing.allocator, testing.io);
     defer tree.deinit();
 
     const root = Class.init(tree, tree.root_handle);
@@ -39,7 +38,7 @@ test "facade basic operations" {
 test "facade hierarchy" {
     const testing = std.testing;
 
-    var tree = try ParamTree.init(testing.allocator);
+    var tree = try ParamTree.init(testing.allocator, testing.io);
     defer tree.deinit();
 
     const root = Class.init(tree, tree.root_handle);
@@ -62,7 +61,7 @@ test "facade hierarchy" {
 test "facade inheritance" {
     const testing = std.testing;
 
-    var tree = try ParamTree.init(testing.allocator);
+    var tree = try ParamTree.init(testing.allocator, testing.io);
     defer tree.deinit();
 
     const root = Class.init(tree, tree.root_handle);
@@ -79,7 +78,7 @@ test "facade inheritance" {
 test "facade recursive find child" {
     const testing = std.testing;
 
-    var tree = try ParamTree.init(testing.allocator);
+    var tree = try ParamTree.init(testing.allocator, testing.io);
     defer tree.deinit();
 
     const root = Class.init(tree, tree.root_handle);
@@ -116,7 +115,7 @@ test "facade recursive find child" {
 test "facade getOrDefault" {
     const testing = std.testing;
 
-    var tree = try ParamTree.init(testing.allocator);
+    var tree = try ParamTree.init(testing.allocator, testing.io);
     defer tree.deinit();
 
     const root = Class.init(tree, tree.root_handle);
@@ -133,7 +132,7 @@ test "facade getOrDefault" {
 test "complete workflow" {
     const alloc = std.testing.allocator;
 
-    var tree = try ParamTree.init(alloc);
+    var tree = try ParamTree.init(alloc, std.testing.io);
     defer tree.deinit();
 
     const src = try Source.init_runtime("test", alloc);
@@ -173,7 +172,7 @@ test "complete workflow" {
 test "source tracking" {
     const alloc = std.testing.allocator;
 
-    var tree = try ParamTree.init(alloc);
+    var tree = try ParamTree.init(alloc, std.testing.io);
     defer tree.deinit();
 
     const src1 = try Source.init_memory("source1", "data1", alloc);
@@ -197,7 +196,7 @@ test "source tracking" {
 test "inheritance chain" {
     const alloc = std.testing.allocator;
 
-    var tree = try ParamTree.init(alloc);
+    var tree = try ParamTree.init(alloc, std.testing.io);
     defer tree.deinit();
 
     const root = tree.facade();
@@ -221,7 +220,7 @@ test "inheritance chain" {
 test "circular inheritance detection" {
     const alloc = std.testing.allocator;
 
-    var tree = try ParamTree.init(alloc);
+    var tree = try ParamTree.init(alloc, std.testing.io);
     defer tree.deinit();
 
     const root = Class.init(tree, tree.root());
@@ -238,7 +237,7 @@ test "circular inheritance detection" {
 test "value types" {
     const alloc = std.testing.allocator;
 
-    var tree = try ParamTree.init(alloc);
+    var tree = try ParamTree.init(alloc, std.testing.io);
     defer tree.deinit();
 
     const root = Class.init(tree, tree.root());
@@ -260,7 +259,7 @@ test "value types" {
 test "navigation operations" {
     const alloc = std.testing.allocator;
 
-    var tree = try ParamTree.init(alloc);
+    var tree = try ParamTree.init(alloc, std.testing.io);
     defer tree.deinit();
 
     const root = Class.init(tree, tree.root());
@@ -290,7 +289,7 @@ test "navigation operations" {
 test "modification tracking" {
     const alloc = std.testing.allocator;
 
-    var tree = try ParamTree.init(alloc);
+    var tree = try ParamTree.init(alloc, std.testing.io);
     defer tree.deinit();
 
     const src = try Source.init_runtime("test", alloc);
@@ -311,7 +310,7 @@ test "modification tracking" {
 test "handle validation" {
     const alloc = std.testing.allocator;
 
-    var tree = try ParamTree.init(alloc);
+    var tree = try ParamTree.init(alloc, std.testing.io);
     defer tree.deinit();
 
     const root = Class.init(tree, tree.root());
@@ -326,7 +325,7 @@ test "handle validation" {
 test "stats collection" {
     const alloc = std.testing.allocator;
 
-    var tree = try ParamTree.init(alloc);
+    var tree = try ParamTree.init(alloc, std.testing.io);
     defer tree.deinit();
 
     const root = Class.init(tree, tree.root());
@@ -350,7 +349,7 @@ test "thread safe class creation and waiting" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    var tree = try ParamTree.init(allocator);
+    var tree = try ParamTree.init(allocator, std.testing.io);
     defer tree.deinit();
 
     const root = tree.facade();
@@ -391,7 +390,7 @@ test "thread safe base setting and waiting" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    var tree = try ParamTree.init(allocator);
+    var tree = try ParamTree.init(allocator, testing.io);
     defer tree.deinit();
 
     const root = tree.facade();
@@ -432,7 +431,7 @@ test "thread safe parameter waiting" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    var tree = try ParamTree.init(allocator);
+    var tree = try ParamTree.init(allocator, testing.io);
     defer tree.deinit();
 
     const root = tree.facade();

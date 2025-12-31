@@ -72,7 +72,7 @@ pub const AstDatastore = struct {
 
 pub const DataStore = struct {
     allocator: Allocator,
-
+    io:      std.Io,
     params:  SlabPool(ParamData, 512),
     classes: SlabPool(ClassData, 256),
     arrays:  SlabPool(ArrayData, 128),
@@ -83,7 +83,7 @@ pub const DataStore = struct {
 
     path_to_class: std.AutoHashMapUnmanaged(u64, ClassId),
 
-    pub fn init(allocator: Allocator) !*DataStore {
+    pub fn init(allocator: Allocator, io: std.Io) !*DataStore {
         const self = try allocator.create(DataStore);
         errdefer allocator.destroy(self);
 
@@ -95,6 +95,7 @@ pub const DataStore = struct {
             .enums = SlabPool(EnumData, 128).empty,
             .strings = StringPool.empty,
             .sources = SourcePool.empty,
+            .io = io,
             .path_to_class = std.AutoHashMapUnmanaged(u64, ClassId).empty,
         };
 
@@ -116,7 +117,7 @@ pub const DataStore = struct {
         self.arrays.deinit(self.allocator);
         self.enums.deinit(self.allocator);
         self.strings.deinit(self.allocator);
-        self.sources.deinit(self.allocator);
+        self.sources.deinit(self.io, self.allocator);
         self.path_to_class.deinit(self.allocator);
         self.allocator.destroy(self);
     }

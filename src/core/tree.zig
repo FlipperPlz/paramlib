@@ -46,11 +46,11 @@ pub const ParamTree = struct {
 
     mutex: std.Thread.Mutex = .{},
 
-    pub fn init(alloc: Allocator) !*ParamTree {
+    pub fn init(alloc: Allocator, io: std.Io) !*ParamTree {
         const self = try alloc.create(ParamTree);
         errdefer alloc.destroy(self);
 
-        const store = try DataStore.init(alloc);
+        const store = try DataStore.init(alloc, io);
         errdefer store.deinit();
 
         const root_name = try store.internString("root");

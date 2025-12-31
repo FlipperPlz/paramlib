@@ -13,7 +13,7 @@ pub const SourceType = enum(u2) {
 };
 
 const FileContext = struct {
-    file: std.fs.File,
+    file: std.Io.File,
     path: []const u8,
 };
 
@@ -104,19 +104,19 @@ pub const Source = struct {
         };
     }
 
-    pub fn deinit(self: *Source, alloc: Allocator) void {
+    pub fn deinit(self: *Source, io: std.Io, alloc: Allocator) void {
         alloc.free(self.name);
         switch (self.stype) {
-            .File => cleanupFile(alloc, self.context),
+            .File => cleanupFile(alloc, io, self.context),
             .Memory => cleanupMemory(alloc, self.context),
             .Runtime => cleanupRuntime(alloc, self.context),
             .Unknown => {},
         }
     }
 
-    pub fn contents(self: *const Source, allocator: Allocator) ![]const u8 {
+    pub fn contents(self: *const Source, io: std.Io, allocator: Allocator) ![]const u8 {
         return switch (self.stype) {
-            .File => readFile(allocator, self.context),
+            .File => readFile(allocator, io, self.context),
             .Memory => readMemory(allocator, self.context),
             .Runtime => error.NoContents,
             .Unknown => error.NoContents,
@@ -128,21 +128,23 @@ pub const Source = struct {
         return try allocator.dupe(u8, mem_ctx.contents);
     }
 
-    fn readFile(allocator: Allocator, ctx: *anyopaque) ![]const u8 {
+    fn readFile(allocator: Allocator, io: std.Io, ctx: *anyopaque) ![]const u8 {
         const file_ctx: *FileContext = @ptrCast(@alignCast(ctx));
-        try file_ctx.file.seekTo(0);
-        const size = try file_ctx.file.getEndPos();
-        const content = try allocator.alloc(u8, size);
+
+        const reader_buffer: [1024]u8 = undefined;
+        const file_reader = file_ctx.file.reader(io, reader_buffer);
+        const reader = file_reader.interface;
+        const content = try reader.readAlloc(allocator, reader.end);
+
         errdefer allocator.free(content);
-        try file_ctx.file.seekTo(0);
-        _ = try file_ctx.file.read(content);
+
         return content;
     }
 
-    fn cleanupFile(alloc: Allocator, ctx: *anyopaque) void {
+    fn cleanupFile(alloc: Allocator, io: std.Io, ctx: *anyopaque) void {
         const file_ctx: *FileContext = @ptrCast(@alignCast(ctx));
         alloc.free(file_ctx.path);
-        file_ctx.file.close();
+        file_ctx.file.close(io);
         alloc.destroy(file_ctx);
     }
 

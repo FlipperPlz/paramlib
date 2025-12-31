@@ -13,9 +13,9 @@ pub const SourcePool = struct {
         .name_to_id = std.StringHashMapUnmanaged(SourceId).empty,
     };
 
-    pub fn deinit(self: *SourcePool, allocator: Allocator) void {
+    pub fn deinit(self: *SourcePool, io: std.Io, allocator: Allocator) void {
         for (self.sources.items) |*source| {
-            source.deinit(allocator);
+            source.deinit(io, allocator);
         }
         self.sources.deinit(allocator);
         self.name_to_id.deinit(allocator);

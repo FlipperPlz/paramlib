@@ -65,6 +65,7 @@ pub const Parser = struct {
     mutex: std.Thread.Mutex,
     active_parsers: std.AutoHashMapUnmanaged(std.Thread.Id, ActiveParserInfo),
     allocator: Allocator,
+    io: std.Io,
 
     job_queue: JobQueue,
     worker_threads: std.ArrayList(std.Thread),
@@ -86,6 +87,7 @@ pub const Parser = struct {
             .worker_threads = std.ArrayList(std.Thread).empty,
             .shutdown = AtomicBool.init(false),
             .sequence_counter = AtomicUsize.init(1),
+            .io = tree.store.io,
         };
 
         try parser.worker_threads.ensureTotalCapacity(allocator, thread_count, );
@@ -191,7 +193,7 @@ pub const Parser = struct {
         try self.registerParserThread(std.math.maxInt(usize));
         defer self.unregisterParserThread();
 
-        const input = try file_buffer.source.contents(self.allocator);
+        const input = try file_buffer.source.contents(self.allocator, self.io);
         defer self.allocator.free(input);
 
         var position: SourcePosition = .{
