@@ -189,17 +189,21 @@ pub const Parser = struct {
         }
     }
 
-    fn parseBuffer(self: *Parser, file_buffer: *SourceBuffer, parent: Class) !void {
+    fn parseBuffer(self: *Parser, file_buffer: *SourceBuffer, parent: Class, pos: ?*SourcePosition) !void {
         try self.registerParserThread(std.math.maxInt(usize));
         defer self.unregisterParserThread();
 
         const input = try file_buffer.source.contents(self.allocator, self.io);
         defer self.allocator.free(input);
 
-        var position: SourcePosition = .{
-           .index = 0,
-           .line = 1,
-           .line_start = 0,
+        try self.parseInput(input, file_buffer, parent, &pos);
+    }
+
+    fn parseInput(self: *Parser, input: []const u8, buf: *SourceBuffer, parent: Class, pos: *SourcePosition) !void {
+        var position: SourcePosition = pos orelse .{
+            .index = 0,
+            .line = 1,
+            .line_start = 0,
         };
 
         while (position.index < input.len) {
@@ -214,15 +218,27 @@ pub const Parser = struct {
             const word = lexer.getAlphaWord(input, &position);
 
             if (std.mem.eql(u8, word, "class")) {
-                try handleClass(self, input, file_buffer, parent, &position);
+                try handleClass(self, input, buf, parent, &position);
             } else if (std.mem.eql(u8, word, "delete")) {
-                try handleDelete(input, file_buffer.source.name, parent, &position);
+                try handleDelete(input, buf.source.name, parent, &position);
             } else if (std.mem.eql(u8, word, "enum")) {
-                try handleEnum(self, input, file_buffer, parent, &position);
+                try handleEnum(self, input, buf, parent, &position);
+            }  else if (std.mem.eql(u8, word, "__EXEC")) {
+                try handleExecute(self, input, buf, parent, &position);
             } else {
-                try handleParam(self, input, file_buffer.source.name, parent, word, &position);
+                try handleParam(self, input, buf.source.name, parent, word, &position);
             }
         }
+    }
+
+    fn handleExecute(self: *Parser, input: []const u8, buf: *SourceBuffer, parent: Class, pos: *SourcePosition) !void {
+        _ = self;
+        _ = input;
+        _ = parent;
+        _ = pos;
+
+        std.log.err("[{s}] __EXEC directive not yet implemented", .{buf.source.name});
+        return error.ExecuteNotImplemented;
     }
 
     fn handleEnum(self: *Parser, input: []const u8, buf: *SourceBuffer, pos: *SourcePosition) !void {
@@ -329,7 +345,7 @@ pub const Parser = struct {
                 .line_start = 0,
             };
 
-            try self.parseClassBody(
+            try self.parseInput(
                 body,
                 job.file_buffer,
                 class,
@@ -356,22 +372,6 @@ pub const Parser = struct {
         }   
     }
 
-    fn parseClassBody(self: *Parser, input: []const u8, buf: *SourceBuffer, parent: Class, pos: *SourcePosition) !void {
-        while (pos.index < input.len) {
-            lexer.skipWhitespace(input, pos);
-            if (pos.index >= input.len) break;
-
-            const word = lexer.getAlphaWord(input, pos);
-
-            if (std.mem.eql(u8, word, "class")) {
-                try self.handleClass(input, buf, parent, pos);
-            } else if (std.mem.eql(u8, word, "delete")) {
-                try self.handleDelete(input, buf.source.name, parent, pos);
-            } else {
-                try self.handleParam(input, buf.source.name, parent, word, pos);
-            }
-        }
-    }
 
     fn handleParam(self: *Parser, input: []const u8, dbg_name: []const u8, parent: Class, name: []const u8, pos: *SourcePosition) !void {
         _ = pos;
