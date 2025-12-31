@@ -20,15 +20,18 @@ pub const values = struct {
 
 test "facade basic operations" {
     const testing = std.testing;
+    const allocator = testing.allocator;
+    const io = testing.io;
+
     var tree = try ParamTree.init(testing.allocator, testing.io);
-    defer tree.deinit();
+    defer tree.deinit(io, allocator);
 
-    const root = Class.init(tree, tree.root_handle);
-    const obj = try root.createChild("TestObject");
+    const root = Class.init(&tree, tree.root_handle);
+    const obj = try root.createChild("TestObject", allocator, io);
 
-    try obj.setI32("count", 42);
-    try obj.setF32("speed", 5.5);
-    try obj.setString("name", "Test");
+    try obj.setI32("count", 42, allocator, io);
+    try obj.setF32("speed", 5.5, allocator, io);
+    try obj.setString("name", "Test", allocator, io);
 
     try testing.expectEqual(@as(i32, 42), (try obj.getI32("count")).?);
     try testing.expectEqual(@as(f32, 5.5), (try obj.getF32("speed")).?);
@@ -39,11 +42,11 @@ test "facade hierarchy" {
     const testing = std.testing;
 
     var tree = try ParamTree.init(testing.allocator, testing.io);
-    defer tree.deinit();
+    defer tree.deinit(testing.io, testing.allocator);
 
-    const root = Class.init(tree, tree.root_handle);
-    const parent = try root.createChild("Parent");
-    const child = try parent.createChild("Child");
+    const root = Class.init(&tree, tree.root_handle);
+    const parent = try root.createChild("Parent", testing.allocator, testing.io);
+    const child = try parent.createChild("Child", testing.allocator, testing.io);
 
     const found_parent = try child.getParent();
     try testing.expect(found_parent != null);
@@ -62,14 +65,14 @@ test "facade inheritance" {
     const testing = std.testing;
 
     var tree = try ParamTree.init(testing.allocator, testing.io);
-    defer tree.deinit();
+    defer tree.deinit(testing.io, testing.allocator);
 
-    const root = Class.init(tree, tree.root_handle);
-    const base = try root.createChild("Base");
-    const derived = try root.createChild("Derived");
+    const root = Class.init(&tree, tree.root_handle);
+    const base = try root.createChild("Base", testing.allocator, testing.io);
+    const derived = try root.createChild("Derived", testing.allocator, testing.io);
 
-    try base.setI32("value", 100);
-    try derived.setBase(base);
+    try base.setI32("value", 100, testing.allocator, testing.io);
+    try derived.setBase(base, testing.allocator, testing.io);
 
     const inherited = try derived.getI32("value");
     try testing.expectEqual(@as(i32, 100), inherited.?);
@@ -79,33 +82,33 @@ test "facade recursive find child" {
     const testing = std.testing;
 
     var tree = try ParamTree.init(testing.allocator, testing.io);
-    defer tree.deinit();
+    defer tree.deinit(testing.io, testing.allocator);
 
-    const root = Class.init(tree, tree.root_handle);
+    const root = Class.init(&tree, tree.root_handle);
 
-    const parent = try root.createChild("Parent");
-    const child = try parent.createChild("Child");
-    const target = try root.createChild("Target");
+    const parent = try root.createChild("Parent", testing.allocator, testing.io);
+    const child = try parent.createChild("Child", testing.allocator, testing.io);
+    const target = try root.createChild("Target",testing.allocator, testing.io);
 
     const found1 = try child.findChild("Target", .{ .look_in_parent = true });
     try testing.expect(found1 != null);
     try testing.expect(found1.?.sameClass(target));
     
-    const base = try root.createChild("Base");
-    const inherited_target = try base.createChild("InheritedTarget");
-    const derived = try root.createChild("Derived");
-    try derived.setBase(base);
+    const base = try root.createChild("Base", testing.allocator, testing.io);
+    const inherited_target = try base.createChild("InheritedTarget", testing.allocator, testing.io);
+    const derived = try root.createChild("Derived", testing.allocator, testing.io);
+    try derived.setBase(base, testing.allocator, testing.io);
 
     const found2 = try derived.findChild("InheritedTarget", .{ .look_in_base = true });
     try testing.expect(found2 != null);
     try testing.expect(found2.?.sameClass(inherited_target));
 
-    const gp_base = try root.createChild("BaseOfGP");
-    const gp_target = try gp_base.createChild("GPTarget");
-    const gp = try root.createChild("GP");
-    try gp.setBase(gp_base);
-    const p_of_t = try gp.createChild("ParentOfTest");
-    const test_cls = try p_of_t.createChild("TestClass");
+    const gp_base = try root.createChild("BaseOfGP", testing.allocator, testing.io);
+    const gp_target = try gp_base.createChild("GPTarget", testing.allocator, testing.io);
+    const gp = try root.createChild("GP", testing.allocator, testing.io);
+    try gp.setBase(gp_base, testing.allocator, testing.io);
+    const p_of_t = try gp.createChild("ParentOfTest", testing.allocator, testing.io);
+    const test_cls = try p_of_t.createChild("TestClass", testing.allocator, testing.io);
 
     const found3 = try test_cls.findChild("GPTarget", .{ .look_in_parent = true, .look_in_base = true });
     try testing.expect(found3 != null);
@@ -116,35 +119,36 @@ test "facade getOrDefault" {
     const testing = std.testing;
 
     var tree = try ParamTree.init(testing.allocator, testing.io);
-    defer tree.deinit();
+    defer tree.deinit(testing.io, testing.allocator);
 
-    const root = Class.init(tree, tree.root_handle);
-    const obj = try root.createChild("Object");
+    const root = Class.init(&tree, tree.root_handle);
+    const obj = try root.createChild("Object", testing.allocator, testing.io);
 
     const default_value = try obj.getI32OrDefault("missing", 42);
     try testing.expectEqual(@as(i32, 42), default_value);
 
-    try obj.setI32("existing", 100);
+    try obj.setI32("existing", 100, testing.allocator, testing.io);
     const actual_value = try obj.getI32OrDefault("existing", 42);
     try testing.expectEqual(@as(i32, 100), actual_value);
 }
 
 test "complete workflow" {
     const alloc = std.testing.allocator;
+    const testing = std.testing;
 
     var tree = try ParamTree.init(alloc, std.testing.io);
-    defer tree.deinit();
+    defer tree.deinit(testing.io, alloc);
 
     const src = try Source.init_runtime("test", std.testing.io, alloc);
-    const src_id = try tree.source.registerSource(src);
+    const src_id = try tree.source.registerSource(src, alloc);
     tree.source.setCurrentSource(src_id);
 
-    const root = Class.init(tree, tree.root());
-    const game = try root.createChild("Game");
-    const player = try game.createChild("Player");
+    const root = Class.init(&tree, tree.root());
+    const game = try root.createChild("Game", testing.allocator, testing.io);
+    const player = try game.createChild("Player", testing.allocator, testing.io);
 
-    try player.setI32("health", 100);
-    try player.setString("name", "TestPlayer");
+    try player.setI32("health", 100, testing.allocator, testing.io);
+    try player.setString("name", "TestPlayer", testing.allocator, testing.io);
 
     const hp = try player.getI32("health");
     try std.testing.expectEqual(@as(i32, 100), hp.?);
@@ -152,11 +156,11 @@ test "complete workflow" {
     const name = try player.getString("name");
     try std.testing.expectEqualStrings("TestPlayer", name.?);
 
-    const template = try root.createChild("Template");
-    try template.setI32("default_hp", 50);
+    const template = try root.createChild("Template", testing.allocator, testing.io);
+    try template.setI32("default_hp", 50, testing.allocator, testing.io);
 
-    const enemy = try game.createChild("Enemy");
-    try enemy.setBase(template);
+    const enemy = try game.createChild("Enemy", testing.allocator, testing.io);
+    try enemy.setBase(template, testing.allocator, testing.io);
 
     const inherited = try enemy.getI32("default_hp");
     try std.testing.expectEqual(@as(i32, 50), inherited.?);
@@ -170,24 +174,25 @@ test "complete workflow" {
 }
 
 test "source tracking" {
+    const testing = std.testing;
     const alloc = std.testing.allocator;
 
     var tree = try ParamTree.init(alloc, std.testing.io);
-    defer tree.deinit();
+    defer tree.deinit(testing.io, alloc);
 
     const src1 = try Source.init_memory("source1", "data1", std.testing.io, alloc);
-    const id1 = try tree.source.registerSource(src1);
+    const id1 = try tree.source.registerSource(src1, alloc);
 
     const src2 = try Source.init_memory("source2", "data2", std.testing.io, alloc);
-    const id2 = try tree.source.registerSource(src2);
+    const id2 = try tree.source.registerSource(src2, alloc);
 
     tree.source.setCurrentSource(id1);
     const root = tree.facade();
-    const obj = try root.createChild("Object");
-    try obj.setI32("value", 10);
+    const obj = try root.createChild("Object", testing.allocator, testing.io);
+    try obj.setI32("value", 10, testing.allocator, testing.io);
 
     tree.source.setCurrentSource(id2);
-    try obj.setI32("value", 20);
+    try obj.setI32("value", 20, testing.allocator, testing.io);
 
     const source = try obj.getSource();
     try std.testing.expectEqual(id2, source);
@@ -195,22 +200,23 @@ test "source tracking" {
 
 test "inheritance chain" {
     const alloc = std.testing.allocator;
+    const io = std.testing.io;
 
     var tree = try ParamTree.init(alloc, std.testing.io);
-    defer tree.deinit();
+    defer tree.deinit(io, alloc);
 
     const root = tree.facade();
 
-    const a = try root.createChild("A");
-    try a.setI32("a_val", 1);
+    const a = try root.createChild("A", alloc, io);
+    try a.setI32("a_val", 1, alloc, io);
 
-    const b = try root.createChild("B");
-    try b.setBase(a);
-    try b.setI32("b_val", 2);
+    const b = try root.createChild("B", alloc, io);
+    try b.setBase(a, alloc, io);
+    try b.setI32("b_val", 2, alloc, io);
 
-    const c = try root.createChild("C");
-    try c.setBase(b);
-    try c.setI32("c_val", 3);
+    const c = try root.createChild("C", alloc, io);
+    try c.setBase(b, alloc, io);
+    try c.setI32("c_val", 3, alloc, io);
 
     try std.testing.expectEqual(@as(i32, 1), (try c.getI32("a_val")).?);
     try std.testing.expectEqual(@as(i32, 2), (try c.getI32("b_val")).?);
@@ -218,19 +224,20 @@ test "inheritance chain" {
 }
 
 test "circular inheritance detection" {
+    const testing = std.testing;
     const alloc = std.testing.allocator;
 
     var tree = try ParamTree.init(alloc, std.testing.io);
-    defer tree.deinit();
+    defer tree.deinit(testing.io, alloc);
 
-    const root = Class.init(tree, tree.root());
+    const root = Class.init(&tree, tree.root());
 
-    const a = try root.createChild("A");
-    const b = try root.createChild("B");
+    const a = try root.createChild("A", alloc, testing.io);
+    const b = try root.createChild("B", alloc, testing.io);
 
-    try a.setBase(b);
+    try a.setBase(b, alloc, testing.io);
 
-    const result = b.setBase(a);
+    const result = b.setBase(a, alloc, testing.io);
     try std.testing.expectError(error.CircularInheritance, result);
 }
 
@@ -238,16 +245,16 @@ test "value types" {
     const alloc = std.testing.allocator;
 
     var tree = try ParamTree.init(alloc, std.testing.io);
-    defer tree.deinit();
+    defer tree.deinit(std.testing.io, alloc);
 
-    const root = Class.init(tree, tree.root());
-    const obj = try root.createChild("Object");
+    const root = Class.init(&tree, tree.root());
+    const obj = try root.createChild("Object", alloc, std.testing.io);
 
-    try obj.setI32("i32_val", 42);
-    try obj.setI64("i64_val", 9223372036854775807);
-    try obj.setF32("f32_val", 3.14);
-    try obj.setF64("f64_val", 2.718281828459045);
-    try obj.setString("str_val", "hello");
+    try obj.setI32("i32_val", 42, alloc, std.testing.io);
+    try obj.setI64("i64_val", 9223372036854775807, alloc, std.testing.io);
+    try obj.setF32("f32_val", 3.14, alloc, std.testing.io);
+    try obj.setF64("f64_val", 2.718281828459045, alloc, std.testing.io);
+    try obj.setString("str_val", "hello", alloc, std.testing.io);
 
     try std.testing.expectEqual(@as(i32, 42), (try obj.getI32("i32_val")).?);
     try std.testing.expectEqual(@as(i64, 9223372036854775807), (try obj.getI64("i64_val")).?);
@@ -258,15 +265,16 @@ test "value types" {
 
 test "navigation operations" {
     const alloc = std.testing.allocator;
+    const io = std.testing.io;
 
     var tree = try ParamTree.init(alloc, std.testing.io);
-    defer tree.deinit();
+    defer tree.deinit(io, alloc);
 
-    const root = Class.init(tree, tree.root());
+    const root = Class.init(&tree, tree.root());
 
-    const a = try root.createChild("A");
-    const b = try a.createChild("B");
-    const c = try b.createChild("C");
+    const a = try root.createChild("A", alloc, io);
+    const b = try a.createChild("B", alloc, io);
+    const c = try b.createChild("C", alloc, io);
 
     const parent_of_c = try c.getParent();
     try std.testing.expect(parent_of_c != null);
@@ -290,18 +298,18 @@ test "modification tracking" {
     const alloc = std.testing.allocator;
 
     var tree = try ParamTree.init(alloc, std.testing.io);
-    defer tree.deinit();
+    defer tree.deinit(std.testing.io, alloc);
 
     const src = try Source.init_runtime("test", std.testing.io, alloc);
-    const src_id = try tree.source.registerSource(src);
+    const src_id = try tree.source.registerSource(src, alloc);
     tree.source.setCurrentSource(src_id);
 
-    const root = Class.init(tree, tree.root());
-    const obj = try root.createChild("Object");
+    const root = Class.init(&tree, tree.root());
+    const obj = try root.createChild("Object", alloc, std.testing.io);
 
-    try obj.setI32("value", 10);
-    try obj.setI32("value", 20);
-    try obj.setI32("other", 30);
+    try obj.setI32("value", 10, alloc, std.testing.io);
+    try obj.setI32("value", 20, alloc, std.testing.io);
+    try obj.setI32("other", 30, alloc, std.testing.io);
 
     const history = tree.modification.getModificationHistory();
     try std.testing.expect(history.len > 0);
@@ -311,10 +319,10 @@ test "handle validation" {
     const alloc = std.testing.allocator;
 
     var tree = try ParamTree.init(alloc, std.testing.io);
-    defer tree.deinit();
+    defer tree.deinit(std.testing.io, alloc);
 
-    const root = Class.init(tree, tree.root());
-    const obj = try root.createChild("Object");
+    const root = Class.init(&tree, tree.root());
+    const obj = try root.createChild("Object", alloc, std.testing.io);
 
     try std.testing.expect(obj.isValid());
 
@@ -326,15 +334,15 @@ test "stats collection" {
     const alloc = std.testing.allocator;
 
     var tree = try ParamTree.init(alloc, std.testing.io);
-    defer tree.deinit();
+    defer tree.deinit(std.testing.io, alloc);
 
-    const root = Class.init(tree, tree.root());
+    const root = Class.init(&tree, tree.root());
 
     for (0..10) |i| {
         const name = try std.fmt.allocPrint(alloc, "Object{d}", .{i});
         defer alloc.free(name);
-        const obj = try root.createChild(name);
-        try obj.setI32("value", @intCast(i));
+        const obj = try root.createChild(name, alloc, std.testing.io);
+        try obj.setI32("value", @intCast(i), alloc, std.testing.io);
     }
 
     const stats = tree.store.getStats();
@@ -350,7 +358,7 @@ test "thread safe class creation and waiting" {
     const allocator = testing.allocator;
 
     var tree = try ParamTree.init(allocator, std.testing.io);
-    defer tree.deinit();
+    defer tree.deinit(testing.io, allocator);
 
     const root = tree.facade();
 
@@ -376,7 +384,7 @@ test "thread safe class creation and waiting" {
     const thread = try std.Thread.spawn(.{}, Context.run, .{&ctx});
 
 
-    const created = try root.createChild("LateClass");
+    const created = try root.createChild("LateClass", std.testing.allocator, std.testing.io);
     _ = created;
 
     thread.join();
@@ -391,11 +399,11 @@ test "thread safe base setting and waiting" {
     const allocator = testing.allocator;
 
     var tree = try ParamTree.init(allocator, testing.io);
-    defer tree.deinit();
+    defer tree.deinit(testing.io, allocator);
 
     const root = tree.facade();
-    const derived = try root.createChild("Derived");
-    const base = try root.createChild("Base");
+    const derived = try root.createChild("Derived", allocator, testing.io);
+    const base = try root.createChild("Base", allocator, testing.io);
 
     const Context = struct {
         derived: Class,
@@ -418,7 +426,7 @@ test "thread safe base setting and waiting" {
 
     try time_mod.sleep(0, std.testing.io);
 
-    try derived.setBase(base);
+    try derived.setBase(base, allocator, std.testing.io);
 
     thread.join();
 
@@ -432,10 +440,10 @@ test "thread safe parameter waiting" {
     const allocator = testing.allocator;
 
     var tree = try ParamTree.init(allocator, testing.io);
-    defer tree.deinit();
+    defer tree.deinit(testing.io, allocator);
 
     const root = tree.facade();
-    const obj = try root.createChild("Object");
+    const obj = try root.createChild("Object", allocator, testing.io);
 
     const Context = struct {
         obj: Class,
@@ -459,7 +467,7 @@ test "thread safe parameter waiting" {
 
     try time_mod.sleep(10, testing.io);
 
-    try obj.setI32("health", 100);
+    try obj.setI32("health", 100, allocator, std.testing.io);
 
     thread.join();
 

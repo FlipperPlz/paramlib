@@ -36,17 +36,18 @@ pub const ModificationManager = struct {
         self: *ModificationManager,
         class_id: ClassId,
         source_id: SourceId,
-        allocator: std.mem.Allocator
+        allocator: std.mem.Allocator,
+        io: std.Io
     ) !void {
         const class = self.store.getClass(class_id) orelse return error.InvalidClass;
         log.debug("recordClassModification: class {} mod by {}", .{ class_id, source_id });
-        class.markModified(source_id, self.store.io);
+        class.markModified(source_id, io);
 
         try self.history.append(allocator, .{
             .target_type = .Class,
             .target_id = .{ .class = class_id },
             .source_id = source_id,
-            .timestamp = time_mod.getTimeMs(self.store.io),
+            .timestamp = time_mod.getTimeMs(io),
         });
     }
 
@@ -54,17 +55,18 @@ pub const ModificationManager = struct {
         self: *ModificationManager,
         param_id: ParamId,
         source_id: SourceId,
-        allocator: std.mem.Allocator
+        allocator: std.mem.Allocator,
+        io: std.Io
     ) !void {
         const param = self.store.getParam(param_id) orelse return error.InvalidParam;
         log.debug("recordParamModification: param {} mod by {}", .{ param_id, source_id });
-        param.markModified(source_id, self.store.io);
+        param.markModified(source_id, io);
 
         try self.history.append(allocator, .{
             .target_type = .Param,
             .target_id = .{ .param = param_id },
             .source_id = source_id,
-            .timestamp = time_mod.getTimeMs(self.store.io),
+            .timestamp = time_mod.getTimeMs(io),
         });
     }
 

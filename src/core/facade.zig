@@ -1,5 +1,6 @@
 
 const std = @import("std");
+const Allocator = std.mem.Allocator;
 const ParamTree = @import("../core/tree.zig").ParamTree;
 const Parser = @import("../parse/parser.zig").Parser;
 const ClassHandle = @import("../core/identifiers.zig").ClassHandle;
@@ -29,9 +30,9 @@ pub const Class = struct {
         };
     }
 
-    pub fn createChild(self: Class, name: []const u8) !Class {
+    pub fn createChild(self: Class, name: []const u8, allocator: Allocator, io: std.Io) !Class {
         log.debug("Facade: createChild '{s}' for class {}", .{ name, self.handle });
-        const child_handle = try self.tree.createClass(self.handle, name);
+        const child_handle = try self.tree.createClass(self.handle, name, allocator, io);
         return Class.init(self.tree, child_handle);
     }
 
@@ -41,37 +42,37 @@ pub const Class = struct {
         return Class.init(self.tree, child_handle);
     }
 
-    pub fn getOrCreateChild(self: Class, name: []const u8) !Class {
+    pub fn getOrCreateChild(self: Class, name: []const u8, allocator: Allocator, io: std.Io) !Class {
         if (try self.findChild(name, .{})) |child| {
             return child;
         }
-        return self.createChild(name);
+        return self.createChild(name, allocator, io);
     }
 
-    pub fn setI32(self: Class, name: []const u8, value: i32) !void {
+    pub fn setI32(self: Class, name: []const u8, value: i32, allocator: Allocator, io: std.Io) !void {
         log.debug("Facade: setI32 '{s}' = {} for class {}", .{ name, value, self.handle });
-        try self.tree.setParam(self.handle, name, Value.initI32(value));
+        try self.tree.setParam(self.handle, name, Value.initI32(value), allocator, io);
     }
 
-    pub fn setI64(self: Class, name: []const u8, value: i64) !void {
-        try self.tree.setParam(self.handle, name, Value.initI64(value));
+    pub fn setI64(self: Class, name: []const u8, value: i64, allocator: Allocator, io: std.Io) !void {
+        try self.tree.setParam(self.handle, name, Value.initI64(value), allocator, io);
     }
 
-    pub fn setF32(self: Class, name: []const u8, value: f32) !void {
-        try self.tree.setParam(self.handle, name, Value.initF32(value));
+    pub fn setF32(self: Class, name: []const u8, value: f32, allocator: Allocator, io: std.Io) !void {
+        try self.tree.setParam(self.handle, name, Value.initF32(value), allocator, io);
     }
 
-    pub fn setF64(self: Class, name: []const u8, value: f64) !void {
-        try self.tree.setParam(self.handle, name, Value.initF64(value));
+    pub fn setF64(self: Class, name: []const u8, value: f64, allocator: Allocator, io: std.Io) !void {
+        try self.tree.setParam(self.handle, name, Value.initF64(value), allocator, io);
     }
 
-    pub fn setString(self: Class, name: []const u8, value: []const u8) !void {
-        const str_idx = try self.tree.store.internString(value);
-        try self.tree.setParam(self.handle, name, Value.initString(str_idx));
+    pub fn setString(self: Class, name: []const u8, value: []const u8, allocator: Allocator, io: std.Io) !void {
+        const str_idx = try self.tree.store.internString(value, allocator);
+        try self.tree.setParam(self.handle, name, Value.initString(str_idx), allocator, io);
     }
 
-    pub fn setValue(self: Class, name: []const u8, value: Value) !void {
-        try self.tree.setParam(self.handle, name, value);
+    pub fn setValue(self: Class, name: []const u8, value: Value, allocator: Allocator, io: std.Io) !void {
+        try self.tree.setParam(self.handle, name, value, allocator, io);
     }
 
     pub fn get(self: Class, name: []const u8) !?Value {
@@ -129,10 +130,10 @@ pub const Class = struct {
         return (try self.get(name)) != null;
     }
 
-    pub fn setBase(self: Class, base: ?Class) !void {
+    pub fn setBase(self: Class, base: ?Class, allocator: Allocator, io: std.Io) !void {
         const base_handle = if (base) |b| b.handle else null;
 
-        try self.tree.setBase(self.handle, base_handle);
+        try self.tree.setBase(self.handle, base_handle, allocator, io);
     }
 
     pub fn getBase(self: Class) !?Class {

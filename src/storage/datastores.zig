@@ -23,56 +23,52 @@ const SourcePool = source_pool_mod.SourcePool;
 const StringId = id_mod.TypedId();
 
 pub const AstDatastore = struct {
-    allocator: Allocator,
     arrays: SlabPool(ArrayData, 128),
     strings: StringPool,
 
-    pub fn init(allocator: Allocator) !*AstDatastore {
+    pub fn init() !*AstDatastore {
         return .{
-            .allocator = allocator,
             .arrays = SlabPool(ArrayData, 128).empty,
             .strings = StringPool.empty,
         };
     }
 
-    pub fn deinit(self: *AstDatastore) void {
-        self.arrays.deinit(self.allocator);
-        self.strings.deinit(self.allocator);
+    pub fn deinit(self: *AstDatastore, allocator: Allocator) void {
+        self.arrays.deinit(allocator);
+        self.strings.deinit(allocator);
     }
 
-    pub fn allocArray(self: *AstDatastore) !u32 {
-        const result = try self.arrays.acquire(self.allocator);
+    pub fn allocArray(self: *AstDatastore, allocator: Allocator) !u32 {
+        const result = try self.arrays.acquire(allocator);
         result.ptr.* = ArrayData.empty;
         return result.index;
     }
 
-    pub fn freeArray(self: *AstDatastore, idx: u32) !void {
+    pub fn freeArray(self: *AstDatastore, idx: u32, allocator: Allocator) !void {
         const arr = self.arrays.get(idx);
-        arr.deinit(self.allocator);
-        try self.arrays.release(idx, self.allocator);
+        arr.deinit(allocator);
+        try self.arrays.release(idx, allocator);
     }
 
     pub fn getArray(self: *AstDatastore, idx: u32) *ArrayData {
         return self.arrays.get(idx);
     }
 
-    pub fn internString(self: *AstDatastore, str: []const u8) !StringId {
-        return self.strings.intern(str, self.allocator);
+    pub fn internString(self: *AstDatastore, str: []const u8, allocator: Allocator) !StringId {
+        return self.strings.intern(str, allocator);
     }
 
     pub fn getString(self: *AstDatastore, idx: u32) []const u8 {
         return self.strings.get(idx);
     }
 
-    pub fn internAndGetString(self: *AstDatastore, str: []const u8) ![]const u8 {
-        return self.strings.get(try self.strings.intern(str, self.allocator));
+    pub fn internAndGetString(self: *AstDatastore, str: []const u8, allocator: Allocator) ![]const u8 {
+        return self.strings.get(try self.strings.intern(str, allocator));
     }
 
 };
 
 pub const DataStore = struct {
-    allocator: Allocator,
-    io:      std.Io,
     params:  SlabPool(ParamData, 512),
     classes: SlabPool(ClassData, 256),
     arrays:  SlabPool(ArrayData, 128),
@@ -83,47 +79,39 @@ pub const DataStore = struct {
 
     path_to_class: std.AutoHashMapUnmanaged(u64, ClassId),
 
-    pub fn init(allocator: Allocator, io: std.Io) !*DataStore {
-        const self = try allocator.create(DataStore);
-        errdefer allocator.destroy(self);
-
-        self.* = .{
-            .allocator = allocator,
+    pub fn init() !DataStore {
+        return .{
             .classes = SlabPool(ClassData, 256).empty,
             .params = SlabPool(ParamData, 512).empty,
             .arrays = SlabPool(ArrayData, 128).empty,
             .enums = SlabPool(EnumData, 128).empty,
             .strings = StringPool.empty,
             .sources = SourcePool.empty,
-            .io = io,
             .path_to_class = std.AutoHashMapUnmanaged(u64, ClassId).empty,
         };
-
-        return self;
     }
 
-    pub fn deinit(self: *DataStore) void {
+    pub fn deinit(self: *DataStore, io: std.Io, allocator: Allocator) void {
         const array_stats = self.arrays.getStats();
         for (0..array_stats.total_capacity) |i| {
             const idx: u32 = @intCast(i);
             const arr = self.arrays.get(idx);
             if (i < array_stats.used_count) {
-                arr.deinit(self.allocator);
+                arr.deinit(allocator);
             }
         }
 
-        self.classes.deinit(self.allocator);
-        self.params.deinit(self.allocator);
-        self.arrays.deinit(self.allocator);
-        self.enums.deinit(self.allocator);
-        self.strings.deinit(self.allocator);
-        self.sources.deinit(self.io, self.allocator);
-        self.path_to_class.deinit(self.allocator);
-        self.allocator.destroy(self);
+        self.classes.deinit(allocator);
+        self.params.deinit(allocator);
+        self.arrays.deinit(allocator);
+        self.enums.deinit(allocator);
+        self.strings.deinit(allocator);
+        self.sources.deinit(io, allocator);
+        self.path_to_class.deinit(allocator);
     }
 
-    pub fn allocClass(self: *DataStore) !struct { ptr: *ClassData, id: ClassId } {
-        const result = try self.classes.acquire(self.allocator);
+    pub fn allocClass(self: *DataStore, allocator: Allocator) !struct { ptr: *ClassData, id: ClassId } {
+        const result = try self.classes.acquire(allocator);
         const id: ClassId = @enumFromInt(result.index);
         log.debug("DataStore: allocClass id={}", .{id});
         return .{
@@ -132,10 +120,10 @@ pub const DataStore = struct {
         };
     }
 
-    pub fn freeClass(self: *DataStore, id: ClassId) !void {
+    pub fn freeClass(self: *DataStore, id: ClassId, allocator: Allocator) !void {
         const idx = id.toIndex() orelse return error.InvalidId;
         log.debug("DataStore: freeClass id={}", .{id});
-        try self.classes.release(idx, self.allocator);
+        try self.classes.release(idx, allocator);
     }
 
     pub fn getClass(self: *DataStore, id: ClassId) ?*ClassData {
@@ -143,8 +131,8 @@ pub const DataStore = struct {
         return self.classes.get(idx);
     }
 
-    pub fn allocEnum(self: *DataStore) !struct { ptr: *EnumData, id: EnumId } {
-        const result = try self.enums.acquire(self.allocator);
+    pub fn allocEnum(self: *DataStore, allocator: Allocator) !struct { ptr: *EnumData, id: EnumId } {
+        const result = try self.enums.acquire(allocator);
         const id: EnumId = @enumFromInt(result.index);
         log.debug("DataStore: allocEnum id={}", .{id});
         return .{
@@ -153,10 +141,10 @@ pub const DataStore = struct {
         };
     }
 
-    pub fn freeEnum(self: *DataStore, id: EnumId) !void {
+    pub fn freeEnum(self: *DataStore, id: EnumId, allocator: Allocator) !void {
         const idx = id.toIndex() orelse return error.InvalidId;
         log.debug("DataStore: freeEnum id={}", .{id});
-        try self.enums.release(idx, self.allocator);
+        try self.enums.release(idx, allocator);
     }
 
     pub fn getEnum(self: *DataStore, id: ParamId) ?*EnumData {
@@ -164,8 +152,8 @@ pub const DataStore = struct {
         return self.enums.get(idx);
     }
 
-    pub fn allocParam(self: *DataStore) !struct { ptr: *ParamData, id: ParamId } {
-        const result = try self.params.acquire(self.allocator);
+    pub fn allocParam(self: *DataStore, allocator: Allocator) !struct { ptr: *ParamData, id: ParamId } {
+        const result = try self.params.acquire(allocator);
         const id: ParamId = @enumFromInt(result.index);
         log.debug("DataStore: allocParam id={}", .{id});
         return .{
@@ -174,10 +162,10 @@ pub const DataStore = struct {
         };
     }
 
-    pub fn freeParam(self: *DataStore, id: ParamId) !void {
+    pub fn freeParam(self: *DataStore, id: ParamId, allocator: Allocator) !void {
         const idx = id.toIndex() orelse return error.InvalidId;
         log.debug("DataStore: freeParam id={}", .{id});
-        try self.params.release(idx, self.allocator);
+        try self.params.release(idx, allocator);
     }
 
     pub fn getParam(self: *DataStore, id: ParamId) ?*ParamData {
@@ -185,32 +173,32 @@ pub const DataStore = struct {
         return self.params.get(idx);
     }
 
-    pub fn allocArray(self: *DataStore) !u32 {
-        const result = try self.arrays.acquire(self.allocator);
+    pub fn allocArray(self: *DataStore, allocator: Allocator) !u32 {
+        const result = try self.arrays.acquire(allocator);
         result.ptr.* = ArrayData.empty;
         return result.index;
     }
 
-    pub fn freeArray(self: *DataStore, idx: u32) !void {
+    pub fn freeArray(self: *DataStore, idx: u32, allocator: Allocator) !void {
         const arr = self.arrays.get(idx);
-        arr.deinit(self.allocator);
-        try self.arrays.release(idx, self.allocator);
+        arr.deinit(allocator);
+        try self.arrays.release(idx, allocator);
     }
 
     pub fn getArray(self: *DataStore, idx: u32) *ArrayData {
         return self.arrays.get(idx);
     }
 
-    pub fn internString(self: *DataStore, str: []const u8) !u32 {
-        return self.strings.intern(str, self.allocator);
+    pub fn internString(self: *DataStore, str: []const u8, allocator: Allocator) !u32 {
+        return self.strings.intern(str, allocator);
     }
 
     pub fn getString(self: *DataStore, idx: u32) []const u8 {
         return self.strings.get(idx);
     }
 
-    pub fn internAndGetString(self: *DataStore, str: []const u8) ![]const u8 {
-        return self.strings.get(try self.strings.intern(str, self.allocator));
+    pub fn internAndGetString(self: *DataStore, str: []const u8, allocator: Allocator) ![]const u8 {
+        return self.strings.get(try self.strings.intern(str, allocator));
     }
 
     pub fn getStats(self: *const DataStore) Stats {

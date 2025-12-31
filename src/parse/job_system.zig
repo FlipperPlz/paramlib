@@ -58,11 +58,11 @@ pub const JobQueue = struct {
     condition: std.Thread.Condition,
     jobs: std.ArrayList(ClassJob),
 
-    pub fn init(allocator: Allocator) JobQueue {
+    pub fn init() JobQueue {
         return .{
             .mutex = .{},
             .condition = .{},
-            .jobs = std.ArrayList(ClassJob).init(allocator),
+            .jobs = std.ArrayList(ClassJob).empty,
         };
     }
 
@@ -70,14 +70,14 @@ pub const JobQueue = struct {
         for (self.jobs.items) |*job| {
             job.deinit(allocator);
         }
-        self.jobs.deinit();
+        self.jobs.deinit(allocator);
     }
 
-    pub fn push(self: *JobQueue, job: ClassJob) !void {
+    pub fn push(self: *JobQueue, job: ClassJob, allocator: Allocator) !void {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        try self.jobs.append(job);
+        try self.jobs.append(job, allocator);
         self.condition.signal();
     }
 
