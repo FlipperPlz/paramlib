@@ -2,6 +2,8 @@ const std = @import("std");
 const class_mod = @import("../data/class.zig");
 const param_mod = @import("../data/param.zig");
 const value_mod = @import("../data/value.zig");
+const enum_mod = @import("../data/enum.zig");
+
 const id_mod = @import("identifiers.zig");
 const hash_mod = @import("../utils/hash.zig");
 const log = @import("../utils/log.zig");
@@ -20,17 +22,20 @@ const Class = facade_mod.Class;
 const Allocator = std.mem.Allocator;
 const ClassId = id_mod.ClassId;
 const ParamId = id_mod.ParamId;
+const EnumId = id_mod.EnumId;
 const Value = value_mod.Value;
 const ClassHandle = id_mod.ClassHandle;
 const DataStore = stores_mod.DataStore;
 const ClassData = class_mod.ClassData;
 const ParamData = param_mod.ParamData;
+const EnumData = enum_mod.EnumData;
 const Source = source_mod.Source;
 const SourceId = source_mod.SourceId;
 
 pub const ParamTree = struct {
     store: *DataStore,
     root_handle: ClassHandle,
+    first_enum: EnumId = .invalid,
 
     access: AccessManager,
     inheritance: InheritanceManager,
@@ -393,6 +398,55 @@ pub const ParamTree = struct {
 
         _ = self.store.path_to_class.remove(class.path_hash);
         try self.store.freeClass(class_id);
+    }
+
+    pub fn setEnum(
+        self: *ParamTree,
+        enum_name: []const u8,
+        value: f32
+    ) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const enum_name_idx = try self.store.internString(enum_name);
+        const name_hash = hash_mod.hashName(enum_name);
+        const current_source = self.source.getCurrentSource();
+
+        var current = self.first_enum;
+        while (current != .invalid) {
+            const par = self.store.getEnum(current).?;
+            if (par.name_hash == name_hash) {
+                return error.EnumAlreadyExists;
+            }
+            current = par.next;
+        }
+        const enum_value = try self.store.allocEnum();
+        enum_name.ptr.* = EnumData.init(enum_name_idx, name_hash, value, current_source);
+        enum_value.ptr.next = self.first_enum;
+
+        self.first_enum = enum_value.id;
+
+        self.thread_manager.notifyAll();
+    }
+
+    pub fn getEnum(
+        self: *ParamTree,
+        enum_name: []const u8,
+    ) !?f32 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const name_hash = hash_mod.hashName(enum_name);
+
+        var current = self.first_enum;
+        while (current != .invalid) {
+            const par = self.store.getEnum(current).?;
+            if (par.name_hash == name_hash) {
+                return par.value;
+            }
+            current = par.next;
+        }
+        return null;
     }
 
     fn freeValueInternal(self: *ParamTree, value: Value) !void {

@@ -29,6 +29,7 @@ pub const SourceId = TypedId();
 pub const ClassId = TypedId();
 pub const ParamId = TypedId();
 pub const ArrayId = TypedId();
+pub const EnumId = TypedId();
 
 pub const ClassHandle = struct {
     id: ClassId,

@@ -56,7 +56,7 @@ pub fn getUnquotedSlice(input: []const u8, pos: *SourcePosition, terminators: []
     return input[start..pos.index];
 }
 
-pub fn getWord( input: []const u8, src_name: []const u8, pos: *SourcePosition, terminators: []const u8, found_quote: *bool, allocator: std.mem.Allocator) ![]const u8 {
+pub fn getWord( input: []const u8, src_name: []const u8, pos: *SourcePosition, terminators: []const u8, found_quote: ?*bool, allocator: std.mem.Allocator) ![]const u8 {
     var result = std.ArrayList(u8).empty;
     defer result.deinit(allocator);
 
@@ -64,7 +64,7 @@ pub fn getWord( input: []const u8, src_name: []const u8, pos: *SourcePosition, t
 
     if (input[pos.index] == '"') {
         pos.index += 1;
-        found_quote.* = true;
+        if(found_quote) found_quote.* = true;
 
         while (pos.index < input.len) {
             const c = input[pos.index];
@@ -123,7 +123,7 @@ pub fn getWord( input: []const u8, src_name: []const u8, pos: *SourcePosition, t
         });
         return error.SyntaxError;
     } else {
-        found_quote.* = false;
+        if(found_quote) found_quote.* = false;
         var c = input[pos.index];
         while (pos.index < input.len and std.mem.indexOfScalar(u8, terminators, c) == null) {
             if (c == '\n' or c == '\r') {

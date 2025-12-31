@@ -215,9 +215,51 @@ pub const Parser = struct {
                 try handleClass(self, input, file_buffer, parent, &position);
             } else if (std.mem.eql(u8, word, "delete")) {
                 try handleDelete(input, file_buffer.source.name, parent, &position);
+            } else if (std.mem.eql(u8, word, "enum")) {
+                try handleEnum(self, input, file_buffer, parent, &position);
             } else {
                 try handleParam(self, input, file_buffer.source.name, parent, word, &position);
             }
+        }
+    }
+
+    fn handleEnum(self: *Parser, input: []const u8, buf: *SourceBuffer, pos: *SourcePosition) !void {
+        const c = input[pos.index];
+        // check len vs pos
+        lexer.skipWhitespace(input, &pos);
+        if (c != '{') {
+            std.log.err("[{s}] Expected '{' after enum keyword", .{buf.source.name});
+            return error.ExpectedOpenBrace;
+        }
+        pos.index += 1;
+
+        var enum_value: i32 = 0;
+        while (true) {
+            const word = lexer.getAlphaWord(input, &pos);
+            lexer.skipWhitespace(input, &pos);
+            if (input[pos.index] == '=') {
+                pos.index += 1;
+                lexer.skipWhitespace(input, &pos);
+                const value_string = try lexer.getWord(input, buf.source.name, pos, ",}", null, self.allocator);
+                enum_value = try scanner.scanFloatPlain(value_string); //catch
+            }
+            try self.tree.setEnum(word, enum_value);
+            enum_value += 1;
+
+
+            pos.index += 1;
+            if (input[pos.index] != ',') break;
+        }
+
+        if(input[pos.index] != '}') {
+            std.log.err("[{s}] Expected '}' at end of enum definition", .{buf.source.name});
+            return error.ExpectedCloseBrace;
+        }
+        pos.index += 1;
+
+        //lexer.skipWhitespace(input, &pos);
+        while(c == ';') : (pos.index += 1) {
+            lexer.skipWhitespace(input, &pos);
         }
     }
 
