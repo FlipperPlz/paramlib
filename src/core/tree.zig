@@ -34,7 +34,7 @@ const Source = source_mod.Source;
 const SourceId = source_mod.SourceId;
 
 pub const ParamTree = struct {
-    store: DataStore,
+    store: *DataStore,
     root_handle: ClassHandle,
     first_enum: EnumId = .invalid,
 
@@ -49,7 +49,10 @@ pub const ParamTree = struct {
 
     pub fn init(alloc: Allocator, io: std.Io) !ParamTree {
 
-        var store = try DataStore.init();
+        var store = try alloc.create(DataStore);
+        errdefer  alloc.destroy(store);
+
+        store.* = try DataStore.init();
         errdefer store.deinit(io, alloc);
 
         const root_name = try store.internString("root", alloc);
@@ -62,20 +65,28 @@ pub const ParamTree = struct {
         try store.path_to_class.put(alloc, path_hash, root_.id);
 
 
-        return .{
+        var tree: ParamTree = .{
             .store = store,
             .root_handle = .{
                 .id = root_.id,
                 .generation = 1,
             },
-            .access = AccessManager.init(&store),
-            .inheritance = InheritanceManager.init(&store),
-            .navigation = NavigationManager.init(&store),
-            .source = SourceManager.init(&store),
-            .modification = ModificationManager.init(&store),
+            .access = undefined,
+            .inheritance = undefined,
+            .navigation = undefined,
+            .source = undefined,
+            .modification = undefined,
             .thread_manager = ThreadManager.init(),
             .mutex = .{},
         };
+
+        tree.access = AccessManager.init(tree.store);
+        tree.inheritance = InheritanceManager.init(tree.store);
+        tree.navigation = NavigationManager.init(tree.store);
+        tree.source = SourceManager.init(tree.store);
+        tree.modification = ModificationManager.init(tree.store);
+
+        return tree;
     }
 
     pub fn deinit(self: *ParamTree, io: std.Io, allocator: Allocator) void {
@@ -87,6 +98,7 @@ pub const ParamTree = struct {
 
         self.modification.deinit(allocator);
         self.store.deinit(io, allocator);
+        allocator.destroy(self.store);
     }
 
     pub fn createClass(

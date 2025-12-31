@@ -26,7 +26,7 @@ test "facade basic operations" {
     var tree = try ParamTree.init(testing.allocator, testing.io);
     defer tree.deinit(io, allocator);
 
-    const root = Class.init(&tree, tree.root_handle);
+    const root = tree.facade();
     const obj = try root.createChild("TestObject", allocator, io);
 
     try obj.setI32("count", 42, allocator, io);
@@ -44,7 +44,7 @@ test "facade hierarchy" {
     var tree = try ParamTree.init(testing.allocator, testing.io);
     defer tree.deinit(testing.io, testing.allocator);
 
-    const root = Class.init(&tree, tree.root_handle);
+    const root = tree.facade();
     const parent = try root.createChild("Parent", testing.allocator, testing.io);
     const child = try parent.createChild("Child", testing.allocator, testing.io);
 
@@ -67,7 +67,7 @@ test "facade inheritance" {
     var tree = try ParamTree.init(testing.allocator, testing.io);
     defer tree.deinit(testing.io, testing.allocator);
 
-    const root = Class.init(&tree, tree.root_handle);
+    const root = tree.facade();
     const base = try root.createChild("Base", testing.allocator, testing.io);
     const derived = try root.createChild("Derived", testing.allocator, testing.io);
 
@@ -84,7 +84,7 @@ test "facade recursive find child" {
     var tree = try ParamTree.init(testing.allocator, testing.io);
     defer tree.deinit(testing.io, testing.allocator);
 
-    const root = Class.init(&tree, tree.root_handle);
+    const root = tree.facade();
 
     const parent = try root.createChild("Parent", testing.allocator, testing.io);
     const child = try parent.createChild("Child", testing.allocator, testing.io);
@@ -121,7 +121,7 @@ test "facade getOrDefault" {
     var tree = try ParamTree.init(testing.allocator, testing.io);
     defer tree.deinit(testing.io, testing.allocator);
 
-    const root = Class.init(&tree, tree.root_handle);
+    const root = tree.facade();
     const obj = try root.createChild("Object", testing.allocator, testing.io);
 
     const default_value = try obj.getI32OrDefault("missing", 42);
@@ -143,7 +143,7 @@ test "complete workflow" {
     const src_id = try tree.source.registerSource(src, alloc);
     tree.source.setCurrentSource(src_id);
 
-    const root = Class.init(&tree, tree.root());
+    const root = tree.facade();
     const game = try root.createChild("Game", testing.allocator, testing.io);
     const player = try game.createChild("Player", testing.allocator, testing.io);
 
@@ -230,7 +230,7 @@ test "circular inheritance detection" {
     var tree = try ParamTree.init(alloc, std.testing.io);
     defer tree.deinit(testing.io, alloc);
 
-    const root = Class.init(&tree, tree.root());
+    const root = tree.facade();
 
     const a = try root.createChild("A", alloc, testing.io);
     const b = try root.createChild("B", alloc, testing.io);
@@ -247,7 +247,7 @@ test "value types" {
     var tree = try ParamTree.init(alloc, std.testing.io);
     defer tree.deinit(std.testing.io, alloc);
 
-    const root = Class.init(&tree, tree.root());
+    const root = tree.facade();
     const obj = try root.createChild("Object", alloc, std.testing.io);
 
     try obj.setI32("i32_val", 42, alloc, std.testing.io);
@@ -270,7 +270,7 @@ test "navigation operations" {
     var tree = try ParamTree.init(alloc, std.testing.io);
     defer tree.deinit(io, alloc);
 
-    const root = Class.init(&tree, tree.root());
+    const root = tree.facade();
 
     const a = try root.createChild("A", alloc, io);
     const b = try a.createChild("B", alloc, io);
@@ -304,7 +304,7 @@ test "modification tracking" {
     const src_id = try tree.source.registerSource(src, alloc);
     tree.source.setCurrentSource(src_id);
 
-    const root = Class.init(&tree, tree.root());
+    const root = tree.facade();
     const obj = try root.createChild("Object", alloc, std.testing.io);
 
     try obj.setI32("value", 10, alloc, std.testing.io);
@@ -321,7 +321,7 @@ test "handle validation" {
     var tree = try ParamTree.init(alloc, std.testing.io);
     defer tree.deinit(std.testing.io, alloc);
 
-    const root = Class.init(&tree, tree.root());
+    const root = tree.facade();
     const obj = try root.createChild("Object", alloc, std.testing.io);
 
     try std.testing.expect(obj.isValid());
@@ -336,7 +336,7 @@ test "stats collection" {
     var tree = try ParamTree.init(alloc, std.testing.io);
     defer tree.deinit(std.testing.io, alloc);
 
-    const root = Class.init(&tree, tree.root());
+    const root = tree.facade();
 
     for (0..10) |i| {
         const name = try std.fmt.allocPrint(alloc, "Object{d}", .{i});
