@@ -33,6 +33,7 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "paramlib", .module = mod },
             },
+            .link_libc = true,
         })
     });
 

@@ -48,8 +48,9 @@ pub const ClassData = struct {
         name_hash: u64,
         path_hash: u64,
         source: SourceId,
+        io: std.Io,
     ) ClassData {
-        const timestamp = time_mod.getTimeMs();
+        const timestamp = time_mod.getTimeMs(io);
         return .{
             .generation = 1,
             .name_hash = name_hash,
@@ -69,8 +70,8 @@ pub const ClassData = struct {
         };
     }
 
-    pub fn markModified(self: *ClassData, source: SourceId) void {
+    pub fn markModified(self: *ClassData, source: SourceId, io: std.Io) void {
         self.modified_by = source;
-        self.modified_at = time_mod.getTimeMs();
+        self.modified_at = time_mod.getTimeMs(io);
     }
 };

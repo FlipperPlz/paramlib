@@ -135,7 +135,7 @@ test "complete workflow" {
     var tree = try ParamTree.init(alloc, std.testing.io);
     defer tree.deinit();
 
-    const src = try Source.init_runtime("test", alloc);
+    const src = try Source.init_runtime("test", std.testing.io, alloc);
     const src_id = try tree.source.registerSource(src);
     tree.source.setCurrentSource(src_id);
 
@@ -175,10 +175,10 @@ test "source tracking" {
     var tree = try ParamTree.init(alloc, std.testing.io);
     defer tree.deinit();
 
-    const src1 = try Source.init_memory("source1", "data1", alloc);
+    const src1 = try Source.init_memory("source1", "data1", std.testing.io, alloc);
     const id1 = try tree.source.registerSource(src1);
 
-    const src2 = try Source.init_memory("source2", "data2", alloc);
+    const src2 = try Source.init_memory("source2", "data2", std.testing.io, alloc);
     const id2 = try tree.source.registerSource(src2);
 
     tree.source.setCurrentSource(id1);
@@ -292,7 +292,7 @@ test "modification tracking" {
     var tree = try ParamTree.init(alloc, std.testing.io);
     defer tree.deinit();
 
-    const src = try Source.init_runtime("test", alloc);
+    const src = try Source.init_runtime("test", std.testing.io, alloc);
     const src_id = try tree.source.registerSource(src);
     tree.source.setCurrentSource(src_id);
 
@@ -416,7 +416,7 @@ test "thread safe base setting and waiting" {
 
     const thread = try std.Thread.spawn(.{}, Context.run, .{&ctx});
 
-    try time_mod.sleep(0);
+    try time_mod.sleep(0, std.testing.io);
 
     try derived.setBase(base);
 
@@ -457,7 +457,7 @@ test "thread safe parameter waiting" {
 
     const thread = try std.Thread.spawn(.{}, Context.run, .{&ctx});
 
-    try time_mod.sleep(10);
+    try time_mod.sleep(10, testing.io);
 
     try obj.setI32("health", 100);
 

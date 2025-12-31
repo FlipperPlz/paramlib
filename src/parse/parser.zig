@@ -114,15 +114,15 @@ pub const Parser = struct {
     }
 
     pub fn parseFile(self: *Parser, file_path: []const u8, parent: Class) !void {
-        const file_buffer = try SourceBuffer.init(file_path, self.allocator);
-        defer file_buffer.release(self.allocator);
+        const file_buffer = try SourceBuffer.init(file_path, self.io, self.allocator);
+        defer file_buffer.release(self.io, self.allocator);
 
         try self.parseBuffer(file_buffer, parent);
     }
 
     pub fn parseMemory(self: *Parser, name: []const u8, data: []const u8, parent: Class) !void {
         const file_buffer = try SourceBuffer.initFromMemory(name, data, self.allocator);
-        defer file_buffer.release(self.allocator);
+        defer file_buffer.release(self.io, self.allocator);
 
         try self.parseBuffer(file_buffer, parent);
     }
@@ -299,7 +299,7 @@ pub const Parser = struct {
             const sequence = job.sequence;
             defer {
                 job.deinit(self.allocator);
-                job.file_buffer.release(self.allocator);
+                job.file_buffer.release(self.io, self.allocator);
             }
 
             self.registerParserThread(sequence) catch continue;

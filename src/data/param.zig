@@ -36,8 +36,9 @@ pub const ParamData = struct {
         value: Value,
         source: ClassId,
         source_id: SourceId,
+        io: std.Io
     ) ParamData {
-        const timestamp = time_mod.getTimeMs();
+        const timestamp = time_mod.getTimeMs(io);
         return .{
             .name_hash = name_hash,
             .value = value,
@@ -52,8 +53,8 @@ pub const ParamData = struct {
         };
     }
 
-    pub fn markModified(self: *ParamData, source: SourceId) void {
+    pub fn markModified(self: *ParamData, source: SourceId, io: std.Io) void {
         self.modified_by = source;
-        self.modified_at = time_mod.getTimeMs();
+        self.modified_at = time_mod.getTimeMs(io);
     }
 };

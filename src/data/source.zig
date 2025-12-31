@@ -32,8 +32,8 @@ pub const Source = struct {
     context: *anyopaque,
     timestamp: i64,
 
-    pub fn init_file(path: []const u8, alloc: Allocator) !Source {
-        const f = try std.fs.cwd().openFile(path, .{});
+    pub fn init_file(path: []const u8, io: std.Io, alloc: Allocator) !Source {
+        const f = try std.Io.Dir.cwd().openFile(io, path, .{});
 
         const ctx = try alloc.create(FileContext);
         errdefer alloc.destroy(ctx);
@@ -58,7 +58,7 @@ pub const Source = struct {
         };
     }
 
-    pub fn init_memory(name: []const u8, content: []const u8, alloc: Allocator) !Source {
+    pub fn init_memory(name: []const u8, content: []const u8, io: std.Io, alloc: Allocator) !Source {
         const ctx = try alloc.create(MemoryContext);
         errdefer alloc.destroy(ctx);
 
@@ -77,11 +77,11 @@ pub const Source = struct {
             .name = name_copy,
             .stype = .Memory,
             .context = @ptrCast(ctx),
-            .timestamp = time_mod.getTimeMs(),
+            .timestamp = time_mod.getTimeMs(io),
         };
     }
 
-    pub fn init_runtime(creator: []const u8, alloc: Allocator) !Source {
+    pub fn init_runtime(creator: []const u8, io: std.Io, alloc: Allocator) !Source {
         const ctx = try alloc.create(RuntimeContext);
         errdefer alloc.destroy(ctx);
 
@@ -100,7 +100,7 @@ pub const Source = struct {
             .name = name,
             .stype = .Runtime,
             .context = @ptrCast(ctx),
-            .timestamp = time_mod.getTimeMs(),
+            .timestamp = time_mod.getTimeMs(io),
         };
     }
 
@@ -131,9 +131,9 @@ pub const Source = struct {
     fn readFile(allocator: Allocator, io: std.Io, ctx: *anyopaque) ![]const u8 {
         const file_ctx: *FileContext = @ptrCast(@alignCast(ctx));
 
-        const reader_buffer: [1024]u8 = undefined;
-        const file_reader = file_ctx.file.reader(io, reader_buffer);
-        const reader = file_reader.interface;
+        var reader_buffer: [1024]u8 = undefined;
+        var file_reader = file_ctx.file.reader(io, &reader_buffer);
+        var reader = file_reader.interface;
         const content = try reader.readAlloc(allocator, reader.end);
 
         errdefer allocator.free(content);

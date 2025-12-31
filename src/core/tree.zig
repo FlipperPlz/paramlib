@@ -58,7 +58,7 @@ pub const ParamTree = struct {
         const path_hash = root_hash;
 
         const root_ = try store.allocClass();
-        root_.ptr.* = ClassData.init(.invalid, root_name, root_hash, path_hash, .invalid);
+        root_.ptr.* = ClassData.init(.invalid, root_name, root_hash, path_hash, .invalid, io);
 
         try store.path_to_class.put(alloc, path_hash, root_.id);
 
@@ -128,7 +128,7 @@ pub const ParamTree = struct {
 
         const current_source = self.source.getCurrentSource();
         const child = try self.store.allocClass();
-        child.ptr.* = ClassData.init(parent_id, name_idx, name_hash, path_hash, current_source);
+        child.ptr.* = ClassData.init(parent_id, name_idx, name_hash, path_hash, current_source, self.store.io);
         log.debug("createClass: class {} created, source {}", .{ child.id, current_source });
 
         child.ptr.next_sibling = parent.first_child;
@@ -217,7 +217,7 @@ pub const ParamTree = struct {
                     try self.freeValueInternal(par.value);
                 }
                 par.value = value;
-                par.markModified(current_source);
+                par.markModified(current_source, self.store.io);
                 try self.modification.recordParamModification(current, current_source, alloc);
                 try self.modification.recordClassModification(class_id, current_source, alloc);
                 self.thread_manager.notifyAll();
@@ -228,7 +228,7 @@ pub const ParamTree = struct {
 
         const name_idx = try self.store.internString(name);
         const param = try self.store.allocParam();
-        param.ptr.* = ParamData.init(name_idx, name_hash, value, class_id, current_source);
+        param.ptr.* = ParamData.init(name_idx, name_hash, value, class_id, current_source, self.store.io);
 
         param.ptr.next = class.first_param;
         class.first_param = param.id;
@@ -323,7 +323,7 @@ pub const ParamTree = struct {
         }
 
         const current_source = self.source.getCurrentSource();
-        class.markModified(current_source);
+        class.markModified(current_source, self.store.io);
         try self.modification.recordClassModification(class_id, current_source, self.allocator());
 
         self.thread_manager.notifyAll();

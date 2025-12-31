@@ -6,8 +6,8 @@ pub const SourceBuffer = struct {
     source: SourceFile,
     ref_count: std.atomic.Value(usize),
 
-    pub fn init(path: []const u8, allocator: Allocator) !*SourceBuffer {
-        const source = try SourceFile.init_file(path, allocator);
+    pub fn init(path: []const u8, io: std.Io, allocator: Allocator) !*SourceBuffer {
+        const source = try SourceFile.init_file(path, io, allocator);
         const buffer = try allocator.create(SourceBuffer);
 
         buffer.* = .{
@@ -34,10 +34,10 @@ pub const SourceBuffer = struct {
         _ = self.ref_count.fetchAdd(1, .monotonic);
     }
 
-    pub fn release(self: *SourceBuffer, allocator: Allocator) void {
+    pub fn release(self: *SourceBuffer, io: std.Io, allocator: Allocator) void {
         const old_count = self.ref_count.fetchSub(1, .acq_rel);
         if (old_count == 1) {
-            self.source.deinit(allocator);
+            self.source.deinit(io, allocator);
             allocator.destroy(self);
         }
     }

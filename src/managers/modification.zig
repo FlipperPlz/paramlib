@@ -40,13 +40,13 @@ pub const ModificationManager = struct {
     ) !void {
         const class = self.store.getClass(class_id) orelse return error.InvalidClass;
         log.debug("recordClassModification: class {} mod by {}", .{ class_id, source_id });
-        class.markModified(source_id);
+        class.markModified(source_id, self.store.io);
 
         try self.history.append(allocator, .{
             .target_type = .Class,
             .target_id = .{ .class = class_id },
             .source_id = source_id,
-            .timestamp = time_mod.getTimeMs(),
+            .timestamp = time_mod.getTimeMs(self.store.io),
         });
     }
 
@@ -58,13 +58,13 @@ pub const ModificationManager = struct {
     ) !void {
         const param = self.store.getParam(param_id) orelse return error.InvalidParam;
         log.debug("recordParamModification: param {} mod by {}", .{ param_id, source_id });
-        param.markModified(source_id);
+        param.markModified(source_id, self.store.io);
 
         try self.history.append(allocator, .{
             .target_type = .Param,
             .target_id = .{ .param = param_id },
             .source_id = source_id,
-            .timestamp = time_mod.getTimeMs(),
+            .timestamp = time_mod.getTimeMs(self.store.io),
         });
     }
 
