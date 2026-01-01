@@ -9,7 +9,7 @@ const ArrayData = @import("../data/value.zig").ArrayData;
 const ClassId = @import("../core/identifiers.zig").ClassId;
 const SearchOptions = @import("../managers/navigation.zig").SearchOptions;
 const SourcePosition = @import("position.zig").SourcePosition;
-
+const Operator = scanner.Operator;
 const lexer = @import("lexer.zig");
 
 const scanner = @import("scanner.zig");
@@ -219,9 +219,188 @@ pub const Parser = struct {
             }  else if (std.mem.eql(u8, word, "__EXEC")) {
                 try handleExecute(self, input, buf, parent, &position);
             } else {
-                try handleParam(self, input, buf.source.name, parent, word, &position);
+                try handleParam(self, input, buf.source.name, parent, word, &position, allocator, io);
             }
         }
+    }
+
+    fn parseArray(self: *Parser, input: []const u8, dbg_name: []const u8, parent: Class, name: []const u8, op: Operator, pos: *SourcePosition, allocator: Allocator, io: std.Io) !void {
+        const arr_stack = std.ArrayList(ArrayData).empty;
+        defer arr_stack .deinit(allocator);
+        var curr = ArrayData.empty;
+        arr_stack.append(allocator, curr);
+        const expect_separator: ?bool = false;
+
+        while (true) {
+            lexer.skipWhitespace(input, pos);
+            switch (input[pos.index]) {
+                '{' =>{
+                    const new_array = ArrayData.empty;
+                    try arr_stack.append(allocator, new_array);
+                    curr = new_array;
+                    pos.index += 1;
+                },
+                '#' => {
+                    pos.index += 1;
+                    continue;
+                },
+                '}' => {
+                    pos.index += 1;
+                    if (arr_stack.items.len == 1) {
+                        break;
+                    }
+
+                    const completed_array = arr_stack.pop().?;
+                    curr = arr_stack.getLast();
+                    try curr.append(
+                        Value.initArray(try self.store.allocArray(completed_array, allocator)),
+                        allocator,
+                    );
+                },
+                '@' => {
+                    pos.index += 1;
+                    std.log.err("[{s}] Array param expressions not yet implemented", .{dbg_name});
+                    return error.ExpressionsNotImplemented;
+                },
+                else => {
+                    var found_quote: bool = false;
+                    const value_string = try lexer.getWord(
+                        input,
+                        dbg_name,
+                        pos,
+                        ",;}",
+                        &found_quote,
+                        allocator,
+                    );
+
+                    const next = input[pos.index];
+                    expect_separator = null;
+
+                    if(next == ',' or next == ';') {
+                        expect_separator = true;
+                    }
+
+                    if(!found_quote) {
+                        if(value_string.len > 7 and std.mem.eql(u8, value_string[0..6], "__EVAL")) {
+                            std.log.err("[{s}] Array param evaluation not yet implemented", .{dbg_name});
+                            return error.ExpressionsNotImplemented;
+                        }
+
+                        const scanned_value = try scanner.scanInt(value_string) orelse
+                            try scanner.scanFloat(input) orelse
+                            Value.initString(try self.store.internString(value_string, allocator));
+                        try curr.append(scanned_value, allocator);
+
+                    } else {
+                        try curr.append(
+                            Value.initString(try self.store.internString(value_string, allocator)),
+                            allocator,
+                        );
+                    }
+                },
+            }
+
+            lexer.skipWhitespace(input, &pos);
+            const next = input[pos.index];
+            pos.index+= 1;
+            if(next != ',' or next != ';') {
+                pos.index += 1;
+                std.log.err("[{s}] Expected ',' or ';' after array value", .{dbg_name});
+                return error.ExpectedArraySeparator;
+            }
+        }
+        lexer.skipWhitespace(input, pos);
+
+        //todo handle operator
+        _ = op;
+
+        return parent.setValue(
+            name,
+            Value.initArray(try self.store.allocArray(curr, allocator)),
+            allocator,
+            io
+        );
+    }
+
+    fn handleParam(self: *Parser, input: []const u8, dbg_name: []const u8, parent: Class, name: []const u8, pos: *SourcePosition, allocator: Allocator, io: std.Io) !void {
+        if(input[pos.index] == '[') {
+            return self.handleArray(input, dbg_name, parent, name, pos, allocator, io);
+        }
+
+        lexer.skipWhitespace(input, pos);
+        if(input[pos.index] != '=') {
+            std.log.err("[{s}] Expected '=' after param name '{s}'", .{dbg_name, name});
+            return error.ExpectedEqualsSign;
+        }
+        pos.index += 1;
+        lexer.skipWhitespace(input, pos);
+
+        const expression = input[pos.index] == '@';
+        if (expression) {
+            pos.index += 1;
+            return error.ExpressionsNotImplemented;
+        }
+
+        var found_quote: bool = false;
+        const value_string = try lexer.getWord(
+            input,
+            dbg_name,
+            pos,
+            ";}",
+            &found_quote,
+            allocator,
+        );
+
+        const next = input[pos.index];
+        if(next == '}') {
+            std.log.err("[{s}] Expected ';' after param value for '{s}'", .{dbg_name, name});
+        } else if (next != ';') {
+            if(next != '\n' and next != '\r' and !found_quote) {
+                std.log.err("[{s}] Expected ';' after param value for '{s}'", .{dbg_name, name});
+                return error.MissingSemicolon;
+            }
+            std.log.err("[{s}] Expected ';' after param value for '{s}'", .{dbg_name, name});
+        } else {
+            pos.index += 1;
+        }
+
+        if(!found_quote) {
+            if(value_string.len > 7 and std.mem.eql(u8, value_string[0..6], "__EVAL")) {
+                std.log.warn("[{s}] Param evaluation not yet implemented", .{dbg_name});
+                return error.ExpressionsNotImplemented;
+            }
+
+            const scanned_value = try scanner.scanInt(value_string) orelse
+                try scanner.scanInt64(input) orelse
+                try scanner.scanFloat(input);
+            if(scanned_value) |sv| {
+                try parent.setValue(name, sv, allocator, io);
+            }
+
+            return;
+        }
+
+        try parent.setValue(
+            name,
+            Value.initString(try self.store.internString(value_string, allocator)),
+            allocator,
+            io
+        );
+    }
+
+    fn handleArray(self: *Parser, input: []const u8, dbg_name: []const u8, parent: Class, name: []const u8, pos: *SourcePosition, allocator: Allocator, io: std.Io) !void {
+        lexer.skipWhitespace(input, &pos);
+        if(input[pos.index] != ']') {
+            std.log.err("[{s}] Expected ']' after '[' in param array for '{s}'", .{dbg_name, name});
+            return error.ExpectedCloseBracket;
+        }
+        pos.index += 1;
+        lexer.skipWhitespace(input, &pos);
+
+        const operator = try scanner.scanOperator(input, dbg_name, &pos);
+        lexer.skipWhitespace(input, &pos);
+
+        try self.parseArray(input, dbg_name, parent, name, operator, &pos, allocator, io);
     }
 
     fn handleExecute(self: *Parser, input: []const u8, buf: *SourceBuffer, parent: Class, pos: *SourcePosition) !void {
@@ -365,83 +544,5 @@ pub const Parser = struct {
                 return error.BaseClassNotFound;
             }
         }   
-    }
-
-
-    fn handleParam(self: *Parser, input: []const u8, dbg_name: []const u8, parent: Class, name: []const u8, pos: *SourcePosition, allocator: Allocator, io: std.Io) !void {
-        if(input[pos.index] == '[') {
-            return self.handleArray(input, dbg_name, parent, name, pos);
-        }
-
-        lexer.skipWhitespace(input, pos);
-        if(input[pos.index] != '=') {
-            std.log.err("[{s}] Expected '=' after param name '{s}'", .{dbg_name, name});
-            return error.ExpectedEqualsSign;
-        }
-        pos.index += 1;
-        lexer.skipWhitespace(input, pos);
-
-        const expression = input[pos.index] == '@';
-        if (expression) {
-            pos.index += 1;
-            return error.ExpressionsNotImplemented;
-        }
-
-        var found_quote: bool = false;
-        const value_string = try lexer.getWord(
-            input,
-            dbg_name,
-            pos,
-            ";}",
-            &found_quote,
-            allocator,
-        );
-
-        const next = input[pos.index];
-        if(next == '}') {
-            std.log.err("[{s}] Expected ';' after param value for '{s}'", .{dbg_name, name});
-        } else if (next != ';') {
-            if(next != '\n' and next != '\r' and !found_quote) {
-                std.log.err("[{s}] Expected ';' after param value for '{s}'", .{dbg_name, name});
-                return error.MissingSemicolon;
-            }
-            std.log.err("[{s}] Expected ';' after param value for '{s}'", .{dbg_name, name});
-        } else {
-            pos.index += 1;
-        }
-
-        if(!found_quote) {
-            if(value_string.len > 7 and std.mem.eql(u8, value_string[0..6], "__EVAL")) {
-                std.log.warn("[{s}] Param evaluation not yet implemented", .{dbg_name});
-                return error.ExpressionsNotImplemented;
-            }
-
-            const scanned_value = try scanner.scanInt(value_string) orelse
-                scanner.scanInt64(input) orelse
-                scanner.scanFloat(input);
-            if(scanned_value) |sv| {
-                try parent.setValue(name, sv, allocator, io);
-            }
-
-            return;
-        }
-
-        try parent.setValue(
-            name,
-            Value.initString(try self.store.internString(value_string, allocator)),
-            allocator,
-            io
-        );
-    }
-
-    fn handleArray(self: *Parser, input: []const u8, dbg_name: []const u8, parent: Class, name: []const u8, pos: *SourcePosition) !void {
-        _ = self;
-        _ = name;
-        _ = input;
-        _ = parent;
-        _ = pos;
-
-        std.log.err("[{s}] Param array not yet implemented", .{dbg_name});
-        return error.ExecuteNotImplemented;
     }
 };

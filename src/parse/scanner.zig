@@ -1,5 +1,7 @@
 const std = @import("std");
 const value_mod = @import("../data/value.zig");
+const SourcePosition = @import("position.zig").SourcePosition;
+
 const Value = value_mod.Value;
 
 pub fn scanIntPlain(ptr: []const u8) ?i32 {
@@ -83,4 +85,39 @@ pub fn scanFloat(ptr: []const u8) !?Value {
     }
 
     return null;
+}
+
+pub const Operator = enum {Add,Sub,Assign,};
+
+pub fn scanOperator(input: []const u8, dbg_name: []const u8, pos: *SourcePosition) !Operator  {
+    return blk: switch (input[pos.index]) {
+        '+' => {
+            pos.index += 1;
+
+            if (input[pos.index] != '=') {
+                std.log.warn("[{s}] Error at line {}, col {}: expected '=' after '+'", .{ dbg_name, pos.line, pos.index - pos.line_start });
+                return error.SyntaxError;
+            }
+            pos.index += 1;
+            break :blk Operator.Add;
+        },
+        '-' => {
+            pos.index += 1;
+
+            if (input[pos.index] != '=') {
+                std.log.warn("[{s}] Error at line {}, col {}: expected '=' after '+'", .{ dbg_name, pos.line, pos.index - pos.line_start });
+                return error.SyntaxError;
+            }
+            pos.index += 1;
+            break :blk Operator.Sub;
+        },
+        '=' => {
+            pos.index += 1;
+            break :blk Operator.Assign;
+        },
+        else => {
+            std.log.warn("[{s}] Error at line {}, col {}: expected '=', '+=', or '-=' after array name", .{ dbg_name, pos.line, pos.index - pos.line_start });
+            return error.SyntaxError;
+        },
+    };
 }
