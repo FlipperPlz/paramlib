@@ -19,6 +19,7 @@ pub const EnumData = struct {
         name_hash: u64,
         value: f32,
         source_id: SourceId,
+        io: std.Io,
     ) EnumData {
         return .{
             .name_hash = name_hash,
@@ -26,7 +27,7 @@ pub const EnumData = struct {
             .name_idx = name_idx,
             .value = value,
             .created_by = source_id,
-            .created_at = time_mod.getTimeMs(),
+            .created_at = time_mod.getTimeMs(io),
         };
     }
 

@@ -17,6 +17,7 @@ const NavigationManager = @import("../managers/navigation.zig").NavigationManage
 const SearchOptions = @import("../managers/navigation.zig").SearchOptions;
 const SourceManager = @import("../managers/source.zig").SourceManager;
 const ModificationManager = @import("../managers/modification.zig").ModificationManager;
+const ThreadManager = @import("../managers/thread.zig").ThreadManager;
 
 const Class = facade_mod.Class;
 const Allocator = std.mem.Allocator;
@@ -42,66 +43,70 @@ pub const ParamTree = struct {
     navigation: NavigationManager,
     source: SourceManager,
     modification: ModificationManager,
-    thread_manager: *@import("../managers/thread.zig").ThreadManager,
+    thread_manager: ThreadManager,
 
     mutex: std.Thread.Mutex = .{},
 
-    pub fn init(alloc: Allocator, io: std.Io) !*ParamTree {
-        const self = try alloc.create(ParamTree);
-        errdefer alloc.destroy(self);
+    pub fn init(alloc: Allocator, io: std.Io) !ParamTree {
 
-        const store = try DataStore.init(alloc, io);
-        errdefer store.deinit();
+        var store = try alloc.create(DataStore);
+        errdefer  alloc.destroy(store);
 
-        const root_name = try store.internString("root");
+        store.* = try DataStore.init();
+        errdefer store.deinit(io, alloc);
+
+        const root_name = try store.internString("root", alloc);
         const root_hash = hash_mod.hashName("root");
         const path_hash = root_hash;
 
-        const root_ = try store.allocClass();
+        const root_ = try store.allocClass(alloc);
         root_.ptr.* = ClassData.init(.invalid, root_name, root_hash, path_hash, .invalid, io);
 
         try store.path_to_class.put(alloc, path_hash, root_.id);
 
-        const thread_manager = try alloc.create(@import("../managers/thread.zig").ThreadManager);
-        thread_manager.* = @import("../managers/thread.zig").ThreadManager.init();
 
-        self.* = .{
+        var tree: ParamTree = .{
             .store = store,
             .root_handle = .{
                 .id = root_.id,
                 .generation = 1,
             },
-            .access = AccessManager.init(store),
-            .inheritance = InheritanceManager.init(store),
-            .navigation = NavigationManager.init(store),
-            .source = SourceManager.init(store),
-            .modification = ModificationManager.init(store),
-            .thread_manager = thread_manager,
+            .access = undefined,
+            .inheritance = undefined,
+            .navigation = undefined,
+            .source = undefined,
+            .modification = undefined,
+            .thread_manager = ThreadManager.init(),
             .mutex = .{},
         };
 
-        return self;
+        tree.access = AccessManager.init(tree.store);
+        tree.inheritance = InheritanceManager.init(tree.store);
+        tree.navigation = NavigationManager.init(tree.store);
+        tree.source = SourceManager.init(tree.store);
+        tree.modification = ModificationManager.init(tree.store);
+
+        return tree;
     }
 
-    pub fn deinit(self: *ParamTree) void {
-        const alloc = self.allocator();
-        
+    pub fn deinit(self: *ParamTree, io: std.Io, allocator: Allocator) void {
         self.mutex.lock();
-        self.releaseInternal(self.root_handle) catch |err| {
+        self.releaseInternal(self.root_handle, allocator) catch |err| {
             log.debug("Error releasing root during deinit: {}", .{err});
         };
         self.mutex.unlock();
 
-        self.modification.deinit(alloc);
-        alloc.destroy(self.thread_manager);
-        self.store.deinit();
-        alloc.destroy(self);
+        self.modification.deinit(allocator);
+        self.store.deinit(io, allocator);
+        allocator.destroy(self.store);
     }
 
     pub fn createClass(
         self: *ParamTree,
         parent_handle: ClassHandle,
         name: []const u8,
+        allocator: Allocator,
+        io: std.Io
     ) !ClassHandle {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -124,18 +129,18 @@ pub const ParamTree = struct {
         }
 
         const path_hash = self.computeChildPathHash(parent.path_hash, name_hash);
-        const name_idx = try self.store.internString(name);
+        const name_idx = try self.store.internString(name, allocator);
 
         const current_source = self.source.getCurrentSource();
-        const child = try self.store.allocClass();
-        child.ptr.* = ClassData.init(parent_id, name_idx, name_hash, path_hash, current_source, self.store.io);
+        const child = try self.store.allocClass(allocator);
+        child.ptr.* = ClassData.init(parent_id, name_idx, name_hash, path_hash, current_source, io);
         log.debug("createClass: class {} created, source {}", .{ child.id, current_source });
 
         child.ptr.next_sibling = parent.first_child;
         parent.first_child = child.id;
 
-        try self.store.path_to_class.put(self.allocator(), path_hash, child.id);
-        try self.modification.recordClassModification(child.id, current_source, self.allocator());
+        try self.store.path_to_class.put(allocator, path_hash, child.id);
+        try self.modification.recordClassModification(child.id, current_source, allocator, io);
 
         self.thread_manager.notifyAll();
 
@@ -151,6 +156,7 @@ pub const ParamTree = struct {
     pub fn deleteClass(
         self: *ParamTree,
         handle: ClassHandle,
+        allocator: Allocator
     ) !void {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -161,7 +167,7 @@ pub const ParamTree = struct {
             return error.AccessDenied;
         }
 
-        try self.destroyClassInternal(class_id);
+        try self.destroyClassInternal(class_id, allocator);
 
         self.thread_manager.notifyAll();
     }
@@ -193,6 +199,8 @@ pub const ParamTree = struct {
         handle: ClassHandle,
         name: []const u8,
         value: Value,
+        allocator: Allocator,
+        io: std.Io
     ) !void {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -206,7 +214,6 @@ pub const ParamTree = struct {
         const class = self.store.getClass(class_id).?;
         const name_hash = hash_mod.hashName(name);
         const current_source = self.source.getCurrentSource();
-        const alloc = self.allocator();
         log.debug("setParam: class {}, param '{s}', source {}", .{ class_id, name, current_source });
 
         var current = class.first_param;
@@ -214,26 +221,26 @@ pub const ParamTree = struct {
             const par = self.store.getParam(current).?;
             if (par.name_hash == name_hash) {
                 if (Value.needsCleanup(par.value)) {
-                    try self.freeValueInternal(par.value);
+                    try self.freeValueInternal(par.value, allocator);
                 }
                 par.value = value;
-                par.markModified(current_source, self.store.io);
-                try self.modification.recordParamModification(current, current_source, alloc);
-                try self.modification.recordClassModification(class_id, current_source, alloc);
+                par.markModified(current_source, io);
+                try self.modification.recordParamModification(current, current_source, allocator, io);
+                try self.modification.recordClassModification(class_id, current_source, allocator, io);
                 self.thread_manager.notifyAll();
                 return;
             }
             current = par.next;
         }
 
-        const name_idx = try self.store.internString(name);
-        const param = try self.store.allocParam();
-        param.ptr.* = ParamData.init(name_idx, name_hash, value, class_id, current_source, self.store.io);
+        const name_idx = try self.store.internString(name, allocator);
+        const param = try self.store.allocParam(allocator);
+        param.ptr.* = ParamData.init(name_idx, name_hash, value, class_id, current_source, io);
 
         param.ptr.next = class.first_param;
         class.first_param = param.id;
-        try self.modification.recordParamModification(param.id, current_source, alloc);
-        try self.modification.recordClassModification(class_id, current_source, alloc);
+        try self.modification.recordParamModification(param.id, current_source, allocator, io);
+        try self.modification.recordClassModification(class_id, current_source, allocator, io);
 
         self.thread_manager.notifyAll();
     }
@@ -293,6 +300,8 @@ pub const ParamTree = struct {
         self: *ParamTree,
         handle: ClassHandle,
         base_handle: ?ClassHandle,
+        allocator: Allocator,
+        io: std.Io
     ) !void {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -312,7 +321,7 @@ pub const ParamTree = struct {
 
         if (class.flags.has_base) {
             const old_base = self.store.getClass(class.base).?;
-            try self.releaseInternal(.{ .id = class.base, .generation = old_base.generation });
+            try self.releaseInternal(.{ .id = class.base, .generation = old_base.generation }, allocator);
         }
 
         try self.inheritance.setBase(class_id, if (base_id.isValid()) base_id else null);
@@ -323,8 +332,8 @@ pub const ParamTree = struct {
         }
 
         const current_source = self.source.getCurrentSource();
-        class.markModified(current_source, self.store.io);
-        try self.modification.recordClassModification(class_id, current_source, self.allocator());
+        class.markModified(current_source, io);
+        try self.modification.recordClassModification(class_id, current_source, allocator, io);
 
         self.thread_manager.notifyAll();
     }
@@ -350,7 +359,7 @@ pub const ParamTree = struct {
         try self.releaseInternal(handle);
     }
 
-    fn releaseInternal(self: *ParamTree, handle: ClassHandle) anyerror!void {
+    fn releaseInternal(self: *ParamTree, handle: ClassHandle, allocator: Allocator) anyerror!void {
         const class_id = try self.validateHandleInternal(handle);
         const class = self.store.getClass(class_id).?;
 
@@ -359,11 +368,11 @@ pub const ParamTree = struct {
         class.references -= 1;
         log.debug("release: class {} refs={}", .{ class_id, class.references });
         if (class.references == 0) {
-            try self.destroyClassInternal(class_id);
+            try self.destroyClassInternal(class_id, allocator);
         }
     }
 
-    fn destroyClassInternal(self: *ParamTree, class_id: ClassId) !void {
+    fn destroyClassInternal(self: *ParamTree, class_id: ClassId, allocator: Allocator) !void {
         const class = self.store.getClass(class_id).?;
         log.debug("destroyClassInternal: class {}", .{class_id});
 
@@ -371,13 +380,13 @@ pub const ParamTree = struct {
         while (child_id.isValid()) {
             const child = self.store.getClass(child_id).?;
             const next = child.next_sibling;
-            try self.releaseInternal(.{ .id = child_id, .generation = child.generation });
+            try self.releaseInternal(.{ .id = child_id, .generation = child.generation }, allocator);
             child_id = next;
         }
 
         if (class.flags.has_base) {
             const base_class = self.store.getClass(class.base).?;
-            try self.releaseInternal(.{ .id = class.base, .generation = base_class.generation });
+            try self.releaseInternal(.{ .id = class.base, .generation = base_class.generation }, allocator);
         }
 
         class.flags.is_alive = false;
@@ -389,26 +398,28 @@ pub const ParamTree = struct {
             const next = param.next;
 
             if (param.value.needsCleanup()) {
-                try self.freeValueInternal(param.value);
+                try self.freeValueInternal(param.value, allocator);
             }
-            try self.store.freeParam(param_id);
+            try self.store.freeParam(param_id, allocator);
 
             param_id = next;
         }
 
         _ = self.store.path_to_class.remove(class.path_hash);
-        try self.store.freeClass(class_id);
+        try self.store.freeClass(class_id, allocator);
     }
 
     pub fn setEnum(
         self: *ParamTree,
         enum_name: []const u8,
-        value: f32
+        value: f32,
+        allocator: Allocator,
+        io: std.Io
     ) !void {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        const enum_name_idx = try self.store.internString(enum_name);
+        const enum_name_idx = try self.store.internString(allocator, enum_name);
         const name_hash = hash_mod.hashName(enum_name);
         const current_source = self.source.getCurrentSource();
 
@@ -420,8 +431,8 @@ pub const ParamTree = struct {
             }
             current = par.next;
         }
-        const enum_value = try self.store.allocEnum();
-        enum_name.ptr.* = EnumData.init(enum_name_idx, name_hash, value, current_source);
+        const enum_value = try self.store.allocEnum(allocator);
+        enum_name.ptr.* = EnumData.init(enum_name_idx, name_hash, value, current_source, io);
         enum_value.ptr.next = self.first_enum;
 
         self.first_enum = enum_value.id;
@@ -449,9 +460,9 @@ pub const ParamTree = struct {
         return null;
     }
 
-    fn freeValueInternal(self: *ParamTree, value: Value) !void {
+    fn freeValueInternal(self: *ParamTree, value: Value, allocator: Allocator) !void {
         if (value.tag == .array) {
-            try self.store.freeArray(value.data.array);
+            try self.store.freeArray(value.data.array, allocator);
         }
     }
 
@@ -488,9 +499,5 @@ pub const ParamTree = struct {
         defer self.mutex.unlock();
         self.retainInternal(self.root_handle) catch {};
         return Class.init(self, self.root_handle);
-    }
-
-    inline fn allocator(self: ParamTree) Allocator {
-        return self.store.allocator;
     }
 };

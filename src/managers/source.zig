@@ -1,4 +1,5 @@
 const std = @import("std");
+const Allocator = std.mem.Allocator;
 const DataStore = @import("../storage/datastores.zig").DataStore;
 const Source = @import("../data/source.zig").Source;
 const SourceId = @import("../core/identifiers.zig").SourceId;
@@ -17,8 +18,8 @@ pub const SourceManager = struct {
         };
     }
 
-    pub fn registerSource(self: *SourceManager, source: Source) !SourceId {
-        return self.store.sources.register(source, self.store.allocator);
+    pub fn registerSource(self: *SourceManager, source: Source, allocator: Allocator) !SourceId {
+        return self.store.sources.register(source, allocator);
     }
 
     pub fn setCurrentSource(self: *SourceManager, source_id: SourceId) void {

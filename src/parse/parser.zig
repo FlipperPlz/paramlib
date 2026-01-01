@@ -40,8 +40,7 @@ pub const ClassDefinition = struct {
         self: ClassDefinition,
         sequence: usize,
         file_buffer: *SourceBuffer,
-        parent: Class,
-        allocator: Allocator,
+        parent: Class
     ) !ClassJob {
         return ClassJob.init(
             sequence,
@@ -54,7 +53,6 @@ pub const ClassDefinition = struct {
             self.start_line,
             self.start_col,
             self.start_index,
-            allocator,
         );
     }
 };
@@ -64,8 +62,6 @@ pub const Parser = struct {
     store: *DataStore,
     mutex: std.Thread.Mutex,
     active_parsers: std.AutoHashMapUnmanaged(std.Thread.Id, ActiveParserInfo),
-    allocator: Allocator,
-    io: std.Io,
 
     job_queue: JobQueue,
     worker_threads: std.ArrayList(std.Thread),
@@ -73,34 +69,31 @@ pub const Parser = struct {
     
     sequence_counter: AtomicUsize,
 
-    pub fn init(tree: *ParamTree, num_threads: ?usize) !Parser {
+    pub fn init(tree: *ParamTree, num_threads: ?usize, allocator: Allocator, io: std.Io) !Parser {
         const thread_count = num_threads orelse @max(1, std.Thread.getCpuCount() catch 4);
-        const allocator = tree.store.allocator;
 
         var parser = Parser{
             .tree = tree,
             .store = tree.store,
             .mutex = .{},
             .active_parsers = .empty,
-            .allocator = allocator,
-            .job_queue = JobQueue.init(allocator),
+            .job_queue = JobQueue.init(),
             .worker_threads = std.ArrayList(std.Thread).empty,
             .shutdown = AtomicBool.init(false),
             .sequence_counter = AtomicUsize.init(1),
-            .io = tree.store.io,
         };
 
         try parser.worker_threads.ensureTotalCapacity(allocator, thread_count, );
         var i: usize = 0;
         while (i < thread_count) : (i += 1) {
-            const thread = try std.Thread.spawn(.{}, workerThreadFn, .{&parser});
+            const thread = try std.Thread.spawn(.{}, workerThreadFn, .{&parser, allocator, io});
             try parser.worker_threads.append(allocator, thread);
         }
 
         return parser;
     }
 
-    pub fn deinit(self: *Parser) void {
+    pub fn deinit(self: *Parser, allocator: Allocator) void {
         self.shutdown.store(true, .release);
         self.job_queue.broadcast();
 
@@ -108,30 +101,30 @@ pub const Parser = struct {
             thread.join();
         }
 
-        self.worker_threads.deinit(self.allocator);
-        self.job_queue.deinit(self.allocator);
-        self.active_parsers.deinit(self.allocator);
+        self.worker_threads.deinit(allocator);
+        self.job_queue.deinit(allocator);
+        self.active_parsers.deinit(allocator);
     }
 
-    pub fn parseFile(self: *Parser, file_path: []const u8, parent: Class) !void {
-        const file_buffer = try SourceBuffer.init(file_path, self.io, self.allocator);
-        defer file_buffer.release(self.io, self.allocator);
+    pub fn parseFile(self: *Parser, file_path: []const u8, parent: Class, allocator: Allocator, io: std.Io) !void {
+        const file_buffer = try SourceBuffer.init(file_path, io, allocator);
+        defer file_buffer.release(io, allocator);
 
-        try self.parseBuffer(file_buffer, parent);
+        try self.parseBuffer(file_buffer, file_buffer, parent, allocator, io);
     }
 
-    pub fn parseMemory(self: *Parser, name: []const u8, data: []const u8, parent: Class) !void {
-        const file_buffer = try SourceBuffer.initFromMemory(name, data, self.allocator);
-        defer file_buffer.release(self.io, self.allocator);
+    pub fn parseMemory(self: *Parser, name: []const u8, data: []const u8, parent: Class, allocator: Allocator, io: std.Io) !void {
+        const file_buffer = try SourceBuffer.initFromMemory(name, data, allocator);
+        defer file_buffer.release(undefined, self.allocator);
 
-        try self.parseBuffer(file_buffer, parent);
+        try self.parseBuffer(file_buffer, file_buffer, parent, allocator, io);
     }
 
-    pub fn registerParserThread(self: *Parser, sequence: usize) !void {
+    pub fn registerParserThread(self: *Parser, sequence: usize, allocator: Allocator) !void {
         const thread_id = std.Thread.getCurrentId();
         self.mutex.lock();
         defer self.mutex.unlock();
-        try self.active_parsers.put(self.allocator, thread_id, sequence);
+        try self.active_parsers.put(allocator, thread_id, sequence);
     }
 
     pub fn unregisterParserThread(self: *Parser) void {
@@ -189,17 +182,17 @@ pub const Parser = struct {
         }
     }
 
-    fn parseBuffer(self: *Parser, file_buffer: *SourceBuffer, parent: Class, pos: ?*SourcePosition) !void {
-        try self.registerParserThread(std.math.maxInt(usize));
+    fn parseBuffer(self: *Parser, file_buffer: *SourceBuffer, parent: Class, pos: ?*SourcePosition, allocator: Allocator, io: std.Io) !void {
+        try self.registerParserThread(std.math.maxInt(usize), allocator);
         defer self.unregisterParserThread();
 
-        const input = try file_buffer.source.contents(self.allocator, self.io);
-        defer self.allocator.free(input);
+        const input = try file_buffer.source.contents(io, allocator);
+        defer allocator.free(input);
 
-        try self.parseInput(input, file_buffer, parent, &pos);
+        try self.parseInput(input, file_buffer, parent, &pos, allocator, io);
     }
 
-    fn parseInput(self: *Parser, input: []const u8, buf: *SourceBuffer, parent: Class, pos: *SourcePosition) !void {
+    fn parseInput(self: *Parser, input: []const u8, buf: *SourceBuffer, parent: Class, pos: *SourcePosition, allocator: Allocator, io: std.Io) !void {
         var position: SourcePosition = pos orelse .{
             .index = 0,
             .line = 1,
@@ -220,9 +213,9 @@ pub const Parser = struct {
             if (std.mem.eql(u8, word, "class")) {
                 try handleClass(self, input, buf, parent, &position);
             } else if (std.mem.eql(u8, word, "delete")) {
-                try handleDelete(input, buf.source.name, parent, &position);
+                try handleDelete(input, buf.source.name, parent, &position, allocator);
             } else if (std.mem.eql(u8, word, "enum")) {
-                try handleEnum(self, input, buf, parent, &position);
+                try handleEnum(self, input, buf, parent, &position, allocator, io);
             }  else if (std.mem.eql(u8, word, "__EXEC")) {
                 try handleExecute(self, input, buf, parent, &position);
             } else {
@@ -241,7 +234,7 @@ pub const Parser = struct {
         return error.ExecuteNotImplemented;
     }
 
-    fn handleEnum(self: *Parser, input: []const u8, buf: *SourceBuffer, pos: *SourcePosition) !void {
+    fn handleEnum(self: *Parser, input: []const u8, buf: *SourceBuffer, pos: *SourcePosition, allocator: Allocator, io: std.Io) !void {
         const c = input[pos.index];
         // check len vs pos
         lexer.skipWhitespace(input, &pos);
@@ -261,7 +254,7 @@ pub const Parser = struct {
                 const value_string = try lexer.getWord(input, buf.source.name, pos, ",}", null, self.allocator);
                 enum_value = try scanner.scanFloatPlain(value_string); //catch
             }
-            try self.tree.setEnum(word, enum_value);
+            try self.tree.setEnum(word, enum_value, allocator, io);
             enum_value += 1;
 
 
@@ -281,7 +274,7 @@ pub const Parser = struct {
         }
     }
 
-    fn handleDelete(input: []const u8, debug_name: []const u8, parent: Class, pos: *SourcePosition ) !void {
+    fn handleDelete(input: []const u8, debug_name: []const u8, parent: Class, pos: *SourcePosition, allocator: Allocator ) !void {
         const target_name = lexer.getAlphaWord(input, &pos);
         lexer.skipWhitespace(input, &pos);
 
@@ -291,10 +284,10 @@ pub const Parser = struct {
         }
         pos.index += 1;
         
-        try parent.deleteClass(target_name);
+        try parent.deleteClass(target_name, allocator);
     }
 
-    fn handleClass(self: *Parser, input: []const u8, buf: *SourceBuffer, parent: Class, pos: *SourcePosition) !void {
+    fn handleClass(self: *Parser, input: []const u8, buf: *SourceBuffer, parent: Class, pos: *SourcePosition, ) !void {
         const start_index = pos.index;
         const class_def = try lexer.extractClassDefinition(input, pos);
         buf.retain();
@@ -303,11 +296,11 @@ pub const Parser = struct {
         var job_def = class_def;
         job_def.start_index = start_index;
 
-        const job = try job_def.toJob(sequence, buf, parent, self.allocator);
+        const job = try job_def.toJob(sequence, buf, parent);
         try self.job_queue.push(job);
     }
 
-    fn workerThreadFn(self: *Parser) void {
+    fn workerThreadFn(self: *Parser, allocator: Allocator, io: std.Io) void {
         while (true) {
             if (self.shutdown.load(.acquire)) break;
 
@@ -321,7 +314,7 @@ pub const Parser = struct {
             self.registerParserThread(sequence) catch continue;
             defer self.unregisterParserThread();
 
-            self.processClassJob(&job) catch |err| {
+            self.processClassJob(&job, allocator, io) catch |err| {
                 std.log.err("[{s}] Error processing class '{s}': {}", .{
                     job.debug_name,
                     job.class_name,
@@ -331,11 +324,11 @@ pub const Parser = struct {
         }
     }
 
-    fn processClassJob(self: *Parser, job: *const ClassJob) !void {
-        const class = try job.parent.getOrCreateChild(job.class_name);
+    fn processClassJob(self: *Parser, job: *const ClassJob, allocator: Allocator, io: std.Io) !void {
+        const class = try job.parent.getOrCreateChild(job.class_name, allocator, io);
 
         if (job.base_name) |base_name| {
-            class.setBase(try self.waitForBase(base_name, job));
+            class.setBase(try self.waitForBase(base_name, job), allocator, io);
         }
 
         if (job.body) |body| {
@@ -350,6 +343,8 @@ pub const Parser = struct {
                 job.file_buffer,
                 class,
                 &body_positon,
+                allocator,
+                io
             );
         }
     }

@@ -1,4 +1,6 @@
 const std = @import("std");
+const Allocator = std.mem.Allocator;
+
 const ClassId = @import("identifiers.zig").ClassId;
 const ParamId = @import("identifiers.zig").ParamId;
 const ClassHandle = @import("identifiers.zig").ClassHandle;
@@ -73,28 +75,28 @@ pub const HandleBatch = struct {
     handles: std.ArrayList(ClassHandle),
     validator: HandleValidator,
 
-    pub fn init(allocator: std.mem.Allocator, store: *DataStore) HandleBatch {
+    pub fn init(store: *DataStore) HandleBatch {
         return .{
-            .handles = std.ArrayList(ClassHandle).init(allocator),
+            .handles = std.ArrayList(ClassHandle).empty,
             .validator = HandleValidator.init(store),
         };
     }
 
-    pub fn deinit(self: *HandleBatch) void {
-        self.handles.deinit();
+    pub fn deinit(self: *HandleBatch, allocator: Allocator) void {
+        self.handles.deinit(allocator);
     }
 
-    pub fn add(self: *HandleBatch, handle: ClassHandle) !void {
-        try self.handles.append(handle);
+    pub fn add(self: *HandleBatch, handle: ClassHandle, allocator: Allocator) !void {
+        try self.handles.append(allocator, handle);
     }
 
-    pub fn validateAll(self: *HandleBatch) !std.ArrayList(ClassId) {
-        var ids = std.ArrayList(ClassId).init(self.handles.allocator);
-        errdefer ids.deinit();
+    pub fn validateAll(self: *HandleBatch, allocator: Allocator) !std.ArrayList(ClassId) {
+        var ids = std.ArrayList(ClassId).empty;
+        errdefer ids.deinit(allocator);
 
         for (self.handles.items) |handle| {
             const id = try self.validator.validateClass(handle);
-            try ids.append(id);
+            try ids.append(allocator, id);
         }
 
         return ids;
