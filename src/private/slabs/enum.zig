@@ -6,7 +6,7 @@ const slabs = @import("slabs.zig");
 pub const EnumData = struct {
     pub const Init = struct {
         io: std.Io,
-        name_idx: u32,
+        name_idx: identifiers.StringId,
         name_hash: u64,
         value: f32,
         source_id: identifiers.SourceId,
@@ -23,7 +23,7 @@ pub const EnumData = struct {
     value: f32,
     next: identifiers.EnumId,
 
-    name_idx: u32,
+    name_idx: identifiers.StringId,
     created_by: identifiers.SourceId,
     created_at: i64,
 

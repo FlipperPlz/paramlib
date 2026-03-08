@@ -56,6 +56,9 @@ pub const StorageIdentifier = union(StorageType) {
             identifiers.ClassId => StorageIdentifier {
                 .slab = .{.class = type},
             },
+            identifiers.SourceId => StorageIdentifier {
+                .slab = .{ .source = type }
+            },
             else => @compileError("No identifier type for " ++ @typeName(type)),
         };
     }
@@ -65,6 +68,7 @@ pub const ParamStorage = struct {
     arrays: memory.SlabPool(slabs.ArrayData, 1024),
     params: memory.SlabPool(slabs.ParameterData, 512),
     classes: memory.SlabPool(slabs.ClassData, 512),
+    sources: memory.SlabPool(slabs.SourceData, 256),
     enums: memory.SlabPool(slabs.EnumData, 64),
     strings: strings.StringPool,
 
@@ -72,6 +76,7 @@ pub const ParamStorage = struct {
         .arrays = .empty,
         .params = .empty,
         .classes = .empty,
+        .sources = .empty,
         .enums = .empty,
         .strings = .empty
     };
@@ -79,10 +84,11 @@ pub const ParamStorage = struct {
     pub fn allocate(self: *ParamStorage, allocator: Allocator, args: StorageInit) !struct {ptr: *anyopaque, idx: u32} {
         return switch (args) {
             .slab => |slab_init| switch (slab_init) {
-                .parameter => |d| acquireFrom(try self.params.acquire(allocator),   d, slabs.ParameterData),
+                .parameter => |d| acquireFrom(try self.params.acquire(allocator), d, slabs.ParameterData),
                 .class => |d| acquireFrom(try self.classes.acquire(allocator), d, slabs.ClassData),
-                .enumeration=> |d| acquireFrom(try self.enums.acquire(allocator),   d, slabs.EnumData),
-                .array => |d| acquireFrom(try self.arrays.acquire(allocator),  d, slabs.ArrayData),
+                .enumeration=> |d| acquireFrom(try self.enums.acquire(allocator), d, slabs.EnumData),
+                .array => |d| acquireFrom(try self.arrays.acquire(allocator), d, slabs.ArrayData),
+                .source => |d| acquireFrom(try self.sources.acquire(allocator), d, slabs.SourceData)
             },
             .string => |string_init| {
                 const interned = try self.strings.intern(allocator, string_init);
@@ -101,7 +107,8 @@ pub const ParamStorage = struct {
                 .parameter => try self.params.release(allocator, index),
                 .class => try self.classes.release(allocator, index),
                 .enumeration => try self.enums.release(allocator, index),
-                .array => try self.arrays.release(allocator, index)
+                .array => try self.arrays.release(allocator, index),
+                .source => try self.sources.release(allocator, index),
             },
             .string => self.strings.free(allocator, index)
         };
@@ -114,8 +121,9 @@ pub const ParamStorage = struct {
                 .parameter => self.params.get(index),
                 .class => self.classes.get(index),
                 .enumeration => self.enums.get(index),
-                .array => self.arrays.get(index)
-            },
+                .array => self.arrays.get(index),
+                .source => self.sources.get(index),
+        },
             .string => try self.strings.get(index),
         };
     }
@@ -148,6 +156,10 @@ pub const ParamStorage = struct {
 
     pub inline fn allocateEnum(self: *ParamStorage, allocator: Allocator, args: ?slabs.EnumData.Init) !SlabResult(slabs.EnumData) {
         return self.allocateSlab(allocator, slabs.EnumData, args);
+    }
+
+    pub inline fn allocateSource(self: *ParamStorage, allocator: Allocator, args: ?slabs.SourceData.Init) !SlabResult(slabs.SourceData) {
+        return self.allocateSlab(allocator, slabs.SourceData, args);
     }
 
     // private helpers

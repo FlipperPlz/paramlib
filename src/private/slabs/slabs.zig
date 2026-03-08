@@ -2,6 +2,7 @@ pub const ParameterData = @import("parameter.zig").ParameterData;
 pub const ClassData = @import("class.zig").ClassData;
 pub const EnumData = @import("enum.zig").EnumData;
 pub const ArrayData = @import("array.zig").ArrayData;
+pub const SourceData = @import("source.zig").SourceData;
 const identifiers = @import("../data/identifiers.zig");
 const storage = @import("../data/storage.zig");
 
@@ -10,14 +11,15 @@ pub const SlabType = enum {
     class,
     enumeration,
     array,
+    source
 };
-
 
 pub const SlabIdentifier = union(SlabType) {
     parameter: identifiers.ParameterId,
     class: identifiers.ClassId,
     enumeration: identifiers.EnumId,
     array: identifiers.ArrayId,
+    source: identifiers.SourceId,
 
     pub fn isValid(self: SlabIdentifier) bool {
         return switch (self) {
@@ -25,6 +27,7 @@ pub const SlabIdentifier = union(SlabType) {
             .class => | d | d.isValid(),
             .enumeration => | d | d.isValid(),
             .array => | d | d.isValid(),
+            .source => |d| d.isValid()
         };
     }
 
@@ -34,6 +37,7 @@ pub const SlabIdentifier = union(SlabType) {
             .class => | d | d.toIndex(),
             .enumeration => | d | d.toIndex(),
             .array => | d | d.toIndex(),
+            .source => | d | d.toIndex()
         };
     }
 
@@ -49,6 +53,7 @@ pub const SlabInit = union(SlabType) {
     class: ?ClassData.Init,
     enumeration: ?EnumData.Init,
     array: ?ArrayData.Init,
+    source: ?SourceData.Init,
 
     pub fn nullSlab(t: SlabType) SlabInit{
         return switch (t) {
@@ -56,6 +61,7 @@ pub const SlabInit = union(SlabType) {
             .class => ClassData.Init.toSlabInit(null),
             .enumeration => EnumData.Init.toSlabInit(null),
             .array => ArrayData.Init.toSlabInit(null),
+            .source => SourceData.Init.toSlabInit(null)
         };
     }
 

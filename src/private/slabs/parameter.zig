@@ -9,7 +9,7 @@ pub const ParameterData = packed struct {
     pub const Init = struct {
         io: std.Io,
         name_hash: u64,
-        name_idx:  u32,
+        name_idx:  identifiers.StringId,
         value: Value,
         parent: identifiers.ClassId,
         source: identifiers.SourceId,
@@ -26,7 +26,7 @@ pub const ParameterData = packed struct {
     value: Value,
     next: identifiers.ParameterId,
 
-    name_idx: u32,
+    name_idx: identifiers.StringId,
     parent: identifiers.ClassId,
 
     created_by: identifiers.SourceId,

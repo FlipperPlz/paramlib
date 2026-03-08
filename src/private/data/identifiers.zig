@@ -30,6 +30,7 @@ pub fn idFor(comptime datatype: type) type {
         slabs.ParameterData => ParameterId,
         slabs.EnumData => EnumId,
         slabs.ArrayData => ArrayId,
+        slabs.SourceData => SourceId,
         []const u8 => StringId,
         else => @compileError("No identifier type for " ++ @typeName(datatype)),
     };
@@ -38,10 +39,11 @@ pub fn idFor(comptime datatype: type) type {
 pub fn dataFor(comptime id: type) type {
     return switch (id) {
         ClassId => slabs.ClassData,
-        ParameterId => slabs.ParameterData ,
+        ParameterId => slabs.ParameterData,
         EnumId => slabs.EnumData,
-        ArrayId => slabs.ArrayData ,
+        ArrayId => slabs.ArrayData,
         StringId => []const u8,
+        SourceId => slabs.SourceData,
         else => @compileError("No data type for " ++ @typeName(id)),
     };
 }

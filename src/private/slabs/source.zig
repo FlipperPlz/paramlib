@@ -3,7 +3,7 @@ const Allocator = std.mem.Allocator;
 
 const ParamStorage = @import("../data/storage.zig").ParamStorage;
 const identifiers = @import("../data/identifiers.zig");
-
+const slabs = @import("slabs.zig");
 pub const SourceIndex = u64;
 
 pub const SourcePositon = struct {
@@ -19,35 +19,11 @@ const SourceType = enum {
     memory
 };
 
-pub const ReadArgs = union(SourceType) {
-    file: FileContent.Read,
-    snippet: SnippetContent.Read,
-    runtime,
-    memory,
-};
-
-pub const InitArgs = union(SourceType) {
-    file: FileContent.Init,
-    snippet: SnippetContent.Init,
-    runtime: RuntimeContent.Init,
-    memory: MemoryContent.Init,
-};
-
 pub const SourceContent = union(SourceType) {
     file: FileContent,
     memory: MemoryContent,
     runtime: RuntimeContent,
     snippet: SnippetContent,
-
-    pub fn read(comptime self: SourceContent, comptime arguments: ReadArgs) ![]const u8 {
-        std.debug.assert(@intFromEnum(self) == @intFromEnum(arguments));
-        switch (arguments) {
-            .file => |read_file| return self.file.read(read_file),
-            .snippet => |read_snippet| return self.snippet.read(read_snippet),
-            .runtime => return self.runtime.read(),
-            .memory => return self.memory.read()
-        }
-    }
 };
 
 pub const MemoryContent = struct {
@@ -121,31 +97,62 @@ pub const SnippetContent = struct {
     }
 };
 
-pub const Source = struct {
+pub const SourceData = struct {
+    pub const Init = union(SourceType) {
+        file: FileContent.Init,
+        snippet: SnippetContent.Init,
+        runtime: RuntimeContent.Init,
+        memory: MemoryContent.Init,
+
+        pub fn toSlabInit(self: ?*Init) slabs.SlabInit{
+            return slabs.SlabInit {
+                .source = self
+            };
+        }
+    };
+
+    pub const ReadArgs = union(SourceType) {
+        file: FileContent.Read,
+        snippet: SnippetContent.Read,
+        runtime,
+        memory,
+    };
+
+
     name: []const u8,
     content: SourceContent,
 
-    pub fn init(comptime arguments: InitArgs) Source {
+    pub fn init(arguments: Init) SourceData {
         switch (arguments) {
             .file => | init_file| {
                 const file = try std.Io.Dir.cwd().openFile(init_file.io, init_file.path, .{.lock = true});
-                return Source {
+                return SourceData {
                     .name = init_file.path,
                     .content = .{ .file = .{ .file = file, .path = init_file.path } },
                 };
             },
-            .snippet => |init_snippet| return Source {
+            .snippet => |init_snippet| return SourceData {
                 .name = init_snippet.name,
                 .content = init_snippet.data,
             },
-            .memory => |init_memory| return Source {
+            .memory => |init_memory| return SourceData {
                 .name = init_memory.name,
                 .content = init_memory.data,
             },
-            .runtime => |init_runtime| return Source {
+            .runtime => |init_runtime| return SourceData {
                 .name = init_runtime.name,
                 .content = init_runtime.data,
             }
+        }
+    }
+
+    pub fn read( self: SourceData, arguments: SourceData.ReadArgs) ![]const u8 {
+        std.debug.assert(@intFromEnum(self.content) == @intFromEnum(arguments));
+        switch (arguments) {
+            .file => |read_file| return self.content.file.read(read_file),
+            .snippet => |read_snippet| return self.content.snippet.read(read_snippet),
+            .runtime => return self.content.runtime.read(),
+            .memory => return self.content.memory.read()
         }
     }
 };

@@ -15,7 +15,7 @@ pub const ClassData = packed struct {
     pub const Init = struct {
         io: std.Io,
         parent: identifiers.ClassId,
-        name_idx: u32,
+        name_idx: identifiers.StringId,
         name_hash: u64,
         path_hash: u64,
         source: identifiers.SourceId,
@@ -38,7 +38,7 @@ pub const ClassData = packed struct {
     next_sibling: identifiers.ClassId,
 
     references: u32,
-    name_idx: u32,
+    name_idx: identifiers.StringId,
     path_hash: u64,
 
     created_by: identifiers.SourceId,
