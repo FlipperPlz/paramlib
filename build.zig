@@ -1,4 +1,5 @@
 const std = @import("std");
+const zon = @import("build.zig.zon");
 
 pub fn build(b: *std.Build) void {
 
@@ -10,6 +11,12 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/root.zig"),
         .target = target,
     });
+    
+    const options = b.addOptions();
+
+    options.addOption([]const u8, "version", zon.version);
+
+    mod.addOptions("config", options);
 
     const exe = b.addExecutable(.{
         .name = "paramlib",

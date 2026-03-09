@@ -28,24 +28,24 @@ pub const SourceContent = union(SourceType) {
 
 pub const MemoryContent = struct {
     pub const Init = struct {
-        name: []const u8,
-        data: MemoryContent,
+        name: identifiers.StringId,
+        data: identifiers.StringId,
     };
-    data: []const u8,
+    data: identifiers.StringId,
 
-    fn read(self: MemoryContent) []const u8 {
+    fn read(self: MemoryContent) identifiers.StringId {
         return self.data;
     }
 };
 
 pub const RuntimeContent = struct {
     pub const Init = struct {
-        name: []const u8,
-        data: RuntimeContent,
+        name: identifiers.StringId,
+        data: identifiers.StringId,
     };
-    data: []const u8,
+    data: identifiers.StringId,
 
-    fn read(self: RuntimeContent) []const u8 {
+    fn read(self: RuntimeContent) identifiers.StringId {
         return self.data;
     }
 };
@@ -54,35 +54,42 @@ pub const FileContent = struct {
     pub const Init = struct {
         allocator: Allocator,
         io: std.Io,
-        path: []const u8
+        store: *const ParamStorage,
+        path: identifiers.StringId
     };
     pub const Read = struct {
         allocator: Allocator,
-        io: std.Io
+        io: std.Io,
+        store: *const ParamStorage
     };
     file: std.Io.File,
-    path: []const u8,
+    path: identifiers.StringId,
 
-    fn read(self: FileContent, args: Read) ![]const u8 {
+    fn read(self: FileContent, args: Read) ![]identifiers.StringId {
         var reader_buffer: [1024]u8 = undefined;
         var file_reader = self.file.reader(args.io, &reader_buffer);
         var reader = file_reader.interface;
-        const content = try reader.readAlloc(args.allocator, reader.end);
+        var data = try args.store.intern(args.allocator, try reader.readAlloc(args.allocator, reader.end));
 
-        errdefer args.allocator.free(content);
+        errdefer args.store.free(args.allocator, .create(data.id));
 
-        return content;
+        return data.id;
     }
 };
 
 pub const SnippetContent = struct {
 
     pub const Init = struct {
-        data: SnippetContent,
         name: []const u8,
+        source: identifiers.SourceId,
+        start: SourcePositon,
+        end: SourcePositon,
     };
 
-    pub const Read = ParamStorage;
+    pub const Read = struct {
+        store: *const ParamStorage
+    };
+
     source: identifiers.SourceId,
     start: SourcePositon,
     end: SourcePositon,
@@ -118,32 +125,60 @@ pub const SourceData = struct {
         memory,
     };
 
-
-    name: []const u8,
+    name: identifiers.StringId,
     content: SourceContent,
 
-    pub fn init(arguments: Init) SourceData {
-        switch (arguments) {
+    pub fn init(allocator: Allocator, store: *ParamStorage, arguments: Init) SourceData {
+        return switch (arguments) {
             .file => | init_file| {
                 const file = try std.Io.Dir.cwd().openFile(init_file.io, init_file.path, .{.lock = true});
-                return SourceData {
-                    .name = init_file.path,
-                    .content = .{ .file = .{ .file = file, .path = init_file.path } },
+                const path = try store.intern(allocator, init_file.path);
+
+                SourceData {
+                    .name = path.id,
+                    .content = .{ .file = .{ .file = file, .path = path.id } },
                 };
             },
-            .snippet => |init_snippet| return SourceData {
-                .name = init_snippet.name,
-                .content = init_snippet.data,
+            .snippet => |init_snippet|{
+                const name = try store.intern(allocator, init_snippet.name);
+
+                SourceData {
+                    .name = name,
+                    .content = .{ .snippet = .{
+                        .name = name.id,
+                        .source = init_snippet.source,
+                        .start = init_snippet.start,
+                        .end = init_snippet.end
+                    }},
+                };
             },
-            .memory => |init_memory| return SourceData {
-                .name = init_memory.name,
-                .content = init_memory.data,
+            .memory => |init_memory| {
+                const name = try store.intern(allocator, init_memory.name);
+                const contents = try store.intern(allocator, init_memory.data);
+
+                SourceData {
+                    .name = name,
+                    .content = .{
+                        .memory = .{
+                            .data = contents
+                        }
+                    }
+                };
             },
-            .runtime => |init_runtime| return SourceData {
-                .name = init_runtime.name,
-                .content = init_runtime.data,
+            .runtime => |init_runtime|  {
+                const name = try store.intern(allocator, init_runtime.name);
+                const contents = try store.intern(allocator, init_runtime.data);
+
+                return SourceData {
+                    .name = name,
+                    .content = .{
+                        .runtime = .{
+                            .data = contents
+                        }
+                    }
+                };
             }
-        }
+        };
     }
 
     pub fn read( self: SourceData, arguments: SourceData.ReadArgs) ![]const u8 {

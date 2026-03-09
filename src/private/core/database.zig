@@ -3,7 +3,6 @@ const Allocator = std.mem.Allocator;
 const storage = @import("../data/storage.zig");
 const handle = @import("../data/handles.zig");
 const sources = @import("../slabs/source.zig");
-
 const identifiers = @import("../data/identifiers.zig");
 
 pub const ParamDatabase = struct {
@@ -17,12 +16,16 @@ pub const ParamDatabase = struct {
         const store: storage.ParamStorage = .empty;
         const root_name = try store.intern(allocator, "root");
         const path_hash = std.hash.Wyhash.hash(0, root_name);
+        const source_name = try store.intern(allocator, "RUNTIME");
+        const source_data = try store.intern(allocator, "");
+
         const source = try store.allocateSource(allocator, .{
             .runtime = .{
-                "runtime", //maybe use interned ids
-                "" //maybe use interned ids
+                .name = source_name.id,
+                .data = source_data.id
             }
         });
+
         const root = try store.allocateClass(allocator, .{
             .io = io,
             .parent = .invalid,
