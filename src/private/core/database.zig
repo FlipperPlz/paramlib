@@ -10,7 +10,7 @@ pub const ParamDatabase = struct {
     store: storage.ParamStorage,
     root: handle.ClassHandle,
     runtime: identifiers.SourceId,
-    firstEnum: handle.EnumHandle = .invalid,
+    enums: storage.EnumStorage,
     mutex: std.Io.Mutex = .init,
 
     pub fn init(allocator: Allocator, io: std.Io) ParamDatabase {
@@ -38,10 +38,7 @@ pub const ParamDatabase = struct {
             .store = .empty,
             .runtime = source.id,
             .root = undefined,
-            .firstEnum = .{
-                .id = .invalid,
-                .generation = 0
-            }
+            .enums = .empty
         };
         db.root.* = handle.makeHandle(db, root.id);
 
@@ -58,5 +55,4 @@ pub const ParamDatabase = struct {
         }
         self.store.deinit(allocator);
     }
-
 };

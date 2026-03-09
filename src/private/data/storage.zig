@@ -4,10 +4,68 @@ const identifiers = @import("identifiers.zig");
 const memory = @import("../utils/memory.zig");
 const strings = @import("../utils/strings.zig");
 const slabs = @import("../slabs/slabs.zig");
+const handles = @import("../data/handles.zig");
+const storage = @import("../data/storage.zig");
 
 pub const StorageType = enum {
     slab,
     string,
+};
+
+pub const EnumStorage = struct {
+    firstEnum: handles.EnumHandle,
+
+    pub const empty: EnumStorage = .{
+        .firstEnum = .invalid
+    };
+
+    pub const AddArgs = struct {
+        allocator: Allocator,
+        io: std.Io,
+        store: *storage.ParamStorage,
+        source: identifiers.SourceId,
+        name: []const u8,
+        value: f32
+    };
+
+    pub fn add(self: *EnumStorage, args: AddArgs) !void {
+        args.store.mutex.lock();
+        defer args.store.mutex.unlock();
+
+        const enum_name = try args.store.intern(args,args.allocator, args.name);
+        const name_hash =  std.hash.Wyhash.hash(0, args.name);
+        var current = self.firstEnum;
+        if(current == .invalid) {
+            self.firstEnum = try args.store.allocateEnum(args.allocator, .{
+                .io = args.io,
+                .name_idx = enum_name.id,
+                .name_hash = name_hash,
+                .value = args.value,
+                .source_id = args.source
+            }).id;
+
+            return;
+        } else {
+            while (current != .invalid) {
+                const par = args.store.retrieve(.create(current.id)).?;
+                if (par.name_hash == name_hash) {
+                    return error.EnumAlreadyExists;
+                }
+                current = par.next;
+            }
+        }
+
+        const enum_value = try args.store.allocateEnum(args.allocator, .{
+            .io = args.io,
+            .name_idx = enum_name.id,
+            .name_hash = name_hash,
+            .value = args.value,
+            .source_id = args.source
+        });
+        enum_value.ptr.next = self.firstEnum;
+
+        self.firstEnum = enum_value.id;
+    }
 };
 
 pub const StorageInit = union(StorageType) {

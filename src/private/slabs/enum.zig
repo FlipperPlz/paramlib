@@ -1,7 +1,9 @@
 const std = @import("std");
+const Allocator = std.mem.Allocator;
 const identifiers = @import("../data/identifiers.zig");
 const time = @import("../utils/time.zig");
 const slabs = @import("slabs.zig");
+
 
 pub const EnumData = struct {
     pub const Init = struct {
