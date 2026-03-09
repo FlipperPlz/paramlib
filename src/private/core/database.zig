@@ -52,9 +52,7 @@ pub const ParamDatabase = struct {
         {
             self.mutex.lock(io);
             defer self.mutex.unlock(io);
-            handle.validateHandle(self, self.root) catch {
-                @panic("Root Handle Invalid");
-            };
+            handle.validateHandle(self, self.root);
         }
         self.store.deinit(allocator);
     }

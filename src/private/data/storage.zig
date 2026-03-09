@@ -36,13 +36,13 @@ pub const EnumStorage = struct {
         const name_hash =  std.hash.Wyhash.hash(0, args.name);
         var current = self.firstEnum;
         if(current == .invalid) {
-            self.firstEnum = try args.store.allocateEnum(args.allocator, .{
+            self.firstEnum = handles.makeHandle(args.store, try args.store.allocateEnum(args.allocator, .{
                 .io = args.io,
                 .name_idx = enum_name.id,
                 .name_hash = name_hash,
                 .value = args.value,
                 .source_id = args.source
-            }).id;
+            }).id);
 
             return;
         } else {
@@ -64,7 +64,7 @@ pub const EnumStorage = struct {
         });
         enum_value.ptr.next = self.firstEnum;
 
-        self.firstEnum = enum_value.id;
+        self.firstEnum = handles.makeHandle(args.store, enum_value .id);
     }
 };
 
