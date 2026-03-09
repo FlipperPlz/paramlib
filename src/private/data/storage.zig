@@ -32,24 +32,12 @@ pub const EnumStorage = struct {
         const enum_name = try args.store.intern(args,args.allocator, args.name);
         const name_hash =  std.hash.Wyhash.hash(0, args.name);
         var current = self.firstEnum;
-        if(current == .invalid) {
-            self.firstEnum = handles.makeHandle(args.store, try args.store.allocateEnum(args.allocator, .{
-                .io = args.io,
-                .name_idx = enum_name.id,
-                .name_hash = name_hash,
-                .value = args.value,
-                .source_id = args.source
-            }).id);
-
-            return;
-        } else {
-            while (current != .invalid) {
-                const par = args.store.retrieve(.create(current.id)).?;
-                if (par.name_hash == name_hash) {
-                    return error.EnumAlreadyExists;
-                }
-                current = par.next;
+        while (current != .invalid) {
+            const par = args.store.retrieve(.create(current.id)).?;
+            if (par.name_hash == name_hash) {
+                return error.EnumAlreadyExists;
             }
+            current = par.next;
         }
 
         const enum_value = try args.store.allocateEnum(args.allocator, .{
