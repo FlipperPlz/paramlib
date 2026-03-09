@@ -29,9 +29,6 @@ pub const EnumStorage = struct {
     };
 
     pub fn add(self: *EnumStorage, args: AddArgs) !void {
-        args.store.mutex.lock();
-        defer args.store.mutex.unlock();
-
         const enum_name = try args.store.intern(args,args.allocator, args.name);
         const name_hash =  std.hash.Wyhash.hash(0, args.name);
         var current = self.firstEnum;
