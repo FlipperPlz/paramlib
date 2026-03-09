@@ -54,18 +54,22 @@ pub const ParDatabase = struct {
     }
 
     pub fn root(self: *ParDatabase) !api.ParClass {
-        const classData = try self.store.retrieve(.create(self.rootHandle.id));
         return api.ParClass {
-            ._data = @ptrCast(classData),
+            ._data = rootData(),
             .db = self
         };
     }
 
-    pub fn retrieve(self: ParDatabase, path: []const u8, comptime context: NodeType) !?RetrieveResult {
+    pub fn rootData(self: *ParDatabase) !*slabs.ClassData {
+        const classData = try self.store.retrieve(.create(self.rootHandle.id));
+        return @ptrCast(classData);
+    }
+
+    pub fn retrieve(self: ParDatabase, path: []const u8, comptime context: NodeType) !RetrieveResult {
         if(context != .array
         //|| check if path contains [x] if .none
         ) {
-            const id = self.store.path_to_id.get(hasher.hash(path));
+            const id = self.store.path_to_id.get(hasher.hash(path)) orelse return error.PathNotFound;
             return switch (context) {
                 .parameter => try self.retrieveItem(slabs.ParameterData, id),
                 .class => try self.retrieveItem(slabs.ClassData, id),
@@ -76,19 +80,28 @@ pub const ParDatabase = struct {
         }
     }
 
-    pub fn create(
-        self: ParDatabase,allocator: Allocator, io: std.Io,
-        source: ?identifiers.SourceId, path: []const u8, comptime DataType: type, create_init: type.Init
-    ) !RetrieveResult {
+    pub fn create(self: *const ParDatabase, allocator: Allocator, io: std.Io, path: []const u8, comptime DataType: type, create_init: type.Init) !RetrieveResult {
         self.mutex.lock(io);
         defer self.mutex.unlock(io);
-
         switch (DataType) {
             slabs.ArrayData => {
 
             },
             slabs.ParameterData => {
-
+                const data = try self.rootData();
+                const param = try data.params.create(.{
+                    .allocator = allocator,
+                    .io = io,
+                    .store = self.store,
+                    .source = create_init.source,
+                    .path = path,
+                    .value = create_init.value
+                });
+                return @unionInit(RetrieveResult, "parameter", DataType.Handle {
+                    ._handle = try handles.makeHandle(self.store, param.id),
+                    ._data = param.ptr,
+                    .db = self,
+                });
             },
             slabs.ClassData => {
 
@@ -98,7 +111,7 @@ pub const ParDatabase = struct {
                     .allocator = allocator,
                     .io = io,
                     .name = path,
-                    .source = source orelse self.runtime,
+                    .source = create_init.source_id orelse self.runtime,
                     .store = &self.store,
                     .value = create_init.value
                 });
@@ -112,7 +125,7 @@ pub const ParDatabase = struct {
         }
     }
 
-    fn retrieveItem(self: ParDatabase, comptime T: type, id: anytype) !?RetrieveResult {
+    fn retrieveItem(self: ParDatabase, comptime T: type, id: anytype) !RetrieveResult {
         const ItemId = T.Id;
         const Handle = T.Handle;
 

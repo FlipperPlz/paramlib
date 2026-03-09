@@ -41,7 +41,7 @@ pub const ClassData = packed struct {
     path_hash: u64,
     alive: bool,
     name_hash: u64,
-    first_param: identifiers.ParameterId,
+    params: slabs.ParameterData.Storage,
     access: ClassAccess,
 
     parent: identifiers.ClassId,
@@ -66,7 +66,7 @@ pub const ClassData = packed struct {
             .generation = 1,
             .path_hash = undefined,
             .name_hash = args.name_hash,
-            .first_param = .invalid,
+            .params = .empty,
             .flags = .{},
             .parent = args.parent,
             .base = .invalid,

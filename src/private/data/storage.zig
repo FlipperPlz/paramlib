@@ -13,46 +13,6 @@ pub const StorageType = enum {
     string,
 };
 
-pub const EnumStorage = struct {
-    firstEnum: handles.EnumHandle,
-
-    pub const empty: EnumStorage = .{
-        .firstEnum = .invalid
-    };
-
-    pub const CreateArgs = struct {
-        allocator: Allocator,
-        io: std.Io,
-        store: *storage.ParamStorage,
-        source: identifiers.SourceId,
-        name: []const u8,
-        value: f32
-    };
-
-    pub fn create(self: *EnumStorage, args: CreateArgs) !struct {id: identifiers.EnumId, ptr: *slabs.EnumData} {
-        const enum_name = try args.store.intern(args,args.allocator, args.name);
-        const name_hash =  hasher.hash(enum_name.ptr);
-        var current = self.firstEnum;
-        while (current != .invalid) {
-            const par = try args.store.retrieve(.create(current.id)).?;
-            if (par.name_hash == name_hash) {
-                return error.EnumAlreadyExists;
-            }
-            current = par.next;
-        }
-
-        const enum_value = try args.store.allocateEnum(args.allocator, .{
-            .io = args.io,
-            .name_idx = enum_name.id,
-            .name_hash = name_hash,
-            .value = args.value,
-            .source_id = args.source
-        });
-        enum_value.ptr.next = self.firstEnum;
-        self.firstEnum = try handles.makeHandle(args.store, enum_value.id);
-        return .{ .id = enum_value.id, .ptr = enum_value.ptr};
-    }
-};
 
 pub const StorageInit = union(StorageType) {
     slab: slabs.SlabInit,
@@ -249,7 +209,7 @@ pub const ParamStorage = struct {
 
     // private helpers
     inline fn allocateSlab(self: *ParamStorage, allocator: Allocator, comptime datatype: type, args: ?datatype.Init) !SlabResult(datatype) {
-        const init = StorageInit{ .slab = slabs.SlabInit.from(datatype, args) };
+        const init = StorageInit{ .slab = .from(datatype, args) };
         const allocated = try self.allocate(allocator, init);
         return .{
             .ptr = @ptrCast(@alignCast(allocated.ptr)),
