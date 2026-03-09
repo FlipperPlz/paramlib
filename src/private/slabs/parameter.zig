@@ -1,13 +1,23 @@
 const std = @import("std");
-
+const Allocator = std.mem.Allocator;
+const Value = @import("../data/value.zig").Value;
 const time = @import("../utils/time.zig");
 const identifiers = @import("../data/identifiers.zig");
 const slabs = @import("slabs.zig");
-const Value = @import("../data/value.zig").Value;
+const storage = @import("../data/storage.zig");
+const paths = @import("../utils/paths.zig");
+const hasher = @import("../utils/hasher.zig");
 
 pub const ParameterData = packed struct {
     pub const Init = struct {
         io: std.Io,
+        path: union {
+            create: struct {
+                allocator: Allocator,
+                store: *storage.ParamStorage
+            },
+            created: u64
+        },
         name_hash: u64,
         name_idx:  identifiers.StringId,
         value: Value,
@@ -26,6 +36,7 @@ pub const ParameterData = packed struct {
     value: Value,
     next: identifiers.ParameterId,
 
+    path_hash: u64,
     name_idx: identifiers.StringId,
     parent: identifiers.ClassId,
 
@@ -39,9 +50,10 @@ pub const ParameterData = packed struct {
     ) ParameterData {
         const timestamp = time.getTimeMs(args.io, std.Io.Clock.real);
 
-        return .{
+        const param: ParameterData = .{
             .alive = true,
             .generation = 1,
+            .path_hash = undefined,
             .name_hash = args.name_hash,
             .value = args.value,
             .next = .invalid,
@@ -52,6 +64,15 @@ pub const ParameterData = packed struct {
             .modified_by = args.source,
             .modified_at = timestamp
         };
+
+        switch (args.path) {
+            .create => |path_args| {
+                const path = paths.getPath(path_args.allocator, path_args.store, param);
+                param.path_hash = hasher.hash(path);
+            },
+            .created => |d| param.path_hash = d
+        }
+        return param;
     }
 
     pub fn markModified(self: *ParameterData, source: identifiers.SourceId, io: std.Io) void {

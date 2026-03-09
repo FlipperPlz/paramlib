@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const Value = union {
+pub const ValueData = union {
     i32: i32,
     i64: i64,
     f32: f32,
@@ -64,5 +64,10 @@ pub const Value = union {
             .array => try writer.print("array(idx:{})", .{self.array}),
         }
     }
+};
+
+pub const Value = struct {
+    data: ValueData,
+    path_hash: u64
 };
 

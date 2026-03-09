@@ -3,6 +3,7 @@ const Allocator = std.mem.Allocator;
 const identifiers = @import("identifiers.zig");
 const memory = @import("../utils/memory.zig");
 const strings = @import("../utils/strings.zig");
+const hasher = @import("../utils/hasher.zig");
 const slabs = @import("../slabs/slabs.zig");
 const handles = @import("../data/handles.zig");
 const storage = @import("../data/storage.zig");
@@ -30,10 +31,10 @@ pub const EnumStorage = struct {
 
     pub fn add(self: *EnumStorage, args: AddArgs) !void {
         const enum_name = try args.store.intern(args,args.allocator, args.name);
-        const name_hash =  std.hash.Wyhash.hash(0, args.name);
+        const name_hash =  hasher.hash(enum_name.ptr);
         var current = self.firstEnum;
         while (current != .invalid) {
-            const par = args.store.retrieve(.create(current.id)).?;
+            const par = try args.store.retrieve(.create(current.id)).?;
             if (par.name_hash == name_hash) {
                 return error.EnumAlreadyExists;
             }
@@ -49,7 +50,7 @@ pub const EnumStorage = struct {
         });
         enum_value.ptr.next = self.firstEnum;
 
-        self.firstEnum = handles.makeHandle(args.store, enum_value .id);
+        self.firstEnum = try handles.makeHandle(args.store, enum_value.id);
     }
 };
 
@@ -114,7 +115,7 @@ pub const ParamStorage = struct {
     sources: memory.SlabPool(slabs.SourceData, 256),
     enums: memory.SlabPool(slabs.EnumData, 64),
     strings: strings.StringPool,
-    path_to_class: std.AutoHashMapUnmanaged(u64, identifiers.ClassId),
+    path_to_id: std.AutoHashMapUnmanaged(u64, u32),
 
     pub const empty: ParamStorage = .{
         .arrays = .empty,
@@ -141,17 +142,27 @@ pub const ParamStorage = struct {
         self.enums.deinit(allocator);
         self.strings.deinit(allocator);
         self.sources.deinit(allocator);
-        self.path_to_class.deinit(allocator);
+        self.path_to_id.deinit(allocator);
     }
 
     pub fn allocate(self: *ParamStorage, allocator: Allocator, args: StorageInit) !struct {ptr: *anyopaque, idx: u32} {
         return switch (args) {
             .slab => |slab_init| switch (slab_init) {
-                .parameter => |d| acquireFrom(try self.params.acquire(allocator), d, slabs.ParameterData),
-                .class => |d| acquireFrom(try self.classes.acquire(allocator), d, slabs.ClassData),
-                .enumeration=> |d| acquireFrom(try self.enums.acquire(allocator), d, slabs.EnumData),
-                .array => |d| acquireFrom(try self.arrays.acquire(allocator), d, slabs.ArrayData),
-                .source => |d| acquireFrom(try self.sources.acquire(allocator), d, slabs.SourceData)
+                .parameter => |d| self.acquireFrom(
+                    allocator, try self.params.acquire(allocator), d, slabs.ParameterData
+                ),
+                .class => |d| self.acquireFrom(
+                    allocator, try self.classes.acquire(allocator), d, slabs.ClassData
+                ),
+                .enumeration=> |d| self.acquireFrom(
+                    allocator, try self.enums.acquire(allocator), d, slabs.EnumData
+                ),
+                .array => |d| self.acquireFrom(
+                    allocator, try self.arrays.acquire(allocator), d, slabs.ArrayData
+                ),
+                .source => |d| self.acquireFrom(
+                    allocator, try self.sources.acquire(allocator), d, slabs.SourceData
+                )
             },
             .string => |string_init| {
                 const interned = try self.strings.intern(allocator, string_init);
@@ -165,6 +176,7 @@ pub const ParamStorage = struct {
 
     pub fn free(self: *ParamStorage, allocator: Allocator, id: StorageIdentifier) !void {
         const index = id.toIndex() orelse return error.InvalidId;
+        //todo remove path from path_to_id
         return switch (id) {
             .slab => |slab_id| return switch (slab_id) {
                 .parameter => try self.params.release(allocator, index),
@@ -225,6 +237,16 @@ pub const ParamStorage = struct {
         return self.allocateSlab(allocator, slabs.SourceData, args);
     }
 
+    fn acquireFrom(self: *ParamStorage, allocator: Allocator, result: anytype, init_data: anytype, comptime DataType: type) struct { ptr: *anyopaque, id: StorageIdentifier } {
+        if (init_data) |data|
+            result.ptr.* = DataType.init(data);
+
+        if (result.ptr.path_hash) |path_hash|
+            self.path_to_id.put(allocator, path_hash, result.index);
+
+        return .{ .ptr = result.ptr, .id = result.index };
+    }
+
     // private helpers
     inline fn allocateSlab(self: *ParamStorage, allocator: Allocator, comptime datatype: type, args: ?datatype.Init) !SlabResult(datatype) {
         const init = StorageInit{ .slab = slabs.SlabInit.from(datatype, args) };
@@ -243,7 +265,4 @@ fn SlabResult(comptime DataType: type) type {
     };
 }
 
-fn acquireFrom(result: anytype, init_data: anytype, comptime DataType: type) struct { ptr: *anyopaque, id: StorageIdentifier } {
-    if (init_data) |data| result.ptr.* = DataType.init(data);
-    return .{ .ptr = result.ptr, .id = result.index };
-}
+
