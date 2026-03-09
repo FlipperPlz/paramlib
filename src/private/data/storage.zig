@@ -71,6 +71,7 @@ pub const ParamStorage = struct {
     sources: memory.SlabPool(slabs.SourceData, 256),
     enums: memory.SlabPool(slabs.EnumData, 64),
     strings: strings.StringPool,
+    path_to_class: std.AutoHashMapUnmanaged(u64, identifiers.ClassId),
 
     pub const empty: ParamStorage = .{
         .arrays = .empty,
@@ -78,8 +79,27 @@ pub const ParamStorage = struct {
         .classes = .empty,
         .sources = .empty,
         .enums = .empty,
-        .strings = .empty
+        .strings = .empty,
+        .path_to_class = .empty
     };
+
+    pub fn deinit(self: *ParamStorage, allocator: Allocator) void {
+        const array_stats = self.arrays.getStats();
+        for (0..array_stats.total_capacity) |i| {
+            const idx: u32 = @intCast(i);
+            const arr = self.arrays.get(idx);
+            if (i < array_stats.used_count) {
+                arr.deinit(allocator);
+            }
+        }
+        self.classes.deinit(allocator);
+        self.params.deinit(allocator);
+        self.arrays.deinit(allocator);
+        self.enums.deinit(allocator);
+        self.strings.deinit(allocator);
+        self.sources.deinit(allocator);
+        self.path_to_class.deinit(allocator);
+    }
 
     pub fn allocate(self: *ParamStorage, allocator: Allocator, args: StorageInit) !struct {ptr: *anyopaque, idx: u32} {
         return switch (args) {

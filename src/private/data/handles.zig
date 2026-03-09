@@ -40,60 +40,52 @@ pub fn Handle(comptime Id: type) type {
     };
 }
 
-pub const HandleValidator = struct {
-    store: *storage.ParamStorage,
+pub fn validateHandle(store: *const storage.ParamStorage, handle: type) !@TypeOf(handle.id) {
+    if (!handle.id.isValid()) return error.InvalidHandle;
 
-    pub fn init(store: *storage.ParamStorage) HandleValidator {
-        return .{ .store = store };
-    }
+    const data = store.retrieve(.create(handle.id)) orelse return error.InvalidHandle;
 
-    pub fn validateHandle(self: *const HandleValidator, comptime handle: type) !@TypeOf(handle.id) {
-        if (!handle.id.isValid()) return error.InvalidHandle;
+    if (data.generation != handle.generation) return error.StaleHandle;
+    if (!data.alive) return error.DeadData;
 
-        const data = self.store.retrieve(.create(handle.id)) orelse return error.InvalidHandle;
+    return handle.id;
+}
 
-        if (data.generation != handle.generation) return error.StaleHandle;
-        if (!data.alive) return error.DeadData;
+pub fn isValid(store: *const storage.ParamStorage, handle: type) bool {
+    if (!handle.id.isValid()) return false;
 
-        return handle.id;
-    }
+    const data: identifiers.dataFor(handle.id) = store.retrieve(handle.id) orelse return false;
 
-    pub fn isValid(self: *const HandleValidator, comptime handle: type) bool {
-        if (!handle.id.isValid()) return false;
+    if (data.generation != handle.generation) return false;
+    if (!data.alive) return false;
 
-        const data: identifiers.dataFor(handle.id) = self.store.retrieve(handle.id) orelse return false;
+    return true;
+}
 
-        if (data.generation != handle.generation) return false;
-        if (!data.alive) return false;
+pub fn getGeneration(store: *const storage.ParamStorage, comptime handle: type) ?u32 {
+    const data: identifiers.dataFor(handle.id) = store.retrieve(handle.id) orelse return null;
+    return data.generation;
+}
 
-        return true;
-    }
+pub fn makeHandle(store: *const storage.ParamStorage, comptime id: type) !Handle(id) {
+    const data: identifiers.dataFor(id) = store.retrieve(.create(id));
 
-    pub fn getGeneration(self: *const HandleValidator, comptime handle: type) ?u32 {
-        const data: identifiers.dataFor(handle.id) = self.store.retrieve(handle.id) orelse return null;
-        return data.generation;
-    }
+    return Handle(id) {
+        .id = id,
+        .generation = data.generation
+    };
+}
 
-    pub fn makeHandle(self: *const HandleValidator, comptime id: type) !Handle(id) {
-        const data: identifiers.dataFor(id) = self.store.retrieve(.create(id));
+pub fn refreshHandle(store: *const storage.ParamStorage, comptime handle: type) !handle {
+    const data: identifiers.dataFor(handle.id) = store.retrieve(handle.id) orelse return error.InvalidHandle;
+    if (!data.alive) return error.DeadData;
 
-        return Handle(id) {
-            .id = id,
-            .generation = data.generation
-        };
-    }
+    return ClassHandle{
+        .id = handle.id,
+        .generation = data.generation,
+    };
+}
 
-    pub fn refreshHandle(self: *const HandleValidator, comptime handle: type) !handle {
-        const data: identifiers.dataFor(handle.id) = self.store.retrieve(handle.id) orelse return error.InvalidHandle;
-        if (!data.alive) return error.DeadData;
-
-        return ClassHandle{
-            .id = handle.id,
-            .generation = data.generation,
-        };
-    }
-
-    pub fn eql(a: type, b: type ) bool {
-        return a.id == b.id;
-    }
-};
+pub fn eql(a: type, b: type ) bool {
+    return a.id == b.id;
+}

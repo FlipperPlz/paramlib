@@ -32,17 +32,31 @@ pub const ParamDatabase = struct {
             .source = source.id,
         });
 
-        return .{
+        try store.path_to_class.put(allocator, path_hash, root.id);
+
+        const db: ParamDatabase = .{
             .store = .empty,
             .runtime = source.id,
-            .root = .{
-                .id = root.id,
-                .generation = 1
-            },
+            .root = undefined,
             .firstEnum = .{
                 .id = .invalid,
                 .generation = 0
             }
         };
+        db.root.* = handle.makeHandle(db, root.id);
+
+        return db;
     }
+
+    pub fn deinit(self: *ParamDatabase, allocator: Allocator, io: std.Io) void {
+        {
+            self.mutex.lock(io);
+            defer self.mutex.unlock(io);
+            handle.validateHandle(self, self.root) catch {
+                @panic("Root Handle Invalid");
+            };
+        }
+        self.store.deinit(allocator);
+    }
+
 };
