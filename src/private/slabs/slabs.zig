@@ -15,7 +15,7 @@ pub const SlabType = enum {
 };
 
 pub const SlabIdentifier = union(SlabType) {
-    parameter: identifiers.ParameterId,
+    parameter: ParameterData.Id,
     class: identifiers.ClassId,
     enumeration: identifiers.EnumId,
     array: identifiers.ArrayId,

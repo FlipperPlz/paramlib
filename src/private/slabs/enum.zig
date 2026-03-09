@@ -3,9 +3,11 @@ const Allocator = std.mem.Allocator;
 const identifiers = @import("../data/identifiers.zig");
 const time = @import("../utils/time.zig");
 const slabs = @import("slabs.zig");
+const handles = @import("../data/handles.zig");
 
-
-pub const EnumData = struct {
+pub const EnumData = packed struct {
+    pub const Id = identifiers.EnumId;
+    pub const Handle = handles.ParameterHandle;
     pub const Init = struct {
         io: std.Io,
         name_idx: identifiers.StringId,

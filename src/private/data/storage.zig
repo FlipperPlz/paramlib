@@ -20,7 +20,7 @@ pub const EnumStorage = struct {
         .firstEnum = .invalid
     };
 
-    pub const AddArgs = struct {
+    pub const CreateArgs = struct {
         allocator: Allocator,
         io: std.Io,
         store: *storage.ParamStorage,
@@ -29,7 +29,7 @@ pub const EnumStorage = struct {
         value: f32
     };
 
-    pub fn add(self: *EnumStorage, args: AddArgs) !void {
+    pub fn create(self: *EnumStorage, args: CreateArgs) !struct {id: identifiers.EnumId, ptr: *slabs.EnumData} {
         const enum_name = try args.store.intern(args,args.allocator, args.name);
         const name_hash =  hasher.hash(enum_name.ptr);
         var current = self.firstEnum;
@@ -49,8 +49,8 @@ pub const EnumStorage = struct {
             .source_id = args.source
         });
         enum_value.ptr.next = self.firstEnum;
-
         self.firstEnum = try handles.makeHandle(args.store, enum_value.id);
+        return .{ .id = enum_value.id, .ptr = enum_value.ptr};
     }
 };
 

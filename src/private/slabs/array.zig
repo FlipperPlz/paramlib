@@ -3,9 +3,12 @@ const std = @import("std");
 const time = @import("../utils/time.zig");
 const identifiers = @import("../data/identifiers.zig");
 const slabs = @import("slabs.zig");
+const handles = @import("../data/handles.zig");
 const Value = @import("../data/value.zig");
 
-pub const ArrayData = struct {
+pub const ArrayData = packed struct {
+    pub const Id = identifiers.ArrayId;
+    pub const Handle = handles.ArrayHandle;
     pub const Init = struct {
         io: std.Io,
         values: []Value,

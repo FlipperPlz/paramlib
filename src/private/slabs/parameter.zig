@@ -7,8 +7,11 @@ const slabs = @import("slabs.zig");
 const storage = @import("../data/storage.zig");
 const paths = @import("../utils/paths.zig");
 const hasher = @import("../utils/hasher.zig");
+const handles = @import("../data/handles.zig");
 
 pub const ParameterData = packed struct {
+    pub const Id = identifiers.ParameterId;
+    pub const Handle = handles.ParameterHandle;
     pub const Init = struct {
         io: std.Io,
         path: union {

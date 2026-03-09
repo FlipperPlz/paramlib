@@ -6,7 +6,7 @@ const identifiers = @import("../data/identifiers.zig");
 const slabs = @import("slabs.zig");
 pub const SourceIndex = u64;
 
-pub const SourcePositon = struct {
+pub const SourcePosition = struct {
     index: SourceIndex,
     line: u32,
     column: u32,
@@ -82,8 +82,8 @@ pub const SnippetContent = struct {
     pub const Init = struct {
         name: []const u8,
         source: identifiers.SourceId,
-        start: SourcePositon,
-        end: SourcePositon,
+        start: SourcePosition,
+        end: SourcePosition,
     };
 
     pub const Read = struct {
@@ -91,8 +91,8 @@ pub const SnippetContent = struct {
     };
 
     source: identifiers.SourceId,
-    start: SourcePositon,
-    end: SourcePositon,
+    start: SourcePosition,
+    end: SourcePosition,
 
     fn read(
         self: SnippetContent,
@@ -105,6 +105,8 @@ pub const SnippetContent = struct {
 };
 
 pub const SourceData = struct {
+    pub const Id = identifiers.SourceId;
+
     pub const Init = union(SourceType) {
         file: FileContent.Init,
         snippet: SnippetContent.Init,

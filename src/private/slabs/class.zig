@@ -15,6 +15,7 @@ pub const ClassAccess = enum(u2) {
 };
 
 pub const ClassData = packed struct {
+    pub const Id = identifiers.ClassId;
     pub const Init = struct {
         path: union {
             create: struct {

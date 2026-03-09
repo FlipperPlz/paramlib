@@ -8,42 +8,6 @@ const identifiers = @import("../private/data/identifiers.zig");
 const values = @import("../private/data/value.zig");
 const hasher = @import("../private/utils/hasher.zig");
 const paths = @import("../private/utils/paths.zig");
-pub const RetrieveType = enum {
-    none,
-    class,
-    parameter,
-    arrayValue,
-};
-
-pub const RetrieveResult = union(RetrieveType) {
-    class: ParClass,
-    parameter: ParParameter,
-    arrayValue: values.Value,
-
-    pub fn classOrNull(self: *RetrieveResult) ?ParClass {
-        return switch (self) {
-            .class => |class| class,
-            .arrayValue => null,
-            .parameter => null
-        };
-    }
-
-    pub fn parameterOrNull(self: *RetrieveResult) ?ParParameter {
-        return switch (self) {
-            .class => null,
-            .arrayValue => null,
-            .parameter => |class| class
-        };
-    }
-
-    pub fn arrayValueOrNull(self: *RetrieveResult) ?values.Value {
-        return switch (self) {
-            .class => null,
-            .arrayValue => |value| value,
-            .parameter => null,
-        };
-    }
-};
 
 pub const ParClass = struct {
     _handle: handles.ClassHandle,
@@ -54,12 +18,38 @@ pub const ParClass = struct {
         self: ParClass,
         allocator: Allocator,
         path: []const u8,
-        comptime context: RetrieveType
+        comptime context: NodeType
     ) !?RetrieveResult {
         const currentPath = paths.getPath(allocator, self.db.store, self);
         const fullPath = try std.fmt.allocPrint(allocator, "{}.{}", .{currentPath, path});
         return self.db.retrieve(fullPath, context);
     }
+
+    pub fn create(
+        self: ParClass,
+        allocator: Allocator,
+        io: std.Io,
+        source: ?identifiers.SourceId,
+        path: []const u8,
+        comptime DataType: type,
+        create_init: type.Init
+    ) !RetrieveResult {
+        const currentPath = paths.getPath(allocator, self.db.store, self);
+        const fullPath = try std.fmt.allocPrint(allocator, "{}.{}", .{currentPath, path});
+        return self.db.create(allocator, io, source, fullPath, DataType, create_init);
+    }
+};
+
+pub const ParArray = struct {
+    _data: *slabs.ArrayData,
+    _handle: handles.ArrayHandle,
+    db: *ParDatabase,
+};
+
+pub const ParEnum = struct {
+    _data: *slabs.EnumData,
+    _handle: handles.EnumHandle,
+    db: *ParDatabase,
 };
 
 pub const ParParameter = struct {
@@ -119,68 +109,122 @@ pub const ParDatabase = struct {
         };
     }
 
-    //TODO
-    pub fn retrieve(self: ParDatabase, path: []const u8, comptime context: RetrieveType) !?RetrieveResult {
-        if(context != .arrayValue
+    pub fn retrieve(
+        self: ParDatabase,
+        path: []const u8,
+        comptime context: NodeType
+    ) !?RetrieveResult {
+        if(context != .array
         //|| check if path contains [x] if .none
         ) {
             const id = self.store.path_to_id.get(hasher.hash(path));
             return switch (context) {
-                .parameter => {
-                    const paramId = identifiers.ParameterId.fromIndex(id);
-                    const paramData: *slabs.ParameterData =
-                        try self.store.retrieve(.create(paramId));
-                    return RetrieveResult {
-                        .parameter = ParParameter {
-                            ._handle = handles.makeHandle(self.store, paramId),
-                            ._data = paramData,
-                            .db = self
-                        }
-                    };
-                },
-                .class => {
-                    const classId = identifiers.ClassId.fromIndex(id);
-                    const classData: *slabs.ClassData =
-                        try self.store.retrieve(.create(classId));
-                    return RetrieveResult {
-                        .class = ParClass {
-                            ._handle = handles.makeHandle(self.store, classId),
-                            ._data = classData,
-                            .db = self
-                        }
-                    };
-                },
-                .none => {
-                    //first look for params
-                    {
-                        const paramId = identifiers.ParameterId.fromIndex(id);
-                        if (self.store.retrieve(.create(paramId))) |paramVoid| {
-                            return RetrieveResult {
-                                .parameter = ParParameter {
-                                    ._handle = handles.makeHandle(self.store, paramId),
-                                    ._data = paramVoid,
-                                    .db = self
-                                }
-                            };
-                        }
-                    }
-                    //then classes
-                    {
-                        const classId = identifiers.ClassId.fromIndex(id);
-                        if (self.store.retrieve(.create(classId))) |classVoid| {
-                            return RetrieveResult {
-                                .parameter = ParClass {
-                                    ._handle = handles.makeHandle(self.db, classId),
-                                    ._data = classVoid,
-                                    .db = self
-                                }
-                            };
-                        }
-                    }
-
-                    return null;
-                }
+                .parameter => try self.retrieveItem(slabs.ParameterData, id),
+                .class => try self.retrieveItem(slabs.ClassData, id),
+                .array => try self.retrieveItem(slabs.ArrayData, id),
+                .none => (try self.retrieveItem(slabs.ParameterData, id)) orelse
+                    (try self.retrieveItem(slabs.ClassData, id)),
             };
         }
+    }
+
+    pub fn create(self: ParDatabase,
+        allocator: Allocator,
+        io: std.Io,
+        source: ?identifiers.SourceId,
+        path: []const u8,
+        comptime DataType: type,
+        create_init: type.Init
+    ) !RetrieveResult {
+        self.mutex.lock(io);
+        defer self.mutex.unlock(io);
+
+        switch (DataType) {
+            slabs.ArrayData => {
+
+            },
+            slabs.ParameterData => {
+
+            },
+            slabs.ClassData => {
+
+            },
+            slabs.EnumData => {
+                const data = try self.enums.create(.{
+                    .allocator = allocator,
+                    .io = io,
+                    .name = path,
+                    .source = source orelse self.runtime,
+                    .store = &self.store,
+                    .value = create_init.value
+                });
+                return @unionInit(RetrieveResult, "enum", DataType.Handle {
+                    ._handle = try handles.makeHandle(self.store, data.id),
+                    ._data = data.ptr,
+                    .db = self,
+                });
+            },
+            else => @compileError("unsupported type: " ++ @typeName(DataType)),
+        }
+    }
+
+    fn retrieveItem(self: ParDatabase, comptime T: type, id: anytype) !?RetrieveResult {
+        const ItemId = T.Id;
+        const Handle = T.Handle;
+
+        const field = switch (T) {
+            slabs.ParameterData => .{.name = "parameter", .handle = ParParameter },
+            slabs.ClassData =>  .{.name = "class", .handle = ParClass },
+            slabs.ArrayData =>  .{.name = "array", .handle = ParArray },
+            slabs.EnumData => .{.name = "enum", .handle = ParEnum },
+            else => @compileError("unsupported type: " ++ @typeName(T)),
+        };
+
+        const itemId = ItemId.fromIndex(id);
+        const itemData: *T = try self.store.retrieve(.create(itemId));
+        return @unionInit(RetrieveResult, field, Handle {
+            ._handle = try handles.makeHandle(self.store, itemId),
+            ._data = itemData,
+            .db = self,
+        });
+    }
+
+};
+
+
+pub const NodeType = enum {
+    none,
+    class,
+    parameter,
+    array,
+};
+
+pub const RetrieveResult = union(NodeType) {
+    class: ParClass,
+    parameter: ParParameter,
+    arrayValue: ParArray,
+
+    pub fn classOrNull(self: *RetrieveResult) ?ParClass {
+        return switch (self) {
+            .class => |class| class,
+            .arrayValue => null,
+            .parameter => null
+        };
+    }
+
+    pub fn parameterOrNull(self: *RetrieveResult) ?ParParameter {
+        return switch (self) {
+            .class => null,
+            .arrayValue => null,
+            .parameter => |class| class
+        };
+    }
+
+    pub fn arrayValueOrNull(self: *RetrieveResult) ?ParArray {
+        return switch (self) {
+            .class => null,
+            .arrayValue => |value| value,
+            .parameter => null,
+        };
     }
 };
