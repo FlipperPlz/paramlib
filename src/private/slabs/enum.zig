@@ -1,92 +1,95 @@
-const std = @import("std");
-const Allocator = std.mem.Allocator;
-const identifiers = @import("../data/identifiers.zig");
-const time = @import("../utils/time.zig");
-const slabs = @import("slabs.zig");
-const handles = @import("../data/handles.zig");
-const storage = @import("../data/storage.zig");
-const hasher = @import("../utils/hasher.zig");
+const std         = @import("std");
 
-pub const EnumStorage = struct {
-    firstEnum: handles.EnumHandle,
+const identifiers = @import("../utils/identifiers.zig");
+const handles     = @import("../utils/handles.zig");
+const paths       = @import("../utils/paths.zig");
+const source      = @import("source.zig");
+const memory      = @import("../utils/memory.zig");
+const time        = @import("../utils/time.zig");
+const storage     = @import("../data/storage.zig");
 
-    pub const empty: EnumStorage = .{
-        .firstEnum = .invalid
-    };
+pub const EnumSlabSize   = 64;
+pub const EnumIdentifier = identifiers.TypedId("Enum");
+pub const EnumHandle     = handles.Handle(EnumIdentifier);
 
-    pub const CreateArgs = struct {
-        allocator: Allocator,
-        io: std.Io,
-        store: *storage.ParamStorage,
-        source: identifiers.SourceId,
-        name: []const u8,
-        value: f32
-    };
-
-    pub fn create(self: *EnumStorage, args: CreateArgs) !struct {id: identifiers.EnumId, ptr: *slabs.EnumData} {
-        const enum_name = try args.store.intern(args,args.allocator, args.name);
-        const name_hash =  hasher.hash(enum_name.ptr);
-        var current = self.firstEnum;
-        while (current != .invalid) {
-            const par = try args.store.retrieve(.create(current.id)).?;
-            if (par.name_hash == name_hash) {
-                return error.EnumAlreadyExists;
-            }
-            current = par.next;
-        }
-
-        const enum_value = try args.store.allocateEnum(args.allocator, .{
-            .io = args.io,
-            .name_idx = enum_name.id,
-            .name_hash = name_hash,
-            .value = args.value,
-            .source_id = args.source
-        });
-        enum_value.ptr.next = self.firstEnum;
-        self.firstEnum = try handles.makeHandle(args.store, enum_value.id);
-        return .{ .id = enum_value.id, .ptr = enum_value.ptr};
-    }
+pub const EnumInit = struct {
+    name:     []const u8,
+    value:    f32,
+    nameHash: ?u64                         = null,
+    nameIdx:  ?paths.PathSegmentIdentifier = null,
+    source:   source.SourceHandle,
 };
 
-pub const EnumData = packed struct {
-    pub const Id = identifiers.EnumId;
-    pub const Storage = EnumStorage;
-    pub const Handle = handles.ParameterHandle;
-    pub const Init = struct {
-        io: std.Io,
-        name_idx: identifiers.StringId,
-        name_hash: u64,
-        value: f32,
-        source_id: identifiers.SourceId,
+pub fn EnumStorage(comptime field: []const u8) type {
+    return struct {
+        const Self = @This();
+        handle: EnumHandle,
 
-        pub fn toSlabInit(self: ?*Init) slabs.SlabInit{
-            return slabs.SlabInit {
-                .enumeration = self
+        pub fn init(handle: EnumHandle) Self {
+            return .{ .handle = handle };
+        }
+
+        pub fn hasNext(self: Self) bool {
+            return self.handle.isValid();
+        }
+
+        pub fn next(self: Self, store: *const storage.ParamStorage) !Self {
+            if (!self.hasNext()) return error.EndOfList;
+            const data: *EnumData = @ptrCast(try store.retrieve(self.handle.id));
+            return @field(data, field);
+        }
+
+        pub const Iterator = struct {
+            store: *const storage.ParamStorage,
+            current: Self,
+
+            pub fn next(it: *@This()) ?Self {
+                if (!it.current.hasNext()) return null;
+                const result = it.current;
+                it.current = it.current.next(it.store) catch return null;
+                return result;
+            }
+        };
+
+        pub fn iterator(self: Self, store: *const storage.ParamStorage) Iterator {
+            return .{
+                .store = store,
+                .current = self,
             };
         }
+
+        pub const empty: Self = .{ .handle = EnumHandle.invalid };
     };
-    alive: bool,
+}
+
+pub const EnumData = struct {
+    alive:      bool,
     generation: u32,
-    name_hash: u64,
-    value: f32,
-    next: identifiers.EnumId,
+    nameHash:   u64,
+    value:      f32,
+    next:       EnumStorage("next"),
+    nameIdx:    paths.PathSegmentIdentifier,
+    createdBy:  source.SourceIdentifier,
+    createdAt:  i64,
 
-    name_idx: identifiers.StringId,
-    created_by: identifiers.SourceId,
-    created_at: i64,
+    pub fn init(io: std.Io, args: EnumInit) EnumData {
+        if (args.nameHash == null or args.nameIdx == null) {
+            @compileError("Arguments not initialized for EnumData");
+        }
 
-    pub fn init(
-        args: Init
-    ) EnumData {
+        const timestamp = time.getTimeMs(io, .real);
         return .{
-            .alive = true,
+            .alive      = true,
             .generation = 1,
-            .name_hash = args.name_hash,
-            .next = .invalid,
-            .name_idx = args.name_idx,
-            .value = args.value,
-            .created_by = args.source_id,
-            .created_at = time.getTimeMs(args.io, .real),
+            .nameHash   = args.nameHash.?,
+            .value      = args.value,
+            .next       = EnumStorage("next").empty,
+            .nameIdx    = args.nameIdx.?,
+            .createdBy  = args.source,
+            .createdAt  = timestamp,
         };
     }
+
 };
+
+pub const EnumPool = memory.SlabPool(EnumData, EnumIdentifier, EnumSlabSize);

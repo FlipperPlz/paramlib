@@ -1,73 +1,97 @@
-const std = @import("std");
+const std         = @import("std");
+const Allocator   = std.mem.Allocator;
+const identifiers = @import("../utils/identifiers.zig");
+const handles     = @import("../utils/handles.zig");
+const value       = @import("../data/value.zig");
+const parameter   = @import("parameter.zig");
+const source      = @import("source.zig");
+const memory      = @import("../utils/memory.zig");
+const time        = @import("../utils/time.zig");
+const storage     = @import("../data/storage.zig");
 
-const time = @import("../utils/time.zig");
-const identifiers = @import("../data/identifiers.zig");
-const slabs = @import("slabs.zig");
-const handles = @import("../data/handles.zig");
-const Value = @import("../data/value.zig");
+pub const ArraySlabSize   = 1024;
+pub const ArrayIdentifier = identifiers.TypedId("Array");
+pub const ArrayHandle     = handles.Handle(ArrayIdentifier);
 
-pub const ArrayData = packed struct {
-    pub const Id = identifiers.ArrayId;
-    pub const Handle = handles.ArrayHandle;
-    pub const Init = struct {
-        io: std.Io,
-        values: []Value,
-        parameter: identifiers.ParameterId,
-        parent_array: ?identifiers.ArrayId,
-        source: identifiers.SourceId,
+pub const ArrayInit = struct {
+    values:      []value.Value              = undefined,
+    parentArray: ?ArrayHandle               = null,
+    parentParam: parameter.ParameterHandle,
+    source:      source.SourceHandle
+};
 
-        pub fn toSlabInit(self: ?*Init) slabs.SlabInit{
-            return slabs.SlabInit {
-                .array = self
+pub fn ArrayStorage(comptime field: []const u8) type {
+    return struct {
+        const Self = @This();
+        handle: ArrayHandle,
+
+        pub fn init(handle: ArrayHandle) Self {
+            return .{ .handle = handle };
+        }
+
+        pub fn hasNext(self: Self) bool {
+            return self.handle.isValid();
+        }
+
+        pub fn next(self: Self, store: *const storage.ParamStorage) !Self {
+            if (!self.hasNext()) return error.EndOfList;
+            const data: *ArrayData = @ptrCast(try store.retrieve(self.handle.id));
+            return @field(data, field);
+        }
+
+        pub const Iterator = struct {
+            store: *const storage.ParamStorage,
+            current: Self,
+
+            pub fn next(it: *@This()) ?Self {
+                if (!it.current.hasNext()) return null;
+                const result = it.current;
+                it.current = it.current.next(it.store) catch return null;
+                return result;
+            }
+        };
+
+        pub fn iterator(self: Self, store: *const storage.ParamStorage) Iterator {
+            return .{
+                .store = store,
+                .current = self,
             };
         }
+
+        pub const empty: Self = .{ .handle = ArrayHandle.invalid };
     };
-    alive: bool,
-    generation: u32,
-    values: std.ArrayList(Value),
+}
 
-    parameter: identifiers.ParameterId,
-    parent_array: ?identifiers.ArrayId,
+pub const ArrayData = struct {
+    alive:       bool,
+    generation:  u32,
+    values:      std.ArrayList(value.Value),
+    parentParam: parameter.ParameterStorage("parent"),
+    parentArray: ArrayStorage("parentArray"),
+    createdBy:   source.SourceHandle,
+    createdAt:   i64,
+    modifiedBy:  source.SourceHandle,
+    modifiedAt:  i64,
 
-    created_by: identifiers.SourceId,
-    created_at: i64,
-    modified_by: identifiers.SourceId,
-    modified_at: i64,
+    pub fn init(io: std.Io, args: ArrayInit) ArrayData {
+        const timestamp = time.getTimeMs(io, .real);
 
-    pub fn init(args: Init) ArrayData {
-        const timestamp = time.getTimeMs(args.io, .real);
         return .{
-            .alive = true,
-            .generation = 1,
-            .values = .initBuffer(args.values),
-            .parameter = args.parameter,
-            .parent_arrray = args.parent_array,
-            .created_by = args.source,
-            .modified_by = args.source,
-            .modified_at = timestamp,
-            .created_at = timestamp
+            .alive       = true,
+            .generation  = 1,
+            .values      = std.ArrayList(value.Value).initBuffer(args.values),
+            .parentParam = parameter.ParameterStorage("parent").init(args.parentParam),
+            .parentArray = ArrayStorage("parentArray").init(args.parentArray orelse ArrayHandle.invalid),
+            .createdBy   = args.source,
+            .modifiedBy  = args.source,
+            .createdAt   = timestamp,
+            .modifiedAt  = timestamp,
         };
     }
 
-    pub fn deinit(self: *ArrayData, allocator: std.mem.Allocator) void {
+    pub fn deinit(self: *ArrayData, allocator: Allocator) void {
         self.values.deinit(allocator);
     }
-
-    pub fn append(self: *ArrayData, allocator: std.mem.Allocator, value: Value) !void {
-        try self.values.append(allocator, value);
-    }
-
-    pub fn get(self: *const ArrayData, index: usize) ?Value {
-        if (index >= self.values.items.len) return null;
-        return self.values.items[index];
-    }
-
-    pub fn set(self: *ArrayData, index: usize, value: Value) !void {
-        if (index >= self.values.items.len) return error.IndexOutOfBounds;
-        self.values.items[index] = value;
-    }
-
-    pub fn len(self: *const ArrayData) usize {
-        return self.values.items.len;
-    }
 };
+
+pub const ArrayPool = memory.SlabPool(ArrayData, ArrayIdentifier, ArraySlabSize);

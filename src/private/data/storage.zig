@@ -1,228 +1,324 @@
-const std = @import("std");
-const Allocator = std.mem.Allocator;
-const identifiers = @import("identifiers.zig");
-const memory = @import("../utils/memory.zig");
-const strings = @import("../utils/strings.zig");
-const hasher = @import("../utils/hasher.zig");
-const slabs = @import("../slabs/slabs.zig");
-const handles = @import("../data/handles.zig");
-const storage = @import("../data/storage.zig");
+const std        = @import("std");
+const Allocator  = std.mem.Allocator;
+const array      = @import("../slabs/array.zig");
+const class      = @import("../slabs/class.zig");
+const enumerable = @import("../slabs/enum.zig");
+const parameter  = @import("../slabs/parameter.zig");
+const source     = @import("../slabs/source.zig");
+const strings    = @import("../utils/strings.zig");
+const paths      = @import("../utils/paths.zig");
+const value      = @import("value.zig");
+const hasher     = @import("../utils/hasher.zig");
 
 pub const StorageType = enum {
-    slab,
-    string,
-};
-
-
-pub const StorageInit = union(StorageType) {
-    slab: slabs.SlabInit,
-    string: []const u8,
-
-    pub fn fromString(string: []const u8) StorageInit {
-        return StorageInit {
-            .string = string
-        };
-    }
+    arr,
+    clazz,
+    enumeration,
+    par,
+    src,
+    segment,
+    str,
 };
 
 pub const StorageIdentifier = union(StorageType) {
-    slab: slabs.SlabIdentifier,
-    string: identifiers.StringId,
+    arr:         array.ArrayIdentifier,
+    clazz:       class.ClassIdentifier,
+    enumeration: enumerable.EnumIdentifier,
+    par:         parameter.ParameterIdentifier,
+    src:         source.SourceIdentifier,
+    segment:     paths.PathSegmentIdentifier,
+    str:         value.ValueStringIdentifier,
+
+    pub fn toIndex(self: StorageIdentifier) ?usize {
+        return switch (self) {
+            .arr         => |s| s.toIndex(),
+            .clazz       => |s| s.toIndex(),
+            .enumeration => |s| s.toIndex(),
+            .par         => |s| s.toIndex(),
+            .src         => |s| s.toIndex(),
+            .segment     => |s| s.toIndex(),
+            .str         => |s| s.toIndex(),
+        };
+    }
 
     pub fn isValid(self: StorageIdentifier) bool {
         return switch (self) {
-            .slab => |s| s.isValid(),
-            .string => |s| s.isValid()
+            .arr         => |s| s.isValid(),
+            .clazz       => |s| s.isValid(),
+            .enumeration => |s| s.isValid(),
+            .par         => |s| s.isValid(),
+            .src         => |s| s.isValid(),
+            .segment     => |s| s.isValid(),
+            .str         => |s| s.isValid()
         };
     }
 
-    pub fn toIndex(self: StorageIdentifier) ?u32 {
-        return switch (self) {
-            .slab => |s| s.toIndex(),
-            .string => |s| s.toIndex()
+     pub fn create(id: anytype) StorageIdentifier {
+        return switch (@TypeOf(id)) {
+            paths.PathSegmentIdentifier => StorageIdentifier {
+                .segment = id,
+            },
+            value.ValueStringIdentifier => StorageIdentifier {
+                .str = id,
+            },
+            enumerable.EnumIdentifier => StorageIdentifier {
+                .enumeration = id,
+            },
+            array.ArrayIdentifier => StorageIdentifier {
+                .arr = id
+            },
+            parameter.ParameterIdentifier => StorageIdentifier {
+                .par = id,
+            },
+            class.ClassIdentifier => StorageIdentifier {
+                .clazz = id
+            },
+            source.SourceIdentifier => StorageIdentifier {
+                .src = id
+            },
+            else => @compileError("No identifier type for " ++ @typeName(@TypeOf(id))),
         };
     }
 
-    pub fn create(comptime id: type) StorageIdentifier {
-        return switch (id) {
-            identifiers.StringId => StorageIdentifier {
-                .string = id,
-            },
-            identifiers.EnumId => StorageIdentifier {
-                .slab = .{.enumeration = type},
-            },
-            identifiers.ArrayId => StorageIdentifier {
-                .slab = .{.array = type},
-            },
-            identifiers.ParameterId => StorageIdentifier {
-                .slab = .{.parameter = type},
-            },
-            identifiers.ClassId => StorageIdentifier {
-                .slab = .{.class = type},
-            },
-            identifiers.SourceId => StorageIdentifier {
-                .slab = .{ .source = type }
-            },
-            else => @compileError("No identifier type for " ++ @typeName(type)),
+};
+
+pub const StorageInitializer = union(StorageType) {
+    arr:         array.ArrayInit,
+    clazz:       class.ClassInit,
+    enumeration: enumerable.EnumInit,
+    par:         parameter.ParameterInit,
+    src:         source.SourceInit,
+    segment:     []const u8,
+    str:         []const u8,
+
+    pub fn createArray(init: array.ArrayInit) StorageInitializer {
+        return .{
+            .arr = init,
+        };
+    }
+
+    pub fn createClass(init: class.ClassInit) StorageInitializer {
+        return .{
+            .clazz = init,
+        };
+    }
+    
+    pub fn createEnum(init: enumerable.EnumInit) StorageInitializer {
+        return .{
+            .enumeration = init,
+        };
+    }
+
+    pub fn createParameter(init: parameter.ParameterInit) StorageInitializer {
+        return .{
+            .par = init,
+        };
+    }
+
+    pub fn createSource(init: source.SourceInit) StorageInitializer {
+        return .{
+            .src = init,
+        };
+    }
+
+    pub fn createSegment(init: []const u8) StorageInitializer {
+        return .{
+            .segment = init,
+        };
+    }
+
+    pub fn createString(init: []const u8) StorageInitializer {
+        return .{
+            .str = init,
         };
     }
 };
 
-pub const ParamStorage = struct {
-    arrays: memory.SlabPool(slabs.ArrayData, 1024),
-    params: memory.SlabPool(slabs.ParameterData, 512),
-    classes: memory.SlabPool(slabs.ClassData, 512),
-    sources: memory.SlabPool(slabs.SourceData, 256),
-    enums: memory.SlabPool(slabs.EnumData, 64),
-    strings: strings.StringPool,
-    path_to_id: std.AutoHashMapUnmanaged(u64, u32),
+
+pub const ParamStorage = struct {  
+    arrays:       array.ArrayPool,
+    classes:      class.ClassPool,
+    enums:        enumerable.EnumPool,
+    parameters:   parameter.ParameterPool,
+    sources:      source.SourcePool,
+    pathSegments: strings.StringPool(paths.PathSegmentIdentifier),
+    
+    stringValues: strings.StringPool(value.ValueStringIdentifier),
+    pathToId:     std.AutoHashMapUnmanaged(u64, StorageIdentifier),
 
     pub const empty: ParamStorage = .{
-        .arrays = .empty,
-        .params = .empty,
-        .classes = .empty,
-        .sources = .empty,
-        .enums = .empty,
-        .strings = .empty,
-        .path_to_class = .empty
+        .arrays       = array.ArrayPool.empty,
+        .classes      = class.ClassPool.empty,
+        .enums        = enumerable.EnumPool.empty,
+        .parameters   = parameter.ParameterPool.empty,
+        .sources      = source.SourcePool.empty,
+        .pathSegments = strings.StringPool(paths.PathSegmentIdentifier).empty,
+        .stringValues = strings.StringPool(value.ValueStringIdentifier).empty,
+        .pathToId     = std.AutoHashMapUnmanaged(u64, StorageIdentifier).empty
     };
 
-    pub fn deinit(self: *ParamStorage, allocator: Allocator) void {
-        const array_stats = self.arrays.getStats();
-        for (0..array_stats.total_capacity) |i| {
-            const idx: u32 = @intCast(i);
-            const arr = self.arrays.get(idx);
-            if (i < array_stats.used_count) {
-                arr.deinit(allocator);
+    pub fn alloc(self: *ParamStorage, allocator: Allocator, io: std.Io, initializer: StorageInitializer) !struct {index: StorageIdentifier, ptr: *anyopaque } {
+        return switch (initializer) {
+            .arr => |array_init| {
+                const arr = try self.arrays.acquire(allocator);
+                errdefer self.arrays.release(allocator, arr.index) catch @panic("oom");
+
+                arr.ptr.* = array.ArrayData.init(io, array_init);
+
+                return .{
+                    .index = .create(arr.index),
+                    .ptr   = @ptrCast(arr.ptr)
+                };
+            },
+            .src => |src_init| {
+                const src = try self.sources.acquire(allocator);
+                errdefer self.sources.release(allocator, src.index) catch @panic("oom");
+
+                src.ptr.* = try source.SourceData.init(src_init);
+
+                return .{
+                    .index = .create(src.index),
+                    .ptr   = @ptrCast(src.ptr)
+                };
+            },
+            .clazz => |class_init| {
+                const clazz    = try self.classes.acquire(allocator);
+                defer self.classes.release(allocator, clazz.index) catch @panic("oom");
+
+                const nameHash = class_init.nameHash orelse hasher.hash(class_init.name);
+                const nameIdx  = class_init.nameIdx orelse (try self.pathSegments.intern(allocator, class_init.name)).idx;
+                const pathHash = class_init.pathHash orelse blk: {
+                    const parentHandle = class_init.parent orelse break :blk hasher.hash(class_init.name);
+                    const parent = self.classes.getConst(parentHandle.id);
+
+                    const parentPath = try paths.getPath(allocator, self, .createClass(parent));
+                    defer allocator.free(parentPath);
+
+                    const joined = try paths.joinPaths(allocator, &[_][]const u8{parentPath, class_init.name});
+                    defer allocator.free(joined);
+
+                    break :blk hasher.hash(joined);
+                };
+                try self.pathToId.put(allocator, pathHash, .create(clazz.index));
+                errdefer self.pathToId.remove(pathHash);
+
+                clazz.ptr.* = class.ClassData.init(io, .{
+                    .name     = class_init.name,
+                    .nameHash = nameHash,
+                    .nameIdx  = nameIdx,
+                    .pathHash = pathHash,
+                    .parent   = class_init.parent,
+                    .source   = class_init.source,
+                    .access   = class_init.access,
+                    .base     = class_init.base,
+                });
+
+                
+                return .{.index = .create(clazz.index), .ptr = @ptrCast(clazz.ptr)};
+            },
+            .par => |param_init| {
+                const param = try self.parameters.acquire(allocator);
+                defer self.parameters.release(allocator, param.index) catch @panic("oom");
+
+                const nameHash = param_init.nameHash orelse hasher.hash(param_init.name);
+                const nameIdx = param_init.nameIdx orelse (try self.pathSegments.intern(allocator, param_init.name)).idx;
+                const pathHash = param_init.pathHash orelse blk: {
+                    if (!param_init.parent.isValid()) break :blk hasher.hash(param_init.name);
+                    const parent = self.classes.getConst(param_init.parent.id);
+
+                    const parentPath = try paths.getPath(allocator, self, .createClass(parent));
+                    defer allocator.free(parentPath);
+
+                    const joined = try paths.joinPaths(allocator, &[_][]const u8{ parentPath, param_init.name });
+                    defer allocator.free(joined);
+
+                    break :blk hasher.hash(joined);
+                };
+                
+                try self.pathToId.put(allocator, pathHash, .create(param.index));
+
+                param.ptr.* = parameter.ParameterData.init(io, .{
+                    .name     = param_init.name,
+                    .nameHash = nameHash,
+                    .nameIdx  = nameIdx,
+                    .pathHash = pathHash,
+                    .source   = param_init.source,
+                    .value    = param_init.value,
+                    .parent   = param_init.parent
+                });
+
+                return .{ .index = .create(param.index), .ptr = @ptrCast(param.ptr)};
+
+            },
+            .segment => |segment_init| {
+                const data = try self.pathSegments.intern(allocator, segment_init);
+                return .{.index = .create(data.idx), .ptr = @constCast(@ptrCast((try self.pathSegments.get_ptr(data.idx)) orelse return error.NotFound))};
+            },
+            .str => |str_init| {
+                const data = try self.stringValues.intern(allocator, str_init);
+                return .{.index = .create(data.idx), .ptr = @constCast(@ptrCast((try self.stringValues.get_ptr(data.idx)) orelse return error.NotFound))};
+            },
+            .enumeration => {
+                @panic("Not Implemented Yet");
             }
-        }
-        self.classes.deinit(allocator);
-        self.params.deinit(allocator);
-        self.arrays.deinit(allocator);
-        self.enums.deinit(allocator);
-        self.strings.deinit(allocator);
-        self.sources.deinit(allocator);
-        self.path_to_id.deinit(allocator);
+        };
+    }
+    
+    pub fn retrieve(self: *const ParamStorage, id: StorageIdentifier) !*const anyopaque {
+        if (!id.isValid()) return error.InvalidId;
+        return switch (id) {
+            .arr         => |i| @ptrCast(@alignCast(self.arrays.getConst(i))),
+            .clazz       => |i| @ptrCast(@alignCast(self.classes.getConst(i))),
+            .enumeration => |i| @ptrCast(@alignCast(self.enums.getConst(i))),
+            .par         => |i| @ptrCast(@alignCast(self.parameters.getConst(i))),
+            .src         => |i| @ptrCast(@alignCast(self.sources.getConst(i))),
+            .segment     => |i| @ptrCast((try self.pathSegments.get_ptr(i)) orelse return error.NotFound),
+            .str         => |i| @ptrCast((try self.stringValues.get_ptr(i)) orelse return error.NotFound),
+        };
     }
 
-    pub fn allocate(self: *ParamStorage, allocator: Allocator, args: StorageInit) !struct {ptr: *anyopaque, idx: u32} {
-        return switch (args) {
-            .slab => |slab_init| switch (slab_init) {
-                .parameter => |d| self.acquireFrom(
-                    allocator, try self.params.acquire(allocator), d, slabs.ParameterData
-                ),
-                .class => |d| self.acquireFrom(
-                    allocator, try self.classes.acquire(allocator), d, slabs.ClassData
-                ),
-                .enumeration=> |d| self.acquireFrom(
-                    allocator, try self.enums.acquire(allocator), d, slabs.EnumData
-                ),
-                .array => |d| self.acquireFrom(
-                    allocator, try self.arrays.acquire(allocator), d, slabs.ArrayData
-                ),
-                .source => |d| self.acquireFrom(
-                    allocator, try self.sources.acquire(allocator), d, slabs.SourceData
-                )
-            },
-            .string => |string_init| {
-                const interned = try self.strings.intern(allocator, string_init);
-                return .{
-                    .ptr = &interned.str,
-                    .idx = interned.idx
-                };
-            }
+    pub fn retrieveMut(self: *ParamStorage, id: StorageIdentifier) !*anyopaque {
+        if(!id.isValid()) return error.InvalidId;
+        return switch (id) {
+            .arr         => |i| @ptrCast(@alignCast(self.arrays.get(i))),
+            .clazz       => |i| @ptrCast(@alignCast(self.classes.get(i))),
+            .enumeration => |i| @ptrCast(@alignCast(self.enums.get(i))),
+            .par         => |i| @ptrCast(@alignCast(self.parameters.get(i))),
+            .src         => |i| @ptrCast(@alignCast(self.sources.get(i))),
+            .segment     => |i| @ptrCast((try self.pathSegments.get(i)) orelse return error.NotFound),
+            .str         => |i| @ptrCast((try self.stringValues.get(i)) orelse return error.NotFound), 
         };
     }
 
     pub fn free(self: *ParamStorage, allocator: Allocator, id: StorageIdentifier) !void {
-        const index = id.toIndex() orelse return error.InvalidId;
-        //todo remove path from path_to_id
-        return switch (id) {
-            .slab => |slab_id| return switch (slab_id) {
-                .parameter => try self.params.release(allocator, index),
-                .class => try self.classes.release(allocator, index),
-                .enumeration => try self.enums.release(allocator, index),
-                .array => try self.arrays.release(allocator, index),
-                .source => try self.sources.release(allocator, index),
-            },
-            .string => self.strings.free(allocator, index)
-        };
+        if (!id.isValid()) return error.InvalidId;
+        switch (id) {
+            .arr => |i| self.arrays.release(allocator, i),
+            .clazz => |i| self.classes.release(allocator, i),
+            .enumeration => |i| self.enums.release(allocator, i),
+            .par => |i| self.parameters.release(allocator, i),
+            .src => |i| self.sources.release(allocator, i),
+            .segment => return error.CannotFreeSegment, // Segments are interned and shared, so we don't free them individually
+            .str => return error.CannotFreeString, // Strings are interned and shared, so we don't free them individually
+        }
     }
 
-    pub fn retrieve(self: *ParamStorage, id: StorageIdentifier) !*anyopaque {
-        const index = id.toIndex() orelse return error.InvalidId;
-        return switch (id) {
-            .slab => |slab| switch (slab) {
-                .parameter => self.params.get(index),
-                .class => self.classes.get(index),
-                .enumeration => self.enums.get(index),
-                .array => self.arrays.get(index),
-                .source => self.sources.get(index),
-        },
-            .string => try self.strings.get(index),
-        };
+    pub fn deinit(self: *ParamStorage, allocator: Allocator) void {
+        const array_stats = self.arrays.getStats();
+        for(0..array_stats.total_capacity) |i| {
+            if(i >= array_stats.used_count) break;
+            const idx: array.ArrayIdentifier = array.ArrayIdentifier.fromIndex(i);
+            const arr = self.arrays.get(idx);
+            arr.deinit(allocator);
+        }
+
+        self.classes.deinit(allocator);
+        self.parameters.deinit(allocator);
+        self.arrays.deinit(allocator);
+        self.enums.deinit(allocator);
+        self.pathSegments.deinit(allocator);
+        self.stringValues.deinit(allocator);
+        self.sources.deinit(allocator);
+        self.pathToId.deinit(allocator);
     }
-
-    pub inline fn intern(self: *ParamStorage, allocator: Allocator, string: []const u8) !struct {
-        ptr: []const u8,
-        id: identifiers.StringId
-    } {
-        const allocated = try self.allocate(allocator, StorageInit.fromString(string));
-        const string_ptr: *[]const u8 = @ptrCast(@alignCast(allocated.ptr));
-
-        return .{
-            .ptr = string_ptr.*,
-            .id = identifiers.StringId.fromIndex(allocated.idx)
-        };
-    }
-    // helpers
-
-    pub inline fn allocateClass(self: *ParamStorage, allocator: Allocator, args: ?slabs.ClassData.Init) !SlabResult(slabs.ClassData) {
-        return self.allocateSlab(allocator, slabs.ClassData, args);
-    }
-
-    pub inline fn allocateParameter(self: *ParamStorage, allocator: Allocator, args: ?slabs.ParameterData.Init) !SlabResult(slabs.ParameterData) {
-        return self.allocateSlab(allocator, slabs.ParameterData, args);
-    }
-
-    pub inline fn allocateArray(self: *ParamStorage, allocator: Allocator, args: ?slabs.ArrayData.Init) !SlabResult(slabs.ArrayData) {
-        return self.allocateSlab(allocator, slabs.ArrayData, args);
-    }
-
-    pub inline fn allocateEnum(self: *ParamStorage, allocator: Allocator, args: ?slabs.EnumData.Init) !SlabResult(slabs.EnumData) {
-        return self.allocateSlab(allocator, slabs.EnumData, args);
-    }
-
-    pub inline fn allocateSource(self: *ParamStorage, allocator: Allocator, args: ?slabs.SourceData.Init) !SlabResult(slabs.SourceData) {
-        return self.allocateSlab(allocator, slabs.SourceData, args);
-    }
-
-    fn acquireFrom(self: *ParamStorage, allocator: Allocator, result: anytype, init_data: anytype, comptime DataType: type) struct { ptr: *anyopaque, id: StorageIdentifier } {
-        if (init_data) |data|
-            result.ptr.* = DataType.init(data);
-
-        if (result.ptr.path_hash) |path_hash|
-            self.path_to_id.put(allocator, path_hash, result.index);
-
-        return .{ .ptr = result.ptr, .id = result.index };
-    }
-
-    // private helpers
-    inline fn allocateSlab(self: *ParamStorage, allocator: Allocator, comptime datatype: type, args: ?datatype.Init) !SlabResult(datatype) {
-        const init = StorageInit{ .slab = .from(datatype, args) };
-        const allocated = try self.allocate(allocator, init);
-        return .{
-            .ptr = @ptrCast(@alignCast(allocated.ptr)),
-            .id  = identifiers.idFor(type).fromIndex(allocated.idx),
-        };
-    }
-};
-
-fn SlabResult(comptime DataType: type) type {
-    return struct {
-        ptr: *DataType,
-        id:  identifiers.idFor(type),
-    };
-}
-
-
+}; 

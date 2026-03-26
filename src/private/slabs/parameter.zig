@@ -1,140 +1,105 @@
-const std = @import("std");
-const Allocator = std.mem.Allocator;
-const Value = @import("../data/value.zig").Value;
-const time = @import("../utils/time.zig");
-const identifiers = @import("../data/identifiers.zig");
-const slabs = @import("slabs.zig");
-const storage = @import("../data/storage.zig");
-const paths = @import("../utils/paths.zig");
-const hasher = @import("../utils/hasher.zig");
-const handles = @import("../data/handles.zig");
+const std         = @import("std");
+const Allocator   = std.mem.Allocator;
 
-pub const ParameterStorage = struct {
-    firstParam: handles.ParameterHandle,
+const identifiers = @import("../utils/identifiers.zig");
+const handles     = @import("../utils/handles.zig");
+const values      = @import("../data/value.zig");
+const paths       = @import("../utils/paths.zig");
+const memory      = @import("../utils/memory.zig");
+const class       = @import("class.zig");
+const source      = @import("source.zig");
+const time        = @import("../utils/time.zig");
+const storage     = @import("../data/storage.zig");
 
-    pub const empty: ParameterStorage = .{
-        .firstParam = .invalid
-    };
+pub const ParameterSlabSize   = 512;
+pub const ParameterIdentifier = identifiers.TypedId("Parameter");
+pub const ParameterHandle     = handles.Handle(ParameterIdentifier);
 
-    pub const CreateArgs = struct {
-        allocator: Allocator,
-        io: std.Io,
-        store: *storage.ParamStorage,
-        source: identifiers.SourceId,
-        path: slabs.ParameterData.Init.PathUnion,
-        value: Value
-    };
+pub fn ParameterStorage(comptime field: []const u8) type {
+    return struct {
+        const Self = @This();
+        handle: ParameterHandle,
 
-    pub fn create(self: *ParameterStorage, args: CreateArgs) !struct {id: identifiers.ParameterId, ptr: *slabs.ParameterData} {
-        const pathHash = hasher.hash(args.path);
-        const sepIdx = std.mem.lastIndexOfScalar(u8, args.path, '.');
-        const parameter_name = try args.store.intern(args.allocator, if (sepIdx) |i| args.path[i+1..] else args.path);
-        var current = self.firstParam;
-        var classId = identifiers.ClassId.fromIndex(args.store.path_to_id.get(args.path[0..sepIdx]) orelse return error.MissingClass);
-        const name_hash =  hasher.hash(parameter_name.ptr);
-
-        while (current != .invalid) {
-            const par = try args.store.retrieve(.create(current.id)).?;
-            if (par.name_hash == name_hash) {
-                return error.ParamAlreadyExists;
-            }
-            current = par.next;
+        pub fn init(handle: ParameterHandle) Self {
+            return .{ .handle = handle };
         }
 
-        const param_value = try args.store.allocateParameter(args.allocator, .{
-            .io = args.io,
-            .path = ParameterData.Init.PathUnion {
-                .created = pathHash
-            },
-            .name_hash = name_hash,
-            .name_idx = identifiers.StringId,
-            .value = args.value,
-            .parent = classId,
-            .source = args.source
-        });
+        pub fn hasNext(self: Self) bool {
+            return self.handle.isValid();
+        }
 
-        const classParams = args.store.classes.get(classId.toIndex().?).params;
+        pub fn next(self: Self, store: *const storage.ParamStorage) !Self {
+            if (!self.hasNext()) return error.EndOfList;
+            const data: *ParameterData = @ptrCast(try store.retrieve(self.handle.id));
+            return @field(data, field);
+        }
 
-        param_value.ptr.next = classParams.firstParam;
-        classParams.firstParam = try handles.makeHandle(args.store, param_value.id);
-        return .{ .id = param_value.id, .ptr = param_value.ptr};
-    }
-};
+        pub const Iterator = struct {
+            store: *const storage.ParamStorage,
+            current: Self,
 
-pub const ParameterData = packed struct {
-    pub const Id = identifiers.ParameterId;
-    pub const Handle = handles.ParameterHandle;
-    pub const Storage = ParameterStorage;
-    pub const Init = struct {
-        pub const PathUnion = union {
-            create: struct {
-                allocator: Allocator,
-                store: *storage.ParamStorage
-            },
-            created: u64
+            pub fn next(it: *@This()) ?Self {
+                if (!it.current.hasNext()) return null;
+                const result = it.current;
+                it.current = it.current.next(it.store) catch return null;
+                return result;
+            }
         };
-        io: std.Io,
-        path: PathUnion,
-        store: *storage.ParamStorage,
-        name_hash: u64,
-        name_idx:  identifiers.StringId,
-        value: Value,
-        parent: identifiers.ClassId,
-        source: identifiers.SourceId,
 
-        pub fn toSlabInit(self: ?*Init) slabs.SlabInit{
-            return slabs.SlabInit {
-                .parameter = self
+        pub fn iterator(self: Self, store: *const storage.ParamStorage) Iterator {
+            return .{
+                .store = store,
+                .current = self,
             };
         }
+
+        pub const empty: Self = .{ .handle = ParameterHandle.invalid };
     };
-    alive: bool,
-    generation: u32,
-    name_hash: u64,
-    value: Value,
-    next: identifiers.ParameterId,
+}
 
-    path_hash: u64,
-    name_idx: identifiers.StringId,
-    parent: identifiers.ClassId,
-
-    created_by: identifiers.SourceId,
-    created_at: i64,
-    modified_by: identifiers.SourceId,
-    modified_at: i64,
-
-    pub fn init(
-        args: Init
-    ) ParameterData {
-        const timestamp = time.getTimeMs(args.io, std.Io.Clock.real);
-
-        const param: ParameterData = .{
-            .alive = true,
-            .generation = 1,
-            .path_hash = undefined,
-            .name_hash = args.name_hash,
-            .value = args.value,
-            .next = .invalid,
-            .name_idx = args.name_idx,
-            .parent = args.parent,
-            .created_by = args.source,
-            .created_at = timestamp,
-            .modified_by = args.source,
-            .modified_at = timestamp
-        };
-
-        switch (args.path) {
-            .create => |path_args| {
-                const path = paths.getPath(path_args.allocator, path_args.store, param);
-                param.path_hash = hasher.hash(path);
-            },
-            .created => |d| param.path_hash = d
-        }
-        return param;
-    }
-
-    pub fn markModified(self: *ParameterData, source: identifiers.SourceId, io: std.Io) void {
-        self.modified_by = source;
-        self.modified_at = time.getTimeMs(io, std.Io.Clock.real);
-    }
+pub const ParameterInit = struct {
+    name:     []const u8,
+    nameHash: ?u64                         = null,
+    nameIdx:  ?paths.PathSegmentIdentifier = null,
+    parent:   class.ClassHandle,
+    source:   source.SourceHandle,
+    pathHash: ?u64                         = null,
+    value:    values.Value,
 };
+
+pub const ParameterData = struct { 
+    alive:      bool,
+    generation: u32,
+    nameHash:   u64,
+    value:      values.Value,
+    next:       ParameterStorage("next"),
+    pathHash:   u64,
+    nameIdx:    paths.PathSegmentIdentifier,
+    parent:     class.ClassStorage("parent"),
+    createdBy:  source.SourceHandle,
+    createdAt:  i64,
+    modifiedBy: source.SourceHandle,
+    modifiedAt: i64,
+
+    pub fn init(io: std.Io, args: ParameterInit) ParameterData {
+        std.debug.assert(args.nameIdx != null and args.nameHash != null and args.pathHash != null);
+        const timestamp = time.getTimeMs(io, .real);
+
+        return .{
+            .alive      = true,
+            .generation = 1,
+            .nameHash   = args.nameHash.?,
+            .value      = args.value,
+            .next       = ParameterStorage("next").empty,
+            .pathHash   = args.pathHash.?,
+            .nameIdx    = args.nameIdx.?,
+            .parent     = class.ClassStorage("parent").init(args.parent),
+            .createdBy  = args.source,
+            .createdAt  = timestamp,
+            .modifiedBy = args.source,
+            .modifiedAt = timestamp
+        };
+    }
+}; 
+
+pub const ParameterPool = memory.SlabPool(ParameterData, ParameterIdentifier, ParameterSlabSize);

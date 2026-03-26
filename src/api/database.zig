@@ -1,185 +1,94 @@
 const std = @import("std");
+
 const Allocator = std.mem.Allocator;
-const storage = @import("../private/data/storage.zig");
-const handles = @import("../private/data/handles.zig");
-const sources = @import("../private/slabs/source.zig");
-const slabs = @import("../private/slabs/slabs.zig");
-const identifiers = @import("../private/data/identifiers.zig");
-const values = @import("../private/data/value.zig");
-const hasher = @import("../private/utils/hasher.zig");
-const paths = @import("../private/utils/paths.zig");
-const api = @import("api.zig");
 
-pub const ParDatabase = struct {
-    store: storage.ParamStorage,
-    rootHandle: handles.ClassHandle,
-    runtime: identifiers.SourceId,
-    enums: storage.EnumStorage,
-    mutex: std.Io.Mutex = .init,
+const storage     = @import("../private/data/storage.zig");
+const enumeration = @import("../private/slabs/enum.zig");
+const class       = @import("../private/slabs/class.zig");
+const source      = @import("../private/slabs/source.zig");
+const params      = @import("../private/slabs/parameter.zig");
+const query       = @import("../private/data/query.zig");
+const handle      = @import("../private/utils/handles.zig");
+const hasher      = @import("../private/utils/hasher.zig");
 
-    pub fn init(allocator: Allocator, io: std.Io) ParDatabase {
-        const store: storage.ParamStorage = .empty;
-        const root_name = try store.intern(allocator, "root");
-        const path_hash = std.hash.Wyhash.hash(0, root_name);
-        const source_name = try store.intern(allocator, "RUNTIME");
-        const source_data = try store.intern(allocator, "");
+pub const ParamDatabase = struct {
+    store:   storage.ParamStorage,
+    enums:   enumeration.EnumStorage("next"),
+    root:    class.ClassStorage("sibling"),
+    params:  params.ParameterStorage("next"),
+    sources: source.SourceStorage("next"),
+    lock:    std.Io.RwLock = .init,
+    
+    pub const empty = .{
+        .store   = storage.ParamStorage.empty,
+        .enums   = enumeration.EnumStorage("next").empty,
+        .root    = class.ClassStorage("sibling").empty,
+        .params  = params.ParameterStorage("next").empty,
+        .sources = source.SourceStorage("next").empty,
+    };
 
-        const source = try store.allocateSource(allocator, .{
+    pub fn init(allocator: Allocator, io: std.Io) !ParamDatabase {
+        var store                    = storage.ParamStorage.empty;
+        const path                   = try store.allocate(allocator, io, .createSegment(""));
+        const pathString: []const u8 = @ptrCast(path.ptr);
+        const enums                  = enumeration.EnumStorage("next").empty;
+
+        const src = try store.alloc(allocator, io, .createSource(.{
             .runtime = .{
-                .name = source_name.id,
-                .data = source_data.id
-            }
-        });
+                .name = pathString,
+                .data = pathString,
+            },
+        }));
+        errdefer store.free(allocator, src.index) catch @panic("OOM");
 
-        const createdRoot = try store.allocateClass(allocator, .{
-            .io = io,
-            .parent = .invalid,
-            .name_idx = root_name.id,
-            .name_hash = path_hash,
-            .path_hash = path_hash,
-            .source = source.id,
-        });
+        const root = try store.alloc(allocator, io, .createClass(.{
+            .name = pathString,
+            .source = handle.makeHandle(store, src.index),
+            .access = .readCreate,
+            .parent = null,
+        }));
+        errdefer store.free(allocator, root.index);
 
-        try store.path_to_class.put(allocator, path_hash, createdRoot.id);
-
-        const db: ParDatabase = .{
-            .store = .empty,
-            .runtime = source.id,
-            .rootHandle = undefined,
-            .enums = .empty
-        };
-        db.root.* = handles.makeHandle(db, createdRoot.id);
-
-        return db;
-    }
-
-    pub fn root(self: *ParDatabase) !api.ParClass {
-        return api.ParClass {
-            ._data = rootData(),
-            .db = self
+        return .{
+            .store   = store,
+            .enums   = enums,
+            .root    = .init(handle.makeHandle(root.index)),
+            .sources = .empty,
+            .params  = .empty,
         };
     }
 
-    pub fn rootData(self: *ParDatabase) !*slabs.ClassData {
-        const classData = try self.store.retrieve(.create(self.rootHandle.id));
-        return @ptrCast(classData);
+    pub fn findClassesByPattern(self: ParamDatabase, allocator: Allocator, io: std.Io, pattern: []const u8) ![]query.QueryResult {
+        self.lock.lockShared(io);
+        defer self.lock.unlockShared(io);
+
+        return query.findClassesByPattern(allocator, self.storage, pattern);
     }
 
-    pub fn retrieve(self: ParDatabase, path: []const u8, comptime context: NodeType) !RetrieveResult {
-        if(context != .array
-        //|| check if path contains [x] if .none
-        ) {
-            const id = self.store.path_to_id.get(hasher.hash(path)) orelse return error.PathNotFound;
-            return switch (context) {
-                .parameter => try self.retrieveItem(slabs.ParameterData, id),
-                .class => try self.retrieveItem(slabs.ClassData, id),
-                .array => try self.retrieveItem(slabs.ArrayData, id),
-                .none => (try self.retrieveItem(slabs.ParameterData, id)) orelse
-                    (try self.retrieveItem(slabs.ClassData, id)),
-            };
-        }
+    pub fn findParameter(self: *ParamDatabase, io: std.Io, path: []const u8) ?*params.ParameterData {
+        self.lock.lockShared(io);
+        defer self.lock.unlockShared(io);
+         
+        return query.findParameter(self.storage, path);
     }
 
-    pub fn create(self: *const ParDatabase, allocator: Allocator, io: std.Io, path: []const u8, comptime DataType: type, create_init: type.Init) !RetrieveResult {
-        self.mutex.lock(io);
-        defer self.mutex.unlock(io);
-        switch (DataType) {
-            slabs.ArrayData => {
+    pub fn findClass(self: *ParamDatabase, io: std.Io, path: []const u8) ?*class.ClassData {
+        self.lock.lockShared(io);
+        defer self.lock.unlockShared(io);
 
-            },
-            slabs.ParameterData => {
-                const data = try self.rootData();
-                const param = try data.params.create(.{
-                    .allocator = allocator,
-                    .io = io,
-                    .store = self.store,
-                    .source = create_init.source,
-                    .path = path,
-                    .value = create_init.value
-                });
-                return @unionInit(RetrieveResult, "parameter", DataType.Handle {
-                    ._handle = try handles.makeHandle(self.store, param.id),
-                    ._data = param.ptr,
-                    .db = self,
-                });
-            },
-            slabs.ClassData => {
-
-            },
-            slabs.EnumData => {
-                const data = try self.enums.create(.{
-                    .allocator = allocator,
-                    .io = io,
-                    .name = path,
-                    .source = create_init.source_id orelse self.runtime,
-                    .store = &self.store,
-                    .value = create_init.value
-                });
-                return @unionInit(RetrieveResult, "enum", DataType.Handle {
-                    ._handle = try handles.makeHandle(self.store, data.id),
-                    ._data = data.ptr,
-                    .db = self,
-                });
-            },
-            else => @compileError("unsupported type: " ++ @typeName(DataType)),
-        }
+        return query.findParameter(self.storage, path);
     }
 
-    fn retrieveItem(self: ParDatabase, comptime T: type, id: anytype) !RetrieveResult {
-        const ItemId = T.Id;
-        const Handle = T.Handle;
-
-        const field = switch (T) {
-            slabs.ParameterData => .{.name = "parameter", .handle = api.ParParameter },
-            slabs.ClassData =>  .{.name = "class", .handle = api.ParClass },
-            slabs.ArrayData =>  .{.name = "array", .handle = api.ParArray },
-            slabs.EnumData => .{.name = "enum", .handle = api.ParEnum },
-            else => @compileError("unsupported type: " ++ @typeName(T)),
+    pub fn getParameter(self: *ParamDatabase, io: std.Io, path: []const u8) !*const params.ParameterData {
+        return self.findParameter(io, path) orelse {
+            return error.ParameterNotFound;
         };
-
-        const itemId = ItemId.fromIndex(id);
-        const itemData: *T = try self.store.retrieve(.create(itemId));
-        return @unionInit(RetrieveResult, field, Handle {
-            ._handle = try handles.makeHandle(self.store, itemId),
-            ._data = itemData,
-            .db = self,
-        });
     }
 
-    pub const NodeType = enum {
-        none,
-        class,
-        parameter,
-        array,
-    };
+    pub fn getClass(self: *ParamDatabase, io: std.Io, path: []const u8) !*const class.ClassData {
+        return self.findClass(io, path) orelse {
+            return error.ClassNotFound;
+        };
+    }
 
-    pub const RetrieveResult = union(NodeType) {
-        class: api.ParClass,
-        parameter: api.ParParameter,
-        arrayValue: api.ParArray,
-
-        pub fn classOrNull(self: *RetrieveResult) ?api.ParClass {
-            return switch (self) {
-                .class => |class| class,
-                .arrayValue => null,
-                .parameter => null
-            };
-        }
-
-        pub fn parameterOrNull(self: *RetrieveResult) ?api.ParParameter {
-            return switch (self) {
-                .class => null,
-                .arrayValue => null,
-                .parameter => |class| class
-            };
-        }
-
-        pub fn arrayValueOrNull(self: *RetrieveResult) ?api.ParArray {
-            return switch (self) {
-                .class => null,
-                .arrayValue => |value| value,
-                .parameter => null,
-            };
-        }
-    };
 };
