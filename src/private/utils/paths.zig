@@ -82,14 +82,16 @@ pub fn getPath(allocator: Allocator, store: *const storage.ParamStorage, pathTyp
     }
     
     const slice = try list.toOwnedSlice(allocator);
+    defer allocator.free(slice);
+
     std.mem.reverse([]const u8, slice);
     const path = try std.mem.join(allocator, PathSeparator, slice);
-    
+
     return path;
 }
 
 pub fn getName(path: []const u8) []const u8 {
-    const sepIdx = std.mem.lastIndexOfScalar(u8, path, PathSeparator);
+    const sepIdx = std.mem.lastIndexOf(u8, path, PathSeparator);
     if (sepIdx) |i| {
         return path[i + 1 ..];
     } else {
@@ -98,7 +100,7 @@ pub fn getName(path: []const u8) []const u8 {
 }
 
 pub fn getParent(path: []const u8) []const u8 {
-    const sepIdx = std.mem.lastIndexOfScalar(u8, path, PathSeparator);
+    const sepIdx = std.mem.lastIndexOf(u8, path, PathSeparator);
     if (sepIdx) |i| {
         return path[0..i];
     } else {

@@ -30,7 +30,7 @@ pub fn ParameterStorage(comptime field: []const u8) type {
 
         pub fn next(self: Self, store: *const storage.ParamStorage) !Self {
             if (!self.hasNext()) return error.EndOfList;
-            const data: *ParameterData = @ptrCast(try store.retrieve(self.handle.id));
+            const data: *const ParameterData = @constCast(@ptrCast(@alignCast(try store.retrieve(.create(self.handle.id)))));
             return @field(data, field);
         }
 
@@ -72,7 +72,7 @@ pub const ParameterData = struct {
     generation: u32,
     nameHash:   u64,
     value:      values.Value,
-    next:       ParameterStorage("next"),
+    sibling:    ParameterStorage("sibling"),
     pathHash:   u64,
     nameIdx:    paths.PathSegmentIdentifier,
     parent:     class.ClassStorage("parent"),
@@ -90,7 +90,7 @@ pub const ParameterData = struct {
             .generation = 1,
             .nameHash   = args.nameHash.?,
             .value      = args.value,
-            .next       = ParameterStorage("next").empty,
+            .sibling    = ParameterStorage("sibling").empty,
             .pathHash   = args.pathHash.?,
             .nameIdx    = args.nameIdx.?,
             .parent     = class.ClassStorage("parent").init(args.parent),

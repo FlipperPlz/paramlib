@@ -11,8 +11,8 @@ pub const QueryType = enum {
 };
 
 pub const QueryResult = union(enum) {
-    class:     *class.ClassData,
-    parameter: *params.ParameterData,
+    class:     *const class.ClassData,
+    parameter: *const params.ParameterData,
 };
 
 const PatternSegments = struct {
@@ -20,7 +20,7 @@ const PatternSegments = struct {
 
     fn init(allocator: Allocator, pattern: []const u8) !PatternSegments {
         var segments = std.ArrayList([]const u8).empty;
-        defer segments.deinit();
+        defer segments.deinit(allocator);
 
         var iter = std.mem.splitSequence(u8, pattern, ".");
         while (iter.next()) |segment| {
@@ -43,21 +43,21 @@ const PatternSegments = struct {
     }
 };
 
-pub fn findParameter(store: *storage.ParamStorage, path: []const u8) ?*params.ParameterData {
+pub fn findParameter(store: *storage.ParamStorage, path: []const u8) ?*const params.ParameterData {
     const hash = hasher.hash(path);
     const id = store.pathToId.get(hash) orelse return null;
     if(id != .par) return null;
-    return @ptrCast(store.retrieve(id) catch return null);
+    return @ptrCast(@alignCast((store.retrieve(id) catch return null)));
 }
 
-pub fn findClass(store: *storage.ParamStorage, path: []const u8) ?*class.ClassData {
+pub fn findClass(store: *storage.ParamStorage, path: []const u8) ?*const class.ClassData {
     const hash = hasher.hash(path);
     const id = store.pathToId.get(hash) orelse return null;
     if(id != .clazz) return null;
-    return @ptrCast(store.retrieve(id) catch return null);
+    return @ptrCast(@alignCast((store.retrieve(id) catch return null)));
 }
 
-pub fn findClassesByPattern(allocator: Allocator,store: *storage.ParamStorage,pattern: []const u8,) ![]QueryResult {
+pub fn findClassesByPattern(allocator: Allocator, store: *storage.ParamStorage, siblings: *const class.ClassStorage("sibling"), pattern: []const u8,) ![]QueryResult {
     var segments = try PatternSegments.init(allocator, pattern);
     defer segments.deinit(allocator);
 
@@ -68,15 +68,15 @@ pub fn findClassesByPattern(allocator: Allocator,store: *storage.ParamStorage,pa
         return results.toOwnedSlice(allocator);
     }
 
-    var root_class = class.ClassStorage("sibling").empty;
-    try matchClassesRecursive(store, &root_class, segments.segments, 0, &results);
+    try matchClassesRecursive(allocator, store, siblings, segments.segments, 0, &results);
 
     return results.toOwnedSlice(allocator);
 }
 
 fn matchClassesRecursive(
+    allocator:        Allocator,
     store:            *storage.ParamStorage,
-    current_class:    *class.ClassStorage("sibling"),
+    current_class:    *const class.ClassStorage("sibling"),
     pattern_segments: [][]const u8,
     segment_idx:      usize,
     results:          *std.ArrayList(QueryResult),
@@ -91,26 +91,21 @@ fn matchClassesRecursive(
 
     var iter = current_class.iterator(store);
     while (iter.next()) |sibling_storage| {
-        const sibling: *class.ClassData = @ptrCast(try store.retrieve(sibling_storage.handle.id));
+        const sibling: *const class.ClassData = @ptrCast(@alignCast((try store.retrieve(.create(sibling_storage.handle.id)))));
 
         if (!sibling.alive) continue;
 
         const sibling_name_segment = (store.pathSegments.get(sibling.nameIdx) catch continue) orelse continue;
-        const sibling_name = (store.pathSegments.values.get(sibling_name_segment.idx) catch continue) orelse continue;
 
-        const name_matches = is_wildcard or std.mem.eql(u8, sibling_name, current_segment);
+        const name_matches = is_wildcard or std.mem.eql(u8, sibling_name_segment, current_segment);
 
         if (!name_matches) continue;
 
         if (is_last_segment) {
-            try results.append(.{ .class = sibling });
-        } else if (PatternSegments.isWildcard(pattern_segments[segment_idx + 1])) {
-            try results.append(.{ .class = sibling });
-            var next_sibling = sibling.sibling;
-            try matchClassesRecursive(store, &next_sibling, pattern_segments, segment_idx + 1, results);
+            try results.append(allocator, .{ .class = sibling });
         } else {
-            var child_sibling = sibling.sibling;
-            try matchClassesRecursive(store, &child_sibling, pattern_segments, segment_idx + 1, results);
+            var children = sibling.children;
+            try matchClassesRecursive(allocator, store, &children, pattern_segments, segment_idx + 1, results);
         }
     }
 }
@@ -118,7 +113,7 @@ fn matchClassesRecursive(
 pub fn findParametersByPattern(
     allocator:    Allocator,
     store:        *storage.ParamStorage,
-    parent_class: *class.ClassData,
+    parent_class: *const class.ClassData,
     pattern:      []const u8,
 ) ![]QueryResult {
     var segments = try PatternSegments.init(allocator, pattern);
@@ -137,15 +132,14 @@ pub fn findParametersByPattern(
 
         var param_iter = parent_class.params.iterator(store);
         while (param_iter.next()) |param_storage| {
-            const param: *params.ParameterData = @ptrCast(try store.retrieve(param_storage.handle.id));
+            const param: *params.ParameterData = @constCast(@ptrCast(@alignCast((try store.retrieve(.create(param_storage.handle.id))))));
             if (!param.alive) continue;
 
             if (is_wildcard) {
                 try results.append(allocator, .{ .parameter = param });
             } else {
                 const param_name_segment = (store.pathSegments.get(param.nameIdx) catch continue) orelse continue;
-                const param_name = (store.pathSegments.values.get(param_name_segment.idx) catch continue) orelse continue;
-                if (std.mem.eql(u8, param_name, segment)) {
+                if (std.mem.eql(u8, param_name_segment, segment)) {
                     try results.append(allocator, .{ .parameter = param });
                 }
             }

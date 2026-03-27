@@ -35,7 +35,7 @@ pub fn ArrayStorage(comptime field: []const u8) type {
 
         pub fn next(self: Self, store: *const storage.ParamStorage) !Self {
             if (!self.hasNext()) return error.EndOfList;
-            const data: *ArrayData = @ptrCast(try store.retrieve(self.handle.id));
+            const data: *ArrayData = @ptrCast(@alignCast(try store.retrieve(.create(self.handle.id))));
             return @field(data, field);
         }
 

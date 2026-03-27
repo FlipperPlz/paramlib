@@ -1,5 +1,9 @@
-const std     = @import("std");
-const storage = @import("../data/storage.zig");
+const std         = @import("std");
+const storage     = @import("../data/storage.zig");
+const parameters  = @import("../slabs/parameter.zig");
+const class       = @import("../slabs/class.zig");
+const source      = @import("../slabs/source.zig");
+const array       = @import("../slabs/array.zig");
 
 pub fn Handle(comptime Id: type) type {
     return struct {
@@ -25,66 +29,49 @@ pub fn validateHandle(store: *const storage.ParamStorage, handle: anytype) !stru
 
     const data_ptr = try store.retrieve(.create(handle.id));
 
-    const DataType = struct {
-        generation: u32,
-        _padding1 : [4]u8 align(1) = undefined,
-        alive: bool,
+    const IdType = @TypeOf(handle.id);
+    const generation, const alive = blk: {
+        if (IdType == parameters.ParameterIdentifier) {
+            const d: *const parameters.ParameterData = @ptrCast(@alignCast(data_ptr));
+            break :blk .{ d.generation, d.alive };
+        } else if (IdType == class.ClassIdentifier) {
+            const d: *const class.ClassData = @ptrCast(@alignCast(data_ptr));
+            break :blk .{ d.generation, d.alive };
+        } else if (IdType == source.SourceIdentifier) {
+            const d: *const source.SourceData = @ptrCast(@alignCast(data_ptr));
+            break :blk .{ d.generation, d.alive };
+        } else if (IdType == array.ArrayIdentifier) {
+            const d: *const array.ArrayData = @ptrCast(@alignCast(data_ptr));
+            break :blk .{ d.generation, d.alive };
+        } else {
+            @compileError("validateHandle: unsupported handle id type " ++ @typeName(IdType));
+        }
     };
-    const data: *const DataType = @ptrCast(@alignCast(data_ptr));
 
-    if (data.generation != handle.generation) return error.StaleHandle;
-    if (!data.alive) return error.DeadData;
+    if (generation != handle.generation) return error.StaleHandle;
+    if (!alive) return error.DeadData;
 
     return .{
         .ptr = data_ptr,
-        .id = handle.id
+        .id  = handle.id,
     };
 }
 
-pub fn isValid(store: *const storage.ParamStorage, handle: type) bool {
+pub fn isValid(store: *const storage.ParamStorage, handle: anytype) bool {
     if (!handle.id.isValid()) return false;
-
-    const data = try store.retrieve(handle.id) orelse return false;
-
-    if (data.generation != handle.generation) return false;
-    if (!data.alive) return false;
-
+    const result = validateHandle(store, handle) catch return false;
+    _ = result;
     return true;
 }
 
-pub fn getGeneration(store: *const storage.ParamStorage, comptime handle: type) ?u32 {
-    const data = try store.retrieve(handle.id) orelse return null;
-    return data.generation;
+pub fn getGeneration(store: *const storage.ParamStorage, handle: anytype) ?u32 {
+    const result = validateHandle(store, handle) catch return null;
+    _ = result;
+
+    return handle.generation;
 }
 
-
-fn HandleType(comptime identifier: storage.StorageIdentifier) type {
-    return Handle(@TypeOf(switch (identifier) {
-        inline else => |v| v,
-    }));
-}
-
-pub fn makeHandle(store: *const storage.ParamStorage, comptime identifier: storage.StorageIdentifier) !HandleType(identifier) {
-    const data = try store.retrieve(identifier);
-
-    const id = switch (identifier) {
-        inline else => |id| Handle(@TypeOf(id)) {.id = id, .generation = data.generation},
-    };
-
-    return .{ .id = id, .generation = data.generation };
-
-}
-
-pub fn refreshHandle(store: *const storage.ParamStorage, comptime handle: type) !handle {
-    const data = store.retrieve(handle.id) orelse return error.InvalidHandle;
-    if (!data.alive) return error.DeadData;
-
-    return @TypeOf(handle) {
-        .id = handle.id,
-        .generation = data.generation,
-    };
-}
-
-pub fn eql(a: type, b: type) bool {
-    return a.id == b.id;
+pub fn refreshHandle(store: *const storage.ParamStorage, handle: anytype) !@TypeOf(handle) {
+    _ = try validateHandle(store, handle);
+    return handle;
 }

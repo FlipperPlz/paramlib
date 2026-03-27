@@ -142,9 +142,9 @@ pub const ParamStorage = struct {
     parameters:   parameter.ParameterPool,
     sources:      source.SourcePool,
     pathSegments: strings.StringPool(paths.PathSegmentIdentifier),
-    
     stringValues: strings.StringPool(value.ValueStringIdentifier),
     pathToId:     std.AutoHashMapUnmanaged(u64, StorageIdentifier),
+    root:         class.ClassStorage("sibling"),
 
     pub const empty: ParamStorage = .{
         .arrays       = array.ArrayPool.empty,
@@ -154,7 +154,8 @@ pub const ParamStorage = struct {
         .sources      = source.SourcePool.empty,
         .pathSegments = strings.StringPool(paths.PathSegmentIdentifier).empty,
         .stringValues = strings.StringPool(value.ValueStringIdentifier).empty,
-        .pathToId     = std.AutoHashMapUnmanaged(u64, StorageIdentifier).empty
+        .pathToId     = std.AutoHashMapUnmanaged(u64, StorageIdentifier).empty,
+        .root         = class.ClassStorage("sibling").empty,
     };
 
     pub fn alloc(self: *ParamStorage, allocator: Allocator, io: std.Io, initializer: StorageInitializer) !struct {index: StorageIdentifier, ptr: *anyopaque } {
@@ -183,12 +184,14 @@ pub const ParamStorage = struct {
             },
             .clazz => |class_init| {
                 const clazz    = try self.classes.acquire(allocator);
-                defer self.classes.release(allocator, clazz.index) catch @panic("oom");
+                errdefer self.classes.release(allocator, clazz.index) catch @panic("oom");
 
                 const nameHash = class_init.nameHash orelse hasher.hash(class_init.name);
                 const nameIdx  = class_init.nameIdx orelse (try self.pathSegments.intern(allocator, class_init.name)).idx;
                 const pathHash = class_init.pathHash orelse blk: {
                     const parentHandle = class_init.parent orelse break :blk hasher.hash(class_init.name);
+                    const parentIdx = parentHandle.id.toIndex() orelse return error.InvalidId;
+                    if (parentIdx >= self.classes.slabs.items.len * 16) return error.InvalidId;
                     const parent = self.classes.getConst(parentHandle.id);
 
                     const parentPath = try paths.getPath(allocator, self, .createClass(parent));
@@ -213,12 +216,31 @@ pub const ParamStorage = struct {
                     .base     = class_init.base,
                 });
 
-                
+                const new_handle = class.ClassHandle{
+                    .id         = clazz.index,
+                    .generation = clazz.ptr.generation,
+                };
+                if (class_init.parent) |parent_handle| {
+                    if (parent_handle.isValid()) {
+                        const parent_data = self.classes.get(parent_handle.id);
+                        clazz.ptr.sibling    = parent_data.children;
+                        parent_data.children = class.ClassStorage("sibling").init(new_handle);
+                    } else {
+                        // Todo maybe want to return an error here instead of silently treating it as a root class?
+                        // Invalid parent handle treat as root class.
+                        clazz.ptr.sibling = self.root;
+                        self.root = class.ClassStorage("sibling").init(new_handle);
+                    }
+                } else {
+                    clazz.ptr.sibling = self.root;
+                    self.root = class.ClassStorage("sibling").init(new_handle);
+                }
+
                 return .{.index = .create(clazz.index), .ptr = @ptrCast(clazz.ptr)};
             },
             .par => |param_init| {
                 const param = try self.parameters.acquire(allocator);
-                defer self.parameters.release(allocator, param.index) catch @panic("oom");
+                errdefer self.parameters.release(allocator, param.index) catch @panic("oom");
 
                 const nameHash = param_init.nameHash orelse hasher.hash(param_init.name);
                 const nameIdx = param_init.nameIdx orelse (try self.pathSegments.intern(allocator, param_init.name)).idx;
@@ -236,6 +258,7 @@ pub const ParamStorage = struct {
                 };
                 
                 try self.pathToId.put(allocator, pathHash, .create(param.index));
+                errdefer self.pathToId.remove(pathHash);
 
                 param.ptr.* = parameter.ParameterData.init(io, .{
                     .name     = param_init.name,
@@ -246,6 +269,16 @@ pub const ParamStorage = struct {
                     .value    = param_init.value,
                     .parent   = param_init.parent
                 });
+
+                if (param_init.parent.isValid()) {
+                    const parent_data = self.classes.get(param_init.parent.id);
+                    const new_param_handle = parameter.ParameterHandle{
+                        .id         = param.index,
+                        .generation = param.ptr.generation,
+                    };
+                    param.ptr.sibling  = parent_data.params;
+                    parent_data.params = parameter.ParameterStorage("sibling").init(new_param_handle);
+                }
 
                 return .{ .index = .create(param.index), .ptr = @ptrCast(param.ptr)};
 
@@ -258,7 +291,7 @@ pub const ParamStorage = struct {
                 const data = try self.stringValues.intern(allocator, str_init);
                 return .{.index = .create(data.idx), .ptr = @constCast(@ptrCast((try self.stringValues.get_ptr(data.idx)) orelse return error.NotFound))};
             },
-            .enumeration => {
+            .enumeration => { //TODO Enums
                 @panic("Not Implemented Yet");
             }
         };
@@ -293,24 +326,24 @@ pub const ParamStorage = struct {
     pub fn free(self: *ParamStorage, allocator: Allocator, id: StorageIdentifier) !void {
         if (!id.isValid()) return error.InvalidId;
         switch (id) {
-            .arr => |i| self.arrays.release(allocator, i),
-            .clazz => |i| self.classes.release(allocator, i),
-            .enumeration => |i| self.enums.release(allocator, i),
-            .par => |i| self.parameters.release(allocator, i),
-            .src => |i| self.sources.release(allocator, i),
+            .arr => |i| try self.arrays.release(allocator, i),
+            .clazz => |i| try self.classes.release(allocator, i),
+            .enumeration => |i| try self.enums.release(allocator, i),
+            .par => |i| try self.parameters.release(allocator, i),
+            .src => |i| try self.sources.release(allocator, i),
             .segment => return error.CannotFreeSegment, // Segments are interned and shared, so we don't free them individually
             .str => return error.CannotFreeString, // Strings are interned and shared, so we don't free them individually
         }
     }
 
     pub fn deinit(self: *ParamStorage, allocator: Allocator) void {
-        const array_stats = self.arrays.getStats();
-        for(0..array_stats.total_capacity) |i| {
-            if(i >= array_stats.used_count) break;
-            const idx: array.ArrayIdentifier = array.ArrayIdentifier.fromIndex(i);
-            const arr = self.arrays.get(idx);
-            arr.deinit(allocator);
-        }
+        const DeinitCtx = struct {
+            alloc: Allocator,
+            fn cb(ctx: @This(), arr: *array.ArrayData) void {
+                arr.deinit(ctx.alloc);
+            }
+        };
+        self.arrays.forEachLive(DeinitCtx{ .alloc = allocator }, DeinitCtx.cb);
 
         self.classes.deinit(allocator);
         self.parameters.deinit(allocator);

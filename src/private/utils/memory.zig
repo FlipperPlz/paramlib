@@ -105,6 +105,7 @@ pub fn SlabPool(comptime T: type, comptime Tid: type, comptime slab_size: usize)
             } else {
                 try self.free_list.append(allocator, .{ .slab = slab_idx, .slot = slot });
             }
+            self.slabs.items[slab_idx].data[slot].alive = false;
         }
 
         pub fn get(self: *Self, index: Tid) *T {
@@ -117,6 +118,17 @@ pub fn SlabPool(comptime T: type, comptime Tid: type, comptime slab_size: usize)
             const slab_idx = @intFromEnum(index) / slab_size;
             const slot = @intFromEnum(index) % slab_size;
             return &self.slabs.items[slab_idx].data[slot];
+        }
+
+        pub fn forEachLive(self: *Self, ctx: anytype, comptime cb: fn(@TypeOf(ctx), *T) void) void {
+            for (self.slabs.items) |slab| {
+                var slot: usize = 0;
+                while (slot < slab_size) : (slot += 1) {
+                    if (slab.used.isSet(slot)) {
+                        cb(ctx, &slab.data[slot]);
+                    }
+                }
+            }
         }
 
         pub fn getStats(self: *const Self) Stats {
@@ -133,72 +145,3 @@ pub fn SlabPool(comptime T: type, comptime Tid: type, comptime slab_size: usize)
         }
     };
 }
-
-pub fn ObjectPool(comptime T: type, comptime Tid: type) type {
-    return struct {
-        objects:         std.ArrayList(*T),
-        free_indices:    std.ArrayList(usize),
-        total_allocated: usize,
-
-        const Self = @This();
-
-        pub const Stats = struct {
-            total_allocated: usize,
-            free_count:      usize,
-        };
-
-        pub const empty: Self = .{
-            .objects         = .empty,
-            .free_indices    = .empty,
-            .total_allocated = 0
-        };
-
-        pub fn deinit(self: *Self, allocator: Allocator) void {
-            for (self.objects.items) |obj| {
-                allocator.destroy(obj);
-            }
-            self.objects.deinit(allocator);
-            self.free_indices.deinit(allocator);
-        }
-
-        pub fn acquire(self: *Self, allocator: Allocator) !struct { ptr: *T, index: Tid } {
-            if (self.free_indices.popOrNull()) |idx| {
-                const ptr = self.objects.items[idx];
-                return .{
-                    .ptr = ptr,
-                    .index = Tid.fromIndex(idx),
-                };
-            }
-
-            const ptr = try allocator.create(T);
-            errdefer allocator.destroy(ptr);
-
-            const idx = self.objects.items.len;
-            try self.objects.append(allocator, ptr);
-            self.total_allocated += 1;
-
-            return .{
-                .ptr = ptr,
-                .index = Tid.fromIndex(idx),
-            };
-        }
-
-        pub fn release(self: *Self, allocator: Allocator, index: Tid) !void {
-            const idx = @intFromEnum(index);
-            try self.free_indices.append(allocator, idx);
-        }
-
-        pub fn get(self: *Self, index: Tid) *T {
-            const idx = @intFromEnum(index);
-            return self.objects.items[idx];
-        }
-
-        pub fn getStats(self: *const Self) Stats {
-            return .{
-                .total_allocated = self.total_allocated,
-                .free_count      = self.free_indices.items.len,
-            };
-        }
-    };
-}
-

@@ -39,7 +39,7 @@ pub fn SourceStorage(comptime field: []const u8) type {
 
         pub fn next(self: Self, store: *storage.ParamStorage) !Self {
             if (!self.hasNext()) return error.EndOfList;
-            const data: *SourceData = @ptrCast(try store.retrieve(self.handle.id));
+            const data: *SourceData = @ptrCast(@alignCast(try store.retrieve(.create(self.handle.id))));
             return @field(data, field);
         }
 
