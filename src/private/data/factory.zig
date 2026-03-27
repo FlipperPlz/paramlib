@@ -15,8 +15,7 @@ pub fn createClass(allocator: Allocator, io: std.Io, store: *storage.ParamStorag
         _ = try handles.validateHandle(store, _baseHandle);
         const baseClass: *class.ClassData = @ptrCast(@alignCast(store.classes.get(_baseHandle.id)));
         // TODO: Make sure base is visible
-        // TODO: Switch to atomic, simple for now
-        baseClass.references += 1;
+        _ = baseClass.references.fetchAdd(1, .monotonic);
     }
 
     return @ptrCast(@alignCast(clazz.ptr));

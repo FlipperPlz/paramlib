@@ -12,6 +12,7 @@ const storage     = @import("../data/storage.zig");
 pub const ClassSlabSize   = 512;
 pub const ClassIdentifier = identifiers.TypedId("Class");
 pub const ClassHandle     = handles.Handle(ClassIdentifier);
+pub const AtomicUsize     = std.atomic.Value(usize);
 
 pub fn ClassStorage(comptime field: []const u8) type {
     return struct {
@@ -84,7 +85,7 @@ pub const ClassData = struct {
     base:       ClassStorage("base"),
     children:   ClassStorage("sibling"),
     sibling:    ClassStorage("sibling"),
-    references: u32,
+    references: AtomicUsize,
     nameIdx:    paths.PathSegmentIdentifier,
     createdBy:  source.SourceHandle,
     createdAt:  i64,
@@ -106,7 +107,7 @@ pub const ClassData = struct {
             .base       = ClassStorage("base").init(args.base orelse ClassHandle.invalid),
             .children   = ClassStorage("sibling").empty,
             .sibling    = ClassStorage("sibling").empty,
-            .references = 1,
+            .references = AtomicUsize.init(1),
             .nameIdx    = args.nameIdx.?,
             .createdBy  = args.source,
             .modifiedBy = args.source,

@@ -1595,7 +1595,7 @@ test "factory: createClass with base class — increments base references" {
     const base_raw = try factory.createClass(testing.allocator, testIo, &store, .{
         .name = "BaseEntity", .parent = rootHandle, .source = source_mod.SourceHandle.invalid,
     });
-    const initial_refs = base_raw.references;
+    const initial_refs = base_raw.references.load(.monotonic);
 
     const baseHandle = class_mod.ClassHandle{
         .id = store.pathToId.get(base_raw.pathHash).?.clazz,
@@ -1610,7 +1610,7 @@ test "factory: createClass with base class — increments base references" {
     });
 
     const base_after = query.findClass(&store, "root.BaseEntity").?;
-    try testing.expectEqual(initial_refs + 1, base_after.references);
+    try testing.expectEqual(initial_refs + 1, base_after.references.load(.monotonic));
 }
 
 test "factory: createClass with invalid parent returns error" {
@@ -1847,7 +1847,7 @@ test "integration: base class reference count increments per derived class" {
         .parent = rootHandle,
         .source = source_mod.SourceHandle.invalid,
     });
-    const initial_refs = base_data.references;
+    const initial_refs = base_data.references.load(.monotonic);
 
     const baseHandle = class_mod.ClassHandle{
         .id         = store.pathToId.get(base_data.pathHash).?.clazz,
@@ -1866,7 +1866,7 @@ test "integration: base class reference count increments per derived class" {
     });
 
     const base_after = query.findClass(&store, "__root__.VehicleBase").?;
-    try testing.expectEqual(initial_refs + 3, base_after.references);
+    try testing.expectEqual(initial_refs + 3, base_after.references.load(.monotonic));
 }
 
 test "integration: source handle is preserved on class and parameter data" {

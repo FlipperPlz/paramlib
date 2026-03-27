@@ -106,6 +106,7 @@ pub fn SlabPool(comptime T: type, comptime Tid: type, comptime slab_size: usize)
                 try self.free_list.append(allocator, .{ .slab = slab_idx, .slot = slot });
             }
             self.slabs.items[slab_idx].data[slot].alive = false;
+            self.slabs.items[slab_idx].data[slot].generation +%= 1;
         }
 
         pub fn get(self: *Self, index: Tid) *T {
