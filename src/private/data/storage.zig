@@ -191,7 +191,7 @@ pub const ParamStorage = struct {
                 const pathHash = class_init.pathHash orelse blk: {
                     const parentHandle = class_init.parent orelse break :blk hasher.hash(class_init.name);
                     const parentIdx = parentHandle.id.toIndex() orelse return error.InvalidId;
-                    if (parentIdx >= self.classes.slabs.items.len * 16) return error.InvalidId;
+                    if (parentIdx >= self.classes.slabs.items.len * class.ClassSlabSize) return error.InvalidId;
                     const parent = self.classes.getConst(parentHandle.id);
 
                     const parentPath = try paths.getPath(allocator, self, .createClass(parent));

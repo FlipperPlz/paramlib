@@ -60,14 +60,6 @@ pub const ParamDatabase = struct {
         self.store.deinit(allocator);
     }
 
-    pub fn iterator(self: *const ParamDatabase, io: std.Io) !class.ClassStorage("sibling").Iterator {
-        while (self.lock.tryLockShared(io))
-            std.Io.sleep(io, .fromMilliseconds(1), .real) catch @panic("Failed to acquire lock for iteration");
-        defer self.lock.unlockShared(io);
-
-        return self.store.root.iterator(&self.store);
-    }
-
     pub fn findClassesByPattern(self: *const ParamDatabase, allocator: Allocator, io: std.Io, pattern: []const u8) ![]query.QueryResult {
         while (self.lock.tryLockShared(io))
             std.Io.sleep(io, .fromMilliseconds(1), .real) catch @panic("Failed to acquire lock for lookup");
@@ -116,12 +108,18 @@ pub const ParamDatabase = struct {
     pub fn deleteParameter(self: *ParamDatabase, allocator: Allocator, io: std.Io, param: *params.ParameterData) !void {
         while (!self.lock.tryLock(io))
             std.Io.sleep(io, .fromMilliseconds(1), .real) catch @panic("Failed to acquire lock for deleteParameter");
+
         defer self.lock.unlock(io);
 
         try factory.deleteParameter(allocator, &self.store, param.createHandle(self.store));
     }
 
     pub fn createClass(self: *ParamDatabase, allocator: Allocator, io: std.Io, parentPath: ?[]const u8, args: class.ClassInit) *class.ClassData {
+        while (!self.lock.tryLock(io))
+            std.Io.sleep(io, .fromMilliseconds(1), .real) catch @panic("Failed to acquire lock for deleteParameter");
+
+        defer self.lock.unlock(io);
+
         if(parentPath) {
             const parentData: *class.ClassData = (self.lookupClass( io, parentPath) orelse return error.InvalidParent);
             args.parent = parentData.createHandle(self.store);

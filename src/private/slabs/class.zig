@@ -141,14 +141,14 @@ pub const ClassData = struct {
         return @constCast(self);
     }
 
-    pub fn getIdentifier(self: *const ClassData, store: *const storage.ParamStorage) ClassIdentifier {
-        return ClassIdentifier{ .id = (store.pathToId.get(self.pathHash) orelse @panic("ClassData has invalid pathHash")).clazz };
+    pub fn getIdentifier(self: *const ClassData, store: *const storage.ParamStorage) ?ClassIdentifier {
+        return ClassIdentifier{ .id = (store.pathToId.get(self.pathHash) orelse return null).clazz };
     }
 
     pub fn createHandle(self: *const ClassData, store: *const storage.ParamStorage) ClassHandle {
         return ClassHandle {
             .generation = self.generation,
-            .id = self.getIdentifier(store)
+            .id = self.getIdentifier(store) orelse return null
         };
     }
 };

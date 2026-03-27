@@ -1,0 +1,22 @@
+Going through the whole codebase:
+High priority - blocks merge from working correctly:
+
+Reference guard in deleteClass: the merge's delete-marker path calls factory.deleteClass, but there's no check before freeing a class that's still someone else's base. Add if (data.references.load(.monotonic) > 1) return error.ClassInUse; at the top of deleteClass.
+findChildByNameHash and findParamByNameHash helpers: they're private to merge.zig in the code above but should probably live in query.zig since they're basic traversal operations you'll need elsewhere.
+Access mode enforcement in store.alloc: when creating a class, storage.zig doesn't check whether the parent's access field permits adding children. The merge respects access via effective_access, but a direct store.alloc(.createClass(...)) call completely bypasses it.
+
+Medium priority - needed for the formats:
+
+Text (cpp) parser - formats/cpp/parser.zig is empty. This is the largest piece of work after merge. The parser needs: expression mode (@expr), type detection (try int → int64 → float → string), string continuation (\n between quoted segments), "" embedded quotes, #line directives, access = N magic entry name, and the duplicate detection with UnlinkClasses equivalent before discarding.
+Binary parser/writer - formats/bin/parser.zig is empty. Binary format v8 is 'Par\0' magic + version int + recursive class content. Lower priority than text since text parsing is needed first to build test fixtures.
+
+Lower priority - correctness and completeness:
+lookupClass doesn't follow base chains for value lookup - right now it's purely path-hash based. The original's Find(name, parent, base, visible) traversal (which follows _base for inherited values) doesn't exist. You'll need this when you expose the value-reading API.
+Duplicate name detection on store.alloc - calling store.alloc(.createClass(...)) with a duplicate path silently overwrites the pathToId entry. getOrCreateClass handles this, but direct alloc doesn't. At minimum add an assertion, ideally return error.DuplicatePath.
+ParamDatabase needs mergeFrom - the top-level API should expose merge so callers don't need to reach into the store directly. Something like db.mergeFrom(allocator, io, dst_path, src_class).
+Enum storage isn't hooked up - database.zig creates an EnumStorage field but storage.zig panics on .enumeration in alloc. The enum slab exists in enum.zig but the EnumInit/EnumData types need fleshing out if you plan to support enum Name { A=0, B } from the text format.
+
+
+WyHash incremental parsing for creating path hashes
+make merge remove old
+The same collect+reverse pattern with merge applies in your text parser when you finish parsing a class body and want to hand off its children to a merge. Parse top-to-bottom produces items in the prepend-reversed list; before merging into an existing dst class, reverse the collected source entries so the merge processes them in parse order. Since the merge itself uses findByNameHash (order-agnostic), it mostly doesn't matter for correctness - but it matters for allOverloaded semantics and for stable addon layering behaviour.

@@ -28,9 +28,27 @@ pub fn ParameterStorage(comptime field: []const u8) type {
             return self.handle.isValid();
         }
 
-        pub fn next(self: Self, store: *const storage.ParamStorage) !Self {
-            if (!self.hasNext()) return error.EndOfList;
-            const data: *const ParameterData = @constCast(@ptrCast(@alignCast(try store.retrieve(.create(self.handle.id)))));
+         pub fn next(self: Self, store: *const storage.ParamStorage) !Self {
+            return (try nextOrNull(self, store)) orelse error.EndOfList;
+        }
+
+        pub fn current (self: Self, store: *const storage.ParamStorage) !*const ParameterData {
+            return (try currentOrNull(self, store)) orelse return error.EndOfList;
+        }
+
+        pub fn currentOrNull(self: Self, store: *const storage.ParamStorage) !?*const ParameterData {
+            if (!self.hasNext()) return null;
+            return @ptrCast(@alignCast(try store.retrieve(storage.StorageIdentifier.create(self.handle.id))));
+        }
+
+        pub fn handleOrNull(self: Self) ?ParameterHandle {
+            if (!self.hasNext()) return null;
+            return self.handle;
+        }
+
+        pub fn nextOrNull(self: Self, store: *const storage.ParamStorage) !?Self {
+            if (!self.hasNext()) return null;
+            const data: *const ParameterData = @ptrCast(@alignCast(try store.retrieve(storage.StorageIdentifier.create(self.handle.id))));
             return @field(data, field);
         }
 
@@ -105,14 +123,14 @@ pub const ParameterData = struct {
         return @constCast(self);
     }
 
-    pub fn getIdentifier(self: *const ParameterData, store: *const storage.ParamStorage) ParameterIdentifier {
-        return ParameterIdentifier{ .id = (store.pathToId.get(self.pathHash) orelse @panic("ParameterData has invalid pathHash")).par };
+    pub fn getIdentifier(self: *const ParameterData, store: *const storage.ParamStorage) ?ParameterIdentifier {
+        return ParameterIdentifier{ .id = (store.pathToId.get(self.pathHash) orelse return null).par };
     }
 
-    pub fn createHandle(self: *const ParameterData, store: *const storage.ParamStorage) ParameterData {
+    pub fn createHandle(self: *const ParameterData, store: *const storage.ParamStorage) ?ParameterData {
         return ParameterData {
             .generation = self.generation,
-            .id = self.getIdentifier(store)
+            .id = self.getIdentifier(store) orelse return null
         };
     }
 }; 

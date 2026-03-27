@@ -52,6 +52,22 @@ pub fn lookupParameter(store: *storage.ParamStorage, path: []const u8) ?*const p
     return data;
 }
 
+pub fn getClassByNameHash(store: *storage.ParamStorage, parent: *const class.ClassData, hash: u64) !?class.ClassHandle {
+    const iter = parent.children.iterator(store);
+    while (iter.next()) |next_handle|{
+        if(hash == (try next_handle.current(store)).nameHash) return next_handle.handle;
+    }
+    return null;
+}
+
+pub fn getParameterByNameHash(store: *storage.ParamStorage, parent: *const class.ClassData, hash: u64) !?params.ParameterHandle {
+    const iter = parent.params.iterator(store);
+    while (iter.next()) |next_handle|{
+        if(hash == (try next_handle.current(store)).nameHash) return next_handle.handle;
+    }
+    return null;
+}
+
 pub fn lookupClass(store: *storage.ParamStorage, path: []const u8) ?*const class.ClassData {
     const hash = hasher.hash(path);
     const id = store.pathToId.get(hash) orelse return null;
@@ -75,7 +91,6 @@ pub fn findClassesByPattern(allocator: Allocator, store: *storage.ParamStorage, 
     try matchClassesRecursive(allocator, store, siblings, segments.segments, 0, &results);
 
     const slice = try results.toOwnedSlice(allocator);
-    std.mem.reverse(QueryResult, slice);
     return slice;
 }
 
@@ -153,6 +168,5 @@ pub fn findParametersByPattern(
     }
 
     const slice = try results.toOwnedSlice(allocator);
-    std.mem.reverse(QueryResult, slice);
     return slice;
 }
