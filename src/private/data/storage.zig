@@ -318,8 +318,13 @@ pub const ParamStorage = struct {
             .enumeration => |i| @ptrCast(@alignCast(self.enums.get(i))),
             .par         => |i| @ptrCast(@alignCast(self.parameters.get(i))),
             .src         => |i| @ptrCast(@alignCast(self.sources.get(i))),
-            .segment     => |i| @ptrCast((try self.pathSegments.get(i)) orelse return error.NotFound),
-            .str         => |i| @ptrCast((try self.stringValues.get(i)) orelse return error.NotFound), 
+            // Segments and strings are immutable once interned, so we can return a const pointer even from retrieveMut
+            .segment     => |i| @ptrCast(@alignCast(@constCast(
+                try self.pathSegments.get_ptr(i)) orelse return error.NotFound
+            )),
+            .str         => |i| @ptrCast(@alignCast(@constCast(
+                try self.stringValues.get_ptr(i)) orelse return error.NotFound
+            )),
         };
     }
 

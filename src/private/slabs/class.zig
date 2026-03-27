@@ -28,7 +28,25 @@ pub fn ClassStorage(comptime field: []const u8) type {
         }
 
         pub fn next(self: Self, store: *const storage.ParamStorage) !Self {
-            if (!self.hasNext()) return error.EndOfList;
+            return (try nextOrNull(self, store)) orelse error.EndOfList;
+        }
+
+        pub fn current (self: Self, store: *const storage.ParamStorage) !*const ClassData {
+            return (try currentOrNull(self, store)) orelse return error.EndOfList;
+        }
+
+        pub fn currentOrNull(self: Self, store: *const storage.ParamStorage) !?*const ClassData {
+            if (!self.hasNext()) return null;
+            return @ptrCast(@alignCast(try store.retrieve(storage.StorageIdentifier.create(self.handle.id))));
+        }
+
+        pub fn handleOrNull(self: Self) ?ClassHandle {
+            if (!self.hasNext()) return null;
+            return self.handle;
+        }
+
+        pub fn nextOrNull(self: Self, store: *const storage.ParamStorage) !?Self {
+            if (!self.hasNext()) return null;
             const data: *const ClassData = @ptrCast(@alignCast(try store.retrieve(storage.StorageIdentifier.create(self.handle.id))));
             return @field(data, field);
         }
@@ -116,9 +134,8 @@ pub const ClassData = struct {
         };
     }
 
-    pub fn getMutable(self: *const ClassData, store: *storage.ParamStorage) *ClassData {
-        const id = store.pathToId.get(self.pathHash) orelse error.IdNotFound;
-        return @ptrCast(store.retrieveMut(id));
+    pub fn getMutable(self: *const ClassData) *ClassData {
+        return @constCast(self);
     }
 };
 

@@ -510,6 +510,7 @@ const TestComponent = struct {
     x: f32, y: f32, z: f32,
     health: i32,
     alive: bool,
+    generation: u32 = 1,
 };
 
 test "memory: slab pool acquire single item" {
@@ -520,7 +521,7 @@ test "memory: slab pool acquire single item" {
     const result = try pool.acquire(testing.allocator);
     try testing.expect(result.index.isValid());
 
-    result.ptr.* = .{ .x = 1.0, .y = 2.0, .z = 3.0, .health = 100, .alive = true };
+    result.ptr.* = .{ .generation = 1, .x = 1.0, .y = 2.0, .z = 3.0, .health = 100, .alive = true };
     try testing.expectApproxEqAbs(@as(f32, 1.0), result.ptr.x, 0.001);
     try testing.expectEqual(@as(i32, 100), result.ptr.health);
 }
@@ -985,7 +986,7 @@ test "integration: string pool as asset registry" {
 }
 
 test "integration: slab pool as typed component system - spawn, kill, respawn" {
-    const Position = struct { alive: bool, x: f32, y: f32, z: f32 };
+    const Position = struct { generation: u32 = 1, alive: bool, x: f32, y: f32, z: f32 };
     const PosId = identifiers.TypedId("PosComp");
     var positions = memory.SlabPool(Position, PosId, 32).empty;
     defer positions.deinit(testing.allocator);
@@ -1228,7 +1229,7 @@ test "query: findClass returns null on empty store" {
     var store = storage.ParamStorage.empty;
     defer store.deinit(testing.allocator);
 
-    try testing.expect(query.findClass(&store, "player") == null);
+    try testing.expect(query.lookupClass(&store, "player") == null);
 }
 
 test "query: findClass finds a root class by path" {
@@ -1239,7 +1240,7 @@ test "query: findClass finds a root class by path" {
         .name = "enemy", .parent = null, .source = source_mod.SourceHandle.invalid,
     }));
 
-    const found = query.findClass(&store, "enemy");
+    const found = query.lookupClass(&store, "enemy");
     try testing.expect(found != null);
     try testing.expect(found.?.alive);
 }
@@ -1252,8 +1253,8 @@ test "query: findClass returns null for wrong path" {
         .name = "npc", .parent = null, .source = source_mod.SourceHandle.invalid,
     }));
 
-    try testing.expect(query.findClass(&store, "player") == null);
-    try testing.expect(query.findClass(&store, "npc.stats") == null);
+    try testing.expect(query.lookupClass(&store, "player") == null);
+    try testing.expect(query.lookupClass(&store, "npc.stats") == null);
 }
 
 test "query: findClass finds nested class" {
@@ -1271,9 +1272,9 @@ test "query: findClass finds nested class" {
         .name = "zone1", .parent = rootHandle, .source = source_mod.SourceHandle.invalid,
     }));
 
-    try testing.expect(query.findClass(&store, "world.zone1") != null);
-    try testing.expect(query.findClass(&store, "world") != null);
-    try testing.expect(query.findClass(&store, "zone1") == null); // not a root path
+    try testing.expect(query.lookupClass(&store, "world.zone1") != null);
+    try testing.expect(query.lookupClass(&store, "world") != null);
+    try testing.expect(query.lookupClass(&store, "zone1") == null); // not a root path
 }
 
 test "query: findClass does not return a parameter" {
@@ -1293,14 +1294,14 @@ test "query: findClass does not return a parameter" {
     }));
 
     // "cfg.volume" is a parameter, not a class — findClass must return null
-    try testing.expect(query.findClass(&store, "cfg.volume") == null);
+    try testing.expect(query.lookupClass(&store, "cfg.volume") == null);
 }
 
 test "query: findParameter returns null on empty store" {
     var store = storage.ParamStorage.empty;
     defer store.deinit(testing.allocator);
 
-    try testing.expect(query.findParameter(&store, "player.health") == null);
+    try testing.expect(query.lookupParameter(&store, "player.health") == null);
 }
 
 test "query: findParameter finds a parameter by full path" {
@@ -1319,7 +1320,7 @@ test "query: findParameter finds a parameter by full path" {
         .source = source_mod.SourceHandle.invalid, .value = values.Value.initI32(100),
     }));
 
-    const found = query.findParameter(&store, "player.health");
+    const found = query.lookupParameter(&store, "player.health");
     try testing.expect(found != null);
     try testing.expect(found.?.alive);
     try testing.expectEqual(values.Value.initI32(100), found.?.value);
@@ -1334,7 +1335,7 @@ test "query: findParameter does not return a class" {
     }));
 
     // "player" is a class, not a parameter — findParameter must return null
-    try testing.expect(query.findParameter(&store, "player") == null);
+    try testing.expect(query.lookupParameter(&store, "player") == null);
 }
 
 test "query: findParameter returns null for wrong path" {
@@ -1353,8 +1354,8 @@ test "query: findParameter returns null for wrong path" {
         .source = source_mod.SourceHandle.invalid, .value = values.Value.initF32(0.5),
     }));
 
-    try testing.expect(query.findParameter(&store, "cfg.brightness") == null);
-    try testing.expect(query.findParameter(&store, "volume") == null);
+    try testing.expect(query.lookupParameter(&store, "cfg.brightness") == null);
+    try testing.expect(query.lookupParameter(&store, "volume") == null);
 }
 
 // ============================================================================
@@ -1548,7 +1549,7 @@ test "factory: createClass — class is findable via query.findClass" {
     });
 
     // findClass by full dotted path
-    const found = query.findClass(&store, "__root__.npc");
+    const found = query.lookupClass(&store, "__root__.npc");
     try testing.expect(found != null);
     try testing.expect(found.?.alive);
 }
@@ -1609,7 +1610,7 @@ test "factory: createClass with base class — increments base references" {
         .base   = baseHandle,
     });
 
-    const base_after = query.findClass(&store, "root.BaseEntity").?;
+    const base_after = query.lookupClass(&store, "root.BaseEntity").?;
     try testing.expectEqual(initial_refs + 1, base_after.references.load(.monotonic));
 }
 
@@ -1635,11 +1636,11 @@ test "integration: two-level CfgVehicles hierarchy — all classes queryable" {
     _ = try allocChildClass(testing.allocator, &db.store, "Truck", cfg);
     _ = try allocChildClass(testing.allocator, &db.store, "Plane", cfg);
 
-    try testing.expect(query.findClass(&db.store, "CfgVehicles")           != null);
-    try testing.expect(query.findClass(&db.store, "CfgVehicles.Car")       != null);
-    try testing.expect(query.findClass(&db.store, "CfgVehicles.Truck")     != null);
-    try testing.expect(query.findClass(&db.store, "CfgVehicles.Plane")     != null);
-    try testing.expect(query.findClass(&db.store, "CfgVehicles.Submarine") == null);
+    try testing.expect(query.lookupClass(&db.store, "CfgVehicles")           != null);
+    try testing.expect(query.lookupClass(&db.store, "CfgVehicles.Car")       != null);
+    try testing.expect(query.lookupClass(&db.store, "CfgVehicles.Truck")     != null);
+    try testing.expect(query.lookupClass(&db.store, "CfgVehicles.Plane")     != null);
+    try testing.expect(query.lookupClass(&db.store, "CfgVehicles.Submarine") == null);
 }
 
 test "integration: parameters in nested hierarchy — full-path lookup" {
@@ -1656,18 +1657,18 @@ test "integration: parameters in nested hierarchy — full-path lookup" {
     _ = try allocParam(testing.allocator, &db.store, "fullscreen",   video, values.Value.initI32(1));
 
     // Positive lookups
-    const mv = query.findParameter(&db.store, "Settings.Audio.masterVolume");
+    const mv = query.lookupParameter(&db.store, "Settings.Audio.masterVolume");
     try testing.expect(mv != null);
     try testing.expectApproxEqAbs(@as(f32, 0.8), mv.?.value.f32, 1e-5);
 
-    const res = query.findParameter(&db.store, "Settings.Video.resolution");
+    const res = query.lookupParameter(&db.store, "Settings.Video.resolution");
     try testing.expect(res != null);
     try testing.expectEqual(@as(i32, 1080), res.?.value.i32);
 
     // Negative lookups — wrong class prefix
-    try testing.expect(query.findParameter(&db.store, "Audio.masterVolume")         == null);
-    try testing.expect(query.findParameter(&db.store, "Settings.masterVolume")      == null);
-    try testing.expect(query.findParameter(&db.store, "Settings.Video.masterVolume") == null);
+    try testing.expect(query.lookupParameter(&db.store, "Audio.masterVolume")         == null);
+    try testing.expect(query.lookupParameter(&db.store, "Settings.masterVolume")      == null);
+    try testing.expect(query.lookupParameter(&db.store, "Settings.Video.masterVolume") == null);
 }
 
 test "integration: type discipline — findClass and findParameter are exclusive" {
@@ -1681,9 +1682,9 @@ test "integration: type discipline — findClass and findParameter are exclusive
     // "Cfg"       is a class  → findParameter must return null
     // "Cfg.Sub"   is a class  → findParameter must return null
     // "Cfg.value" is a param  → findClass must return null
-    try testing.expect(query.findParameter(&db.store, "Cfg")       == null);
-    try testing.expect(query.findParameter(&db.store, "Cfg.Sub")   == null);
-    try testing.expect(query.findClass(&db.store, "Cfg.value")     == null);
+    try testing.expect(query.lookupParameter(&db.store, "Cfg")       == null);
+    try testing.expect(query.lookupParameter(&db.store, "Cfg.Sub")   == null);
+    try testing.expect(query.lookupClass(&db.store, "Cfg.value")     == null);
 }
 
 test "integration: five-level deep hierarchy — queries at every depth" {
@@ -1697,13 +1698,13 @@ test "integration: five-level deep hierarchy — queries at every depth" {
     const l5 = try allocChildClass(testing.allocator, &db.store, "stats",  l4);
     _ = try allocParam(testing.allocator, &db.store, "health", l5, values.Value.initI32(100));
 
-    try testing.expect(query.findClass(&db.store, "root")                        != null);
-    try testing.expect(query.findClass(&db.store, "root.game")                   != null);
-    try testing.expect(query.findClass(&db.store, "root.game.world")             != null);
-    try testing.expect(query.findClass(&db.store, "root.game.world.player")      != null);
-    try testing.expect(query.findClass(&db.store, "root.game.world.player.stats") != null);
+    try testing.expect(query.lookupClass(&db.store, "root")                        != null);
+    try testing.expect(query.lookupClass(&db.store, "root.game")                   != null);
+    try testing.expect(query.lookupClass(&db.store, "root.game.world")             != null);
+    try testing.expect(query.lookupClass(&db.store, "root.game.world.player")      != null);
+    try testing.expect(query.lookupClass(&db.store, "root.game.world.player.stats") != null);
 
-    const h = query.findParameter(&db.store, "root.game.world.player.stats.health");
+    const h = query.lookupParameter(&db.store, "root.game.world.player.stats.health");
     try testing.expect(h != null);
     try testing.expectEqual(@as(i32, 100), h.?.value.i32);
 }
@@ -1756,7 +1757,7 @@ test "integration: findParametersByPattern wildcard returns all params" {
     _ = try allocParam(testing.allocator, &store, "restitution",cls, values.Value.initF32(0.5));
     _ = try allocParam(testing.allocator, &store, "drag",       cls, values.Value.initF32(0.01));
 
-    const clsData = query.findClass(&store, "PhysicsConfig").?;
+    const clsData = query.lookupClass(&store, "PhysicsConfig").?;
     const results  = try query.findParametersByPattern(testing.allocator, &store, clsData, "*");
     defer testing.allocator.free(results);
 
@@ -1780,12 +1781,12 @@ test "integration: all six value types are stored and retrieved correctly" {
     _ = try allocParam(testing.allocator, &store, "strVal",    cls, values.Value.initString(99));
     _ = try allocParam(testing.allocator, &store, "arrVal",    cls, values.Value.initArray(128));
 
-    const i = query.findParameter(&store, "TypeSampler.intVal").?;
-    const l = query.findParameter(&store, "TypeSampler.longVal").?;
-    const f = query.findParameter(&store, "TypeSampler.floatVal").?;
-    const d = query.findParameter(&store, "TypeSampler.doubleVal").?;
-    const s = query.findParameter(&store, "TypeSampler.strVal").?;
-    const a = query.findParameter(&store, "TypeSampler.arrVal").?;
+    const i = query.lookupParameter(&store, "TypeSampler.intVal").?;
+    const l = query.lookupParameter(&store, "TypeSampler.longVal").?;
+    const f = query.lookupParameter(&store, "TypeSampler.floatVal").?;
+    const d = query.lookupParameter(&store, "TypeSampler.doubleVal").?;
+    const s = query.lookupParameter(&store, "TypeSampler.strVal").?;
+    const a = query.lookupParameter(&store, "TypeSampler.arrVal").?;
 
     try testing.expectEqual(@as(i32, 7),                 i.value.i32);
     try testing.expectEqual(@as(i64, 1_000_000_000_000), l.value.i64);
@@ -1819,9 +1820,9 @@ test "integration: same parameter name in different classes resolved by path" {
     _ = try allocParam(testing.allocator, &store, "health", enemy,  values.Value.initI32(50));
     _ = try allocParam(testing.allocator, &store, "health", boss,   values.Value.initI32(1000));
 
-    const ph = query.findParameter(&store, "Player.health").?;
-    const eh = query.findParameter(&store, "Enemy.health").?;
-    const bh = query.findParameter(&store, "Boss.health").?;
+    const ph = query.lookupParameter(&store, "Player.health").?;
+    const eh = query.lookupParameter(&store, "Enemy.health").?;
+    const bh = query.lookupParameter(&store, "Boss.health").?;
 
     try testing.expectEqual(@as(i32, 100),  ph.value.i32);
     try testing.expectEqual(@as(i32, 50),   eh.value.i32);
@@ -1865,7 +1866,7 @@ test "integration: base class reference count increments per derived class" {
         .name = "Bike",  .parent = rootHandle, .source = source_mod.SourceHandle.invalid, .base = baseHandle,
     });
 
-    const base_after = query.findClass(&store, "__root__.VehicleBase").?;
+    const base_after = query.lookupClass(&store, "__root__.VehicleBase").?;
     try testing.expectEqual(initial_refs + 3, base_after.references.load(.monotonic));
 }
 
@@ -1894,10 +1895,10 @@ test "integration: source handle is preserved on class and parameter data" {
         .name = "mass", .parent = clsHandle, .source = srcHandle, .value = values.Value.initF32(1200.0),
     }));
 
-    const cls_data = query.findClass(&store, "Vehicle").?;
+    const cls_data = query.lookupClass(&store, "Vehicle").?;
     try testing.expect(cls_data.createdBy.eql(srcHandle));
 
-    const par_data = query.findParameter(&store, "Vehicle.mass").?;
+    const par_data = query.lookupParameter(&store, "Vehicle.mass").?;
     try testing.expect(par_data.createdBy.eql(srcHandle));
 }
 
@@ -1928,10 +1929,10 @@ test "integration: large-scale — 20 classes × 5 params, all queryable" {
     // Verify every class and every parameter is reachable
     var buf: [128]u8 = undefined;
     for (class_names, 0..) |cname, ci| {
-        try testing.expect(query.findClass(&store, cname) != null);
+        try testing.expect(query.lookupClass(&store, cname) != null);
         for (param_names, 0..) |pname, pi| {
             const path = try std.fmt.bufPrint(&buf, "{s}.{s}", .{ cname, pname });
-            const par = query.findParameter(&store, path);
+            const par = query.lookupParameter(&store, path);
             try testing.expect(par != null);
             try testing.expectEqual(@as(i32, @intCast(ci * 10 + pi)), par.?.value.i32);
         }
@@ -1975,8 +1976,8 @@ test "integration: path helpers produce paths that resolve in storage" {
     const param_path = try paths.joinPaths(testing.allocator, &[_][]const u8{ full, "volume" });
     defer testing.allocator.free(param_path);
 
-    try testing.expect(query.findClass(&store, full)          != null);
-    try testing.expect(query.findParameter(&store, param_path) != null);
+    try testing.expect(query.lookupClass(&store, full)          != null);
+    try testing.expect(query.lookupParameter(&store, param_path) != null);
 
     // Hash of the built path equals hash of the literal
     try testing.expectEqual(hasher.hash(full),       hasher.hash("CfgSounds.Ambient.Rain"));
@@ -2018,8 +2019,8 @@ test "integration: factory.createClass result is identical to storage.alloc path
         .source = source_mod.SourceHandle.invalid,
     }));
 
-    const a = query.findClass(&store_a, "root.Child");
-    const b = query.findClass(&store_b, "root.Child");
+    const a = query.lookupClass(&store_a, "root.Child");
+    const b = query.lookupClass(&store_b, "root.Child");
 
     try testing.expect(a != null);
     try testing.expect(b != null);
@@ -2037,7 +2038,7 @@ test "integration: freed parameter slot is no longer alive" {
     const cls = try allocRootClass(testing.allocator, &store, "Cfg");
     const par_idx = try allocParam(testing.allocator, &store, "val", cls, values.Value.initI32(1));
 
-    try testing.expect(query.findParameter(&store, "Cfg.val") != null);
+    try testing.expect(query.lookupParameter(&store, "Cfg.val") != null);
 
     try store.free(testing.allocator, par_idx);
 
@@ -2055,8 +2056,8 @@ test "integration: createdAt <= modifiedAt on fresh class and parameter" {
     const cls = try allocRootClass(testing.allocator, &store, "TimedClass");
     _ = try allocParam(testing.allocator, &store, "tick", cls, values.Value.initI64(0));
 
-    const c = query.findClass(&store, "TimedClass").?;
-    const p = query.findParameter(&store, "TimedClass.tick").?;
+    const c = query.lookupClass(&store, "TimedClass").?;
+    const p = query.lookupParameter(&store, "TimedClass.tick").?;
 
     try testing.expect(c.createdAt <= c.modifiedAt);
     try testing.expect(p.createdAt <= p.modifiedAt);
@@ -2078,7 +2079,7 @@ test "integration: empty pattern returns empty results for classes and params" {
     defer testing.allocator.free(class_results);
     try testing.expectEqual(@as(usize, 0), class_results.len);
 
-    const cls_data = query.findClass(&db.store, "PopulatedClass").?;
+    const cls_data = query.lookupClass(&db.store, "PopulatedClass").?;
     const param_results = try query.findParametersByPattern(testing.allocator, &db.store, cls_data, "");
     defer testing.allocator.free(param_results);
     try testing.expectEqual(@as(usize, 0), param_results.len);
@@ -2112,14 +2113,14 @@ test "integration: pathHash uniqueness across realistic mixed hierarchy" {
     _ = try allocParam(testing.allocator, &store, "magazineSize", pistol, values.Value.initI32(15));
 
     // Every full path must resolve to a unique, correct value
-    try testing.expectApproxEqAbs(@as(f32, 35.0),  query.findParameter(&store, "CfgWeapons.Rifle.damage").?.value.f32,  1e-5);
-    try testing.expectApproxEqAbs(@as(f32, 20.0),  query.findParameter(&store, "CfgWeapons.Pistol.damage").?.value.f32, 1e-5);
-    try testing.expectApproxEqAbs(@as(f32, 600.0), query.findParameter(&store, "CfgWeapons.Rifle.fireRate").?.value.f32, 1e-3);
-    try testing.expectApproxEqAbs(@as(f32, 400.0), query.findParameter(&store, "CfgWeapons.Pistol.fireRate").?.value.f32, 1e-3);
-    try testing.expectEqual(@as(i32, 30),           query.findParameter(&store, "CfgWeapons.Rifle.magazineSize").?.value.i32);
-    try testing.expectEqual(@as(i32, 15),           query.findParameter(&store, "CfgWeapons.Pistol.magazineSize").?.value.i32);
+    try testing.expectApproxEqAbs(@as(f32, 35.0),  query.lookupParameter(&store, "CfgWeapons.Rifle.damage").?.value.f32,  1e-5);
+    try testing.expectApproxEqAbs(@as(f32, 20.0),  query.lookupParameter(&store, "CfgWeapons.Pistol.damage").?.value.f32, 1e-5);
+    try testing.expectApproxEqAbs(@as(f32, 600.0), query.lookupParameter(&store, "CfgWeapons.Rifle.fireRate").?.value.f32, 1e-3);
+    try testing.expectApproxEqAbs(@as(f32, 400.0), query.lookupParameter(&store, "CfgWeapons.Pistol.fireRate").?.value.f32, 1e-3);
+    try testing.expectEqual(@as(i32, 30),          query.lookupParameter(&store, "CfgWeapons.Rifle.magazineSize").?.value.i32);
+    try testing.expectEqual(@as(i32, 15),          query.lookupParameter(&store, "CfgWeapons.Pistol.magazineSize").?.value.i32);
 
     // Cross-paths must NOT resolve
-    try testing.expect(query.findParameter(&store, "CfgWeapons.damage") == null);
-    try testing.expect(query.findParameter(&store, "Rifle.damage") == null);
+    try testing.expect(query.lookupParameter(&store, "CfgWeapons.damage") == null);
+    try testing.expect(query.lookupParameter(&store, "Rifle.damage") == null);
 }

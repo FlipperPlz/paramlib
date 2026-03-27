@@ -81,7 +81,7 @@ pub const ParamDatabase = struct {
 
         defer self.lock.unlockShared(io);
 
-        return query.findParameter(&self.store, path);
+        return query.lookupParameter(&self.store, path);
     }
 
     pub fn lookupClass(self: *ParamDatabase, io: std.Io, path: []const u8) ?*class.ClassData {
@@ -89,7 +89,7 @@ pub const ParamDatabase = struct {
             std.Io.sleep(io, .fromMilliseconds(1), .real) catch @panic("Failed to acquire lock for lookup");
         defer self.lock.unlockShared(io);
 
-        return query.findClass(&self.store, path);
+        return query.lookupClass(&self.store, path);
     }
 
     pub fn getParameterLookup(self: *ParamDatabase, io: std.Io, path: []const u8) !*const params.ParameterData {

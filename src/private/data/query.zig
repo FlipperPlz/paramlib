@@ -43,14 +43,14 @@ const PatternSegments = struct {
     }
 };
 
-pub fn findParameter(store: *storage.ParamStorage, path: []const u8) ?*const params.ParameterData {
+pub fn lookupParameter(store: *storage.ParamStorage, path: []const u8) ?*const params.ParameterData {
     const hash = hasher.hash(path);
     const id = store.pathToId.get(hash) orelse return null;
     if(id != .par) return null;
     return @ptrCast(@alignCast((store.retrieve(id) catch return null)));
 }
 
-pub fn findClass(store: *storage.ParamStorage, path: []const u8) ?*const class.ClassData {
+pub fn lookupClass(store: *storage.ParamStorage, path: []const u8) ?*const class.ClassData {
     const hash = hasher.hash(path);
     const id = store.pathToId.get(hash) orelse return null;
     if(id != .clazz) return null;
