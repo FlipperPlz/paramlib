@@ -164,7 +164,7 @@ pub const ParamStorage = struct {
                 const arr = try self.arrays.acquire(allocator);
                 errdefer self.arrays.release(allocator, arr.index) catch @panic("oom");
 
-                arr.ptr.* = array.ArrayData.init(io, array_init);
+                arr.ptr.* = try array.ArrayData.init(allocator, io, array_init);
 
                 return .{
                     .index = .create(arr.index),

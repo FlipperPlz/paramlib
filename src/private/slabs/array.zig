@@ -73,13 +73,13 @@ pub const ArrayData = struct {
     modifiedBy:  source.SourceHandle,
     modifiedAt:  i64,
 
-    pub fn init(io: std.Io, args: ArrayInit) ArrayData {
+    pub fn init(allocator: Allocator, io: std.Io, args: ArrayInit) !ArrayData {
         const timestamp = time.getTimeMs(io, .real);
 
         return .{
             .alive       = true,
             .generation  = 1,
-            .values      = std.ArrayList(value.Value).initBuffer(args.values),
+            .values      = std.ArrayList(value.Value).initBuffer(try allocator.dupe(value.Value, args.values)),
             .parentParam = parameter.ParameterStorage("parent").init(args.parentParam),
             .parentArray = ArrayStorage("parentArray").init(args.parentArray orelse ArrayHandle.invalid),
             .createdBy   = args.source,

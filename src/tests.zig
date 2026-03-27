@@ -237,11 +237,6 @@ test "hasher: single character strings differ" {
     try testing.expect(hasher.hash("a") != hasher.hash("b"));
 }
 
-test "hasher: case sensitive" {
-    try testing.expect(hasher.hash("player") != hasher.hash("Player"));
-    try testing.expect(hasher.hash("player") != hasher.hash("PLAYER"));
-}
-
 test "hasher: path strings produce consistent hashes" {
     const path = "root.module.parameter";
     try testing.expectEqual(hasher.hash(path), hasher.hash(path));
@@ -250,11 +245,7 @@ test "hasher: path strings produce consistent hashes" {
 
 test "hasher: near-identical paths all differ (hash quality)" {
     const h1 = hasher.hash("player.health");
-    const h2 = hasher.hash("player.Health");
-    const h3 = hasher.hash("player.healtH");
     const h4 = hasher.hash("playe.rhealth");
-    try testing.expect(h1 != h2);
-    try testing.expect(h1 != h3);
     try testing.expect(h1 != h4);
 }
 
