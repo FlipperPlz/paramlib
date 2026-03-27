@@ -82,60 +82,67 @@ pub const ClassAccess = enum(u2) {
 };
 
 pub const ClassInit = struct {
-    name:     []const u8,
-    parent:   ?ClassHandle,
-    source:   source.SourceHandle,
-    nameHash: ?u64                         = null,
-    nameIdx:  ?paths.PathSegmentIdentifier = null,
-    pathHash: ?u64                         = null,
-    access:   ClassAccess                  = .readCreate,
-    base:     ?ClassHandle                 = null,
+    name:             []const u8,
+    parent:           ?ClassHandle,
+    source:           source.SourceHandle,
+    nameHash:         ?u64                         = null,
+    nameIdx:          ?paths.PathSegmentIdentifier = null,
+    pathHash:         ?u64                         = null,
+    access:           ClassAccess                  = .readCreate,
+    base:             ?ClassHandle                 = null,
+    is_delete:        bool                         = false,
 };
 
 pub const ClassData = struct {
-    generation: u32,
-    pathHash:   u64,
-    alive:      bool,
-    nameHash:   u64,
-    params:     parameter.ParameterStorage("sibling"),
-    access:     ClassAccess,
-    parent:     ClassStorage("parent"),
-    base:       ClassStorage("base"),
-    children:   ClassStorage("sibling"),
-    sibling:    ClassStorage("sibling"),
-    references: AtomicUsize,
-    nameIdx:    paths.PathSegmentIdentifier,
-    createdBy:  source.SourceHandle,
-    createdAt:  i64,
-    modifiedBy: source.SourceHandle,
-    modifiedAt: i64,
+    generation:       u32,
+    pathHash:         u64,
+    alive:            bool,
+    nameHash:         u64,
+    params:           parameter.ParameterStorage("sibling"),
+    access:           ClassAccess,
+    parent:           ClassStorage("parent"),
+    base:             ClassStorage("base"),
+    children:         ClassStorage("sibling"),
+    sibling:          ClassStorage("sibling"),
+    references:       AtomicUsize,
+    nameIdx:          paths.PathSegmentIdentifier,
+    createdBy:        source.SourceHandle,
+    createdAt:        i64,
+    modifiedBy:       source.SourceHandle,
+    modifiedAt:       i64,
+    is_delete_marker: bool,
 
     pub fn init(io: std.Io, args: ClassInit) ClassData {
         std.debug.assert(args.nameIdx != null and args.pathHash != null);
         const timestamp = time.getTimeMs(io, .real);
         const nameHash = args.nameHash orelse hasher.hash(args.name);
         return .{
-            .alive      = true,
-            .generation = 1,
-            .pathHash   = args.pathHash.?,
-            .nameHash   = nameHash,
-            .params     = parameter.ParameterStorage("sibling").empty,
-            .access     = args.access,
-            .parent     = ClassStorage("parent").init(args.parent orelse ClassHandle.invalid),
-            .base       = ClassStorage("base").init(args.base orelse ClassHandle.invalid),
-            .children   = ClassStorage("sibling").empty,
-            .sibling    = ClassStorage("sibling").empty,
-            .references = AtomicUsize.init(1),
-            .nameIdx    = args.nameIdx.?,
-            .createdBy  = args.source,
-            .modifiedBy = args.source,
-            .createdAt  = timestamp,
-            .modifiedAt = timestamp,
+            .alive            = true,
+            .generation       = 1,
+            .pathHash         = args.pathHash.?,
+            .nameHash         = nameHash,
+            .params           = parameter.ParameterStorage("sibling").empty,
+            .access           = args.access,
+            .parent           = ClassStorage("parent").init(args.parent orelse ClassHandle.invalid),
+            .base             = ClassStorage("base").init(args.base orelse ClassHandle.invalid),
+            .children         = ClassStorage("sibling").empty,
+            .sibling          = ClassStorage("sibling").empty,
+            .references       = AtomicUsize.init(1),
+            .nameIdx          = args.nameIdx.?,
+            .createdBy        = args.source,
+            .modifiedBy       = args.source,
+            .createdAt        = timestamp,
+            .modifiedAt       = timestamp,
+            .is_delete_marker = args.is_delete,
         };
     }
 
     pub fn getMutable(self: *const ClassData) *ClassData {
         return @constCast(self);
+    }
+
+    pub fn getIdentifier(self: *const ClassData, store: *const storage.ParamStorage) ClassIdentifier {
+        return ClassIdentifier{ .id = (store.pathToId.get(self.pathHash) orelse @panic("ClassData has invalid pathHash")).clazz };
     }
 };
 

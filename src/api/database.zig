@@ -7,9 +7,10 @@ const enumeration = @import("../private/slabs/enum.zig");
 const class       = @import("../private/slabs/class.zig");
 const source      = @import("../private/slabs/source.zig");
 const params      = @import("../private/slabs/parameter.zig");
-const query       = @import("../private/data/query.zig");
+const query       = @import("../private/tree/query.zig");
 const handle      = @import("../private/utils/handles.zig");
 const hasher      = @import("../private/utils/hasher.zig");
+const factory     = @import("../private/tree/factory.zig");
 
 pub const ParamDatabase = struct {
     store:   storage.ParamStorage,
@@ -104,4 +105,19 @@ pub const ParamDatabase = struct {
         };
     }
 
+    pub fn deleteClass(self: *ParamDatabase, allocator: Allocator, io: std.Io, classHandle: class.ClassHandle) !void {
+        while (!self.lock.tryLock(io))
+            std.Io.sleep(io, .fromMilliseconds(1), .real) catch @panic("Failed to acquire lock for deleteClass");
+        defer self.lock.unlock(io);
+
+        try factory.deleteClass(allocator, &self.store, classHandle);
+    }
+
+    pub fn deleteParameter(self: *ParamDatabase, allocator: Allocator, io: std.Io, paramHandle: params.ParameterHandle) !void {
+        while (!self.lock.tryLock(io))
+            std.Io.sleep(io, .fromMilliseconds(1), .real) catch @panic("Failed to acquire lock for deleteParameter");
+        defer self.lock.unlock(io);
+
+        try factory.deleteParameter(allocator, &self.store, paramHandle);
+    }
 };

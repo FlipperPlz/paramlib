@@ -11,8 +11,9 @@ const memory      = @import("private/utils/memory.zig");
 const paths       = @import("private/utils/paths.zig");
 const values      = @import("private/data/value.zig");
 const storage     = @import("private/data/storage.zig");
-const query       = @import("private/data/query.zig");
-const factory     = @import("private/data/factory.zig");
+const query       = @import("private/tree/query.zig");
+const factory     = @import("private/tree/factory.zig");
+const refs        = @import("private/tree/references.zig");
 const source_mod  = @import("private/slabs/source.zig");
 const class_mod   = @import("private/slabs/class.zig");
 const param_mod   = @import("private/slabs/parameter.zig");
@@ -2123,4 +2124,387 @@ test "integration: pathHash uniqueness across realistic mixed hierarchy" {
     // Cross-paths must NOT resolve
     try testing.expect(query.lookupParameter(&store, "CfgWeapons.damage") == null);
     try testing.expect(query.lookupParameter(&store, "Rifle.damage") == null);
+}
+
+// ============================================================================
+// References — retain / release
+// ============================================================================
+
+test "references: retainClass increments references on the class itself" {
+    var store = storage.ParamStorage.empty;
+    defer store.deinit(testing.allocator);
+
+    const handle = try allocRootClass(testing.allocator, &store, "RetainRoot");
+    const data   = store.classes.get(handle.id);
+
+    const before = data.references.load(.monotonic);
+    try refs.retainHandle(&store, handle);
+    try testing.expectEqual(before + 1, data.references.load(.monotonic));
+}
+
+test "references: retainClass also increments parent's references" {
+    var store = storage.ParamStorage.empty;
+    defer store.deinit(testing.allocator);
+
+    const parent_h = try allocRootClass(testing.allocator, &store, "ParentRetain");
+    const child_h  = try allocChildClass(testing.allocator, &store, "ChildRetain", parent_h);
+
+    const parent_data = store.classes.get(parent_h.id);
+    const before      = parent_data.references.load(.monotonic);
+
+    try refs.retainHandle(&store, child_h);
+    // Parent must have been retained too
+    try testing.expectEqual(before + 1, parent_data.references.load(.monotonic));
+}
+
+test "references: releaseClass mirrors retainClass — parent refcount restored" {
+    var store = storage.ParamStorage.empty;
+    defer store.deinit(testing.allocator);
+
+    const parent_h    = try allocRootClass(testing.allocator, &store, "ParentRelease");
+    const child_h     = try allocChildClass(testing.allocator, &store, "ChildRelease", parent_h);
+    const parent_data = store.classes.get(parent_h.id);
+    const child_data  = store.classes.get(child_h.id);
+
+    const parent_before = parent_data.references.load(.monotonic);
+    const child_before  = child_data.references.load(.monotonic);
+
+    try refs.retainHandle(&store, child_h);
+    try refs.releaseHandle(&store, child_h);
+
+    // Both should be back where they started
+    try testing.expectEqual(parent_before, parent_data.references.load(.monotonic));
+    try testing.expectEqual(child_before,  child_data.references.load(.monotonic));
+}
+
+test "references: retain/release across 3-level chain keeps every ancestor balanced" {
+    var store = storage.ParamStorage.empty;
+    defer store.deinit(testing.allocator);
+
+    const l1 = try allocRootClass(testing.allocator, &store, "L1");
+    const l2 = try allocChildClass(testing.allocator, &store, "L2", l1);
+    const l3 = try allocChildClass(testing.allocator, &store, "L3", l2);
+
+    const d1 = store.classes.get(l1.id);
+    const d2 = store.classes.get(l2.id);
+    const d3 = store.classes.get(l3.id);
+
+    const b1 = d1.references.load(.monotonic);
+    const b2 = d2.references.load(.monotonic);
+    const b3 = d3.references.load(.monotonic);
+
+    try refs.retainHandle(&store, l3);
+    try refs.retainHandle(&store, l3); // retain twice
+    try refs.releaseHandle(&store, l3);
+    try refs.releaseHandle(&store, l3); // release twice
+
+    try testing.expectEqual(b1, d1.references.load(.monotonic));
+    try testing.expectEqual(b2, d2.references.load(.monotonic));
+    try testing.expectEqual(b3, d3.references.load(.monotonic));
+}
+
+// ============================================================================
+// Delete marker (tombstone)
+// ============================================================================
+
+test "delete marker: is_delete_marker is false on normal class" {
+    var store = storage.ParamStorage.empty;
+    defer store.deinit(testing.allocator);
+
+    const h = try allocRootClass(testing.allocator, &store, "NormalClass");
+    const d = store.classes.get(h.id);
+    try testing.expect(!d.is_delete_marker);
+}
+
+test "delete marker: createDeleteMarker sets is_delete_marker = true" {
+    var store = storage.ParamStorage.empty;
+    defer store.deinit(testing.allocator);
+
+    const marker = try factory.createDeleteMarker(
+        testing.allocator, testIo, &store,
+        "DeletedClass", null, source_mod.SourceHandle.invalid,
+    );
+    try testing.expect(marker.is_delete_marker);
+    try testing.expect(marker.alive);
+    try testing.expectEqual(class_mod.ClassAccess.readOnly, marker.access);
+}
+
+test "delete marker: tombstone has no children and no params" {
+    var store = storage.ParamStorage.empty;
+    defer store.deinit(testing.allocator);
+
+    const marker = try factory.createDeleteMarker(
+        testing.allocator, testIo, &store,
+        "Ghost", null, source_mod.SourceHandle.invalid,
+    );
+    try testing.expect(!marker.children.hasNext());
+    try testing.expect(!marker.params.hasNext());
+}
+
+test "delete marker: tombstone is hidden from lookupClass" {
+    var store = storage.ParamStorage.empty;
+    defer store.deinit(testing.allocator);
+
+    _ = try factory.createDeleteMarker(
+        testing.allocator, testIo, &store,
+        "ToDelete", null, source_mod.SourceHandle.invalid,
+    );
+
+    // lookupClass must NOT expose tombstones to callers
+    try testing.expect(query.lookupClass(&store, "ToDelete") == null);
+
+    // But the entry IS in pathToId — merge logic needs to find it via
+    // the raw store, not via the public query API
+    const h = hasher.hash("ToDelete");
+    try testing.expect(store.pathToId.contains(h));
+}
+
+test "delete marker: tombstone is skipped by findClassesByPattern wildcard" {
+    var store = storage.ParamStorage.empty;
+    defer store.deinit(testing.allocator);
+
+    _ = try allocRootClass(testing.allocator, &store, "RealClass");
+    _ = try factory.createDeleteMarker(
+        testing.allocator, testIo, &store,
+        "GhostClass", null, source_mod.SourceHandle.invalid,
+    );
+
+    const root    = &store.root;
+    const results = try query.findClassesByPattern(testing.allocator, &store, root, "*");
+    defer testing.allocator.free(results);
+
+    // Only RealClass should appear — GhostClass is a tombstone and must be filtered
+    try testing.expectEqual(@as(usize, 1), results.len);
+    const name_ptr: *const []const u8 = @ptrCast(@alignCast(
+        try store.retrieve(.{ .segment = results[0].class.nameIdx }),
+    ));
+    try testing.expectEqualStrings("RealClass", name_ptr.*);
+}
+
+// ============================================================================
+// deleteParameter
+// ============================================================================
+
+test "deleteParameter: lookup returns null after deletion" {
+    var store = storage.ParamStorage.empty;
+    defer store.deinit(testing.allocator);
+
+    const cls_h = try allocRootClass(testing.allocator, &store, "Owner");
+    const p_id  = try allocParam(testing.allocator, &store, "speed", cls_h, values.Value.initF32(5.0));
+
+    try testing.expect(query.lookupParameter(&store, "Owner.speed") != null);
+
+    const p_handle = param_mod.ParameterHandle{
+        .id         = p_id.par,
+        .generation = store.parameters.get(p_id.par).generation,
+    };
+    try factory.deleteParameter(testing.allocator, &store, p_handle);
+
+    try testing.expect(query.lookupParameter(&store, "Owner.speed") == null);
+}
+
+test "deleteParameter: unlinks from parent params list — sibling still visible" {
+    var store = storage.ParamStorage.empty;
+    defer store.deinit(testing.allocator);
+
+    const cls_h = try allocRootClass(testing.allocator, &store, "MultiParam");
+    const a_id  = try allocParam(testing.allocator, &store, "alpha", cls_h, values.Value.initI32(1));
+    _           = try allocParam(testing.allocator, &store, "beta",  cls_h, values.Value.initI32(2));
+
+    const a_handle = param_mod.ParameterHandle{
+        .id         = a_id.par,
+        .generation = store.parameters.get(a_id.par).generation,
+    };
+    try factory.deleteParameter(testing.allocator, &store, a_handle);
+
+    // alpha is gone, beta must still be reachable
+    try testing.expect(query.lookupParameter(&store, "MultiParam.alpha") == null);
+    try testing.expect(query.lookupParameter(&store, "MultiParam.beta")  != null);
+}
+
+test "deleteParameter: slab slot generation is bumped (handle goes stale)" {
+    var store = storage.ParamStorage.empty;
+    defer store.deinit(testing.allocator);
+
+    const cls_h = try allocRootClass(testing.allocator, &store, "GenCheck");
+    const p_id  = try allocParam(testing.allocator, &store, "val", cls_h, values.Value.initI32(99));
+
+    const old_gen = store.parameters.get(p_id.par).generation;
+    const p_handle = param_mod.ParameterHandle{ .id = p_id.par, .generation = old_gen };
+
+    try factory.deleteParameter(testing.allocator, &store, p_handle);
+
+    // Generation must have been bumped by SlabPool.release
+    const new_gen = store.parameters.get(p_id.par).generation;
+    try testing.expect(new_gen != old_gen);
+
+    // validateHandle must now return StaleHandle
+    try testing.expectError(error.StaleHandle, handles.validateHandle(&store, p_handle));
+}
+
+test "deleteParameter: deleting all params leaves parent with empty list" {
+    var store = storage.ParamStorage.empty;
+    defer store.deinit(testing.allocator);
+
+    const cls_h = try allocRootClass(testing.allocator, &store, "EmptyAfter");
+    const p1_id = try allocParam(testing.allocator, &store, "x", cls_h, values.Value.initF32(1.0));
+    const p2_id = try allocParam(testing.allocator, &store, "y", cls_h, values.Value.initF32(2.0));
+
+    const p1_h = param_mod.ParameterHandle{ .id = p1_id.par, .generation = store.parameters.get(p1_id.par).generation };
+    const p2_h = param_mod.ParameterHandle{ .id = p2_id.par, .generation = store.parameters.get(p2_id.par).generation };
+
+    try factory.deleteParameter(testing.allocator, &store, p1_h);
+    try factory.deleteParameter(testing.allocator, &store, p2_h);
+
+    const cls_data = store.classes.get(cls_h.id);
+    try testing.expect(!cls_data.params.hasNext());
+}
+
+// ============================================================================
+// deleteClass
+// ============================================================================
+
+test "deleteClass: lookup returns null after deletion" {
+    var store = storage.ParamStorage.empty;
+    defer store.deinit(testing.allocator);
+
+    const h = try allocRootClass(testing.allocator, &store, "Doomed");
+    try testing.expect(query.lookupClass(&store, "Doomed") != null);
+
+    try factory.deleteClass(testing.allocator, &store, h);
+
+    try testing.expect(query.lookupClass(&store, "Doomed") == null);
+}
+
+test "deleteClass: handle goes stale after deletion" {
+    var store = storage.ParamStorage.empty;
+    defer store.deinit(testing.allocator);
+
+    const h = try allocRootClass(testing.allocator, &store, "Stale");
+    try factory.deleteClass(testing.allocator, &store, h);
+
+    try testing.expectError(error.StaleHandle, handles.validateHandle(&store, h));
+}
+
+test "deleteClass: deletes all owned parameters" {
+    var store = storage.ParamStorage.empty;
+    defer store.deinit(testing.allocator);
+
+    const h = try allocRootClass(testing.allocator, &store, "ParamOwner");
+    _ = try allocParam(testing.allocator, &store, "hp",  h, values.Value.initI32(100));
+    _ = try allocParam(testing.allocator, &store, "mp",  h, values.Value.initI32(50));
+    _ = try allocParam(testing.allocator, &store, "spd", h, values.Value.initF32(1.5));
+
+    try factory.deleteClass(testing.allocator, &store, h);
+
+    try testing.expect(query.lookupParameter(&store, "ParamOwner.hp")  == null);
+    try testing.expect(query.lookupParameter(&store, "ParamOwner.mp")  == null);
+    try testing.expect(query.lookupParameter(&store, "ParamOwner.spd") == null);
+}
+
+test "deleteClass: recursively deletes children" {
+    var store = storage.ParamStorage.empty;
+    defer store.deinit(testing.allocator);
+
+    const root  = try allocRootClass(testing.allocator,  &store, "CfgRoot");
+    const child = try allocChildClass(testing.allocator, &store, "Child",  root);
+    _           = try allocChildClass(testing.allocator, &store, "GrandChild", child);
+
+    try factory.deleteClass(testing.allocator, &store, root);
+
+    try testing.expect(query.lookupClass(&store, "CfgRoot")            == null);
+    try testing.expect(query.lookupClass(&store, "CfgRoot.Child")      == null);
+    try testing.expect(query.lookupClass(&store, "CfgRoot.Child.GrandChild") == null);
+}
+
+test "deleteClass: sibling at same level survives deletion" {
+    var store = storage.ParamStorage.empty;
+    defer store.deinit(testing.allocator);
+
+    const parent  = try allocRootClass(testing.allocator,  &store, "Parent");
+    const child_a = try allocChildClass(testing.allocator, &store, "ChildA", parent);
+    _             = try allocChildClass(testing.allocator, &store, "ChildB", parent);
+
+    try factory.deleteClass(testing.allocator, &store, child_a);
+
+    try testing.expect(query.lookupClass(&store, "Parent.ChildA") == null);
+    try testing.expect(query.lookupClass(&store, "Parent.ChildB") != null);
+    // Parent itself must still be alive
+    try testing.expect(query.lookupClass(&store, "Parent") != null);
+}
+
+test "deleteClass: root-level sibling survives deletion of another root" {
+    var store = storage.ParamStorage.empty;
+    defer store.deinit(testing.allocator);
+
+    const root_a = try allocRootClass(testing.allocator, &store, "RootA");
+    _            = try allocRootClass(testing.allocator, &store, "RootB");
+
+    try factory.deleteClass(testing.allocator, &store, root_a);
+
+    try testing.expect(query.lookupClass(&store, "RootA") == null);
+    try testing.expect(query.lookupClass(&store, "RootB") != null);
+}
+
+test "deleteClass: deep tree — children's params all removed" {
+    var store = storage.ParamStorage.empty;
+    defer store.deinit(testing.allocator);
+
+    const cfg    = try allocRootClass(testing.allocator,  &store, "CfgVehicles");
+    const car    = try allocChildClass(testing.allocator, &store, "Car",   cfg);
+    const truck  = try allocChildClass(testing.allocator, &store, "Truck", cfg);
+    _ = try allocParam(testing.allocator, &store, "speed",  car,   values.Value.initF32(120.0));
+    _ = try allocParam(testing.allocator, &store, "mass",   car,   values.Value.initF32(1200.0));
+    _ = try allocParam(testing.allocator, &store, "speed",  truck, values.Value.initF32(90.0));
+    _ = try allocParam(testing.allocator, &store, "mass",   truck, values.Value.initF32(8000.0));
+
+    try factory.deleteClass(testing.allocator, &store, cfg);
+
+    // Everything gone
+    try testing.expect(query.lookupClass(&store, "CfgVehicles")           == null);
+    try testing.expect(query.lookupClass(&store, "CfgVehicles.Car")        == null);
+    try testing.expect(query.lookupClass(&store, "CfgVehicles.Truck")      == null);
+    try testing.expect(query.lookupParameter(&store, "CfgVehicles.Car.speed")   == null);
+    try testing.expect(query.lookupParameter(&store, "CfgVehicles.Car.mass")    == null);
+    try testing.expect(query.lookupParameter(&store, "CfgVehicles.Truck.speed") == null);
+    try testing.expect(query.lookupParameter(&store, "CfgVehicles.Truck.mass")  == null);
+}
+
+// ============================================================================
+// getOrCreateClass
+// ============================================================================
+
+test "getOrCreateClass: second call with same name returns existing class" {
+    var store = storage.ParamStorage.empty;
+    defer store.deinit(testing.allocator);
+
+    const a = try factory.getOrCreateClass(testing.allocator, testIo, &store, .{
+        .name   = "Singleton",
+        .parent = null,
+        .source = source_mod.SourceHandle.invalid,
+    });
+    const b = try factory.getOrCreateClass(testing.allocator, testIo, &store, .{
+        .name   = "Singleton",
+        .parent = null,
+        .source = source_mod.SourceHandle.invalid,
+    });
+
+    // Same pointer — no duplicate allocated
+    try testing.expectEqual(a, b);
+    try testing.expectEqual(a.pathHash, b.pathHash);
+}
+
+test "getOrCreateClass: different names create distinct classes" {
+    var store = storage.ParamStorage.empty;
+    defer store.deinit(testing.allocator);
+
+    const a = try factory.getOrCreateClass(testing.allocator, testIo, &store, .{
+        .name = "Alpha", .parent = null, .source = source_mod.SourceHandle.invalid,
+    });
+    const b = try factory.getOrCreateClass(testing.allocator, testIo, &store, .{
+        .name = "Beta",  .parent = null, .source = source_mod.SourceHandle.invalid,
+    });
+
+    try testing.expect(a != b);
+    try testing.expect(a.pathHash != b.pathHash);
 }

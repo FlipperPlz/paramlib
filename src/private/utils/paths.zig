@@ -5,7 +5,7 @@ const class       = @import("../slabs/class.zig");
 const Allocator   = std.mem.Allocator;
 const handles     = @import("./handles.zig");
 const parameter   = @import("../slabs/parameter.zig");
-const query       = @import("../data/query.zig");
+const query       = @import("../tree/query.zig");
 pub const PathSeparator         = ".";
 pub const PathSegmentIdentifier = identifiers.TypedId("PathSegment");
 

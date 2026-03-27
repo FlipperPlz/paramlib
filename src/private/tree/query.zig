@@ -1,5 +1,5 @@
 const std     = @import("std");
-const storage = @import("storage.zig");
+const storage = @import("../data/storage.zig");
 const params  = @import("../slabs/parameter.zig");
 const class   = @import("../slabs/class.zig");
 const hasher  = @import("../utils/hasher.zig");
@@ -46,15 +46,19 @@ const PatternSegments = struct {
 pub fn lookupParameter(store: *storage.ParamStorage, path: []const u8) ?*const params.ParameterData {
     const hash = hasher.hash(path);
     const id = store.pathToId.get(hash) orelse return null;
-    if(id != .par) return null;
-    return @ptrCast(@alignCast((store.retrieve(id) catch return null)));
+    if (id != .par) return null;
+    const data: *const params.ParameterData = @ptrCast(@alignCast((store.retrieve(id) catch return null)));
+    if (!data.alive) return null;
+    return data;
 }
 
 pub fn lookupClass(store: *storage.ParamStorage, path: []const u8) ?*const class.ClassData {
     const hash = hasher.hash(path);
     const id = store.pathToId.get(hash) orelse return null;
-    if(id != .clazz) return null;
-    return @ptrCast(@alignCast((store.retrieve(id) catch return null)));
+    if (id != .clazz) return null;
+    const data: *const class.ClassData = @ptrCast(@alignCast((store.retrieve(id) catch return null)));
+    if (!data.alive or data.is_delete_marker) return null;
+    return data;
 }
 
 pub fn findClassesByPattern(allocator: Allocator, store: *storage.ParamStorage, siblings: *const class.ClassStorage("sibling"), pattern: []const u8,) ![]QueryResult {
@@ -70,7 +74,9 @@ pub fn findClassesByPattern(allocator: Allocator, store: *storage.ParamStorage, 
 
     try matchClassesRecursive(allocator, store, siblings, segments.segments, 0, &results);
 
-    return results.toOwnedSlice(allocator);
+    const slice = try results.toOwnedSlice(allocator);
+    std.mem.reverse(QueryResult, slice);
+    return slice;
 }
 
 fn matchClassesRecursive(
@@ -93,7 +99,7 @@ fn matchClassesRecursive(
     while (iter.next()) |sibling_storage| {
         const sibling: *const class.ClassData = @ptrCast(@alignCast((try store.retrieve(.create(sibling_storage.handle.id)))));
 
-        if (!sibling.alive) continue;
+        if (!sibling.alive or sibling.is_delete_marker) continue;
 
         const sibling_name_segment = (store.pathSegments.get(sibling.nameIdx) catch continue) orelse continue;
 
@@ -146,5 +152,7 @@ pub fn findParametersByPattern(
         }
     }
 
-    return results.toOwnedSlice(allocator);
+    const slice = try results.toOwnedSlice(allocator);
+    std.mem.reverse(QueryResult, slice);
+    return slice;
 }

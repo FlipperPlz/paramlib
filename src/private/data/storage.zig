@@ -206,14 +206,15 @@ pub const ParamStorage = struct {
                 errdefer self.pathToId.remove(pathHash);
 
                 clazz.ptr.* = class.ClassData.init(io, .{
-                    .name     = class_init.name,
-                    .nameHash = nameHash,
-                    .nameIdx  = nameIdx,
-                    .pathHash = pathHash,
-                    .parent   = class_init.parent,
-                    .source   = class_init.source,
-                    .access   = class_init.access,
-                    .base     = class_init.base,
+                    .name      = class_init.name,
+                    .nameHash  = nameHash,
+                    .nameIdx   = nameIdx,
+                    .pathHash  = pathHash,
+                    .parent    = class_init.parent,
+                    .source    = class_init.source,
+                    .access    = class_init.access,
+                    .base      = class_init.base,
+                    .is_delete = class_init.is_delete,
                 });
 
                 const new_handle = class.ClassHandle{
