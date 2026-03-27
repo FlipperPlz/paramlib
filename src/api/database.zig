@@ -93,31 +93,39 @@ pub const ParamDatabase = struct {
         return query.lookupClass(&self.store, path);
     }
 
-    pub fn getParameterLookup(self: *ParamDatabase, io: std.Io, path: []const u8) !*const params.ParameterData {
+    pub fn getParameterLookup(self: *ParamDatabase, io: std.Io, path: []const u8) !*params.ParameterData {
         return self.lookupParameter(io, path) orelse {
             return error.ParameterNotFound;
         };
     }
 
-    pub fn getClassLookup(self: *ParamDatabase, io: std.Io, path: []const u8) !*const class.ClassData {
+    pub fn getClassLookup(self: *ParamDatabase, io: std.Io, path: []const u8) !*class.ClassData {
         return self.lookupClass(io, path) orelse {
             return error.ClassNotFound;
         };
     }
 
-    pub fn deleteClass(self: *ParamDatabase, allocator: Allocator, io: std.Io, classHandle: class.ClassHandle) !void {
+    pub fn deleteClass(self: *ParamDatabase, allocator: Allocator, io: std.Io, clazz: *class.ClassData) !void {
         while (!self.lock.tryLock(io))
             std.Io.sleep(io, .fromMilliseconds(1), .real) catch @panic("Failed to acquire lock for deleteClass");
         defer self.lock.unlock(io);
 
-        try factory.deleteClass(allocator, &self.store, classHandle);
+        try factory.deleteClass(allocator, &self.store, clazz.createHandle(self.store));
     }
 
-    pub fn deleteParameter(self: *ParamDatabase, allocator: Allocator, io: std.Io, paramHandle: params.ParameterHandle) !void {
+    pub fn deleteParameter(self: *ParamDatabase, allocator: Allocator, io: std.Io, param: *params.ParameterData) !void {
         while (!self.lock.tryLock(io))
             std.Io.sleep(io, .fromMilliseconds(1), .real) catch @panic("Failed to acquire lock for deleteParameter");
         defer self.lock.unlock(io);
 
-        try factory.deleteParameter(allocator, &self.store, paramHandle);
+        try factory.deleteParameter(allocator, &self.store, param.createHandle(self.store));
+    }
+
+    pub fn createClass(self: *ParamDatabase, allocator: Allocator, io: std.Io, parentPath: ?[]const u8, args: class.ClassInit) *class.ClassData {
+        if(parentPath) {
+            const parentData: *class.ClassData = (self.lookupClass( io, parentPath) orelse return error.InvalidParent);
+            args.parent = parentData.createHandle(self.store);
+        }
+        return factory.createClass(allocator, io, self.store, init);
     }
 };

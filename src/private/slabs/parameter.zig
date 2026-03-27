@@ -100,6 +100,21 @@ pub const ParameterData = struct {
             .modifiedAt = timestamp
         };
     }
+
+    pub fn getMutable(self: *const ParameterData) *ParameterData {
+        return @constCast(self);
+    }
+
+    pub fn getIdentifier(self: *const ParameterData, store: *const storage.ParamStorage) ParameterIdentifier {
+        return ParameterIdentifier{ .id = (store.pathToId.get(self.pathHash) orelse @panic("ParameterData has invalid pathHash")).par };
+    }
+
+    pub fn createHandle(self: *const ParameterData, store: *const storage.ParamStorage) ParameterData {
+        return ParameterData {
+            .generation = self.generation,
+            .id = self.getIdentifier(store)
+        };
+    }
 }; 
 
 pub const ParameterPool = memory.SlabPool(ParameterData, ParameterIdentifier, ParameterSlabSize);
