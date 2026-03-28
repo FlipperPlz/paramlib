@@ -11,6 +11,7 @@ const memory      = @import("private/utils/memory.zig");
 const paths       = @import("private/utils/paths.zig");
 const values      = @import("private/data/value.zig");
 const storage     = @import("private/data/storage.zig");
+const cpp_lexer   = @import("private/formats/cpp/lexer.zig");
 const query       = @import("private/tree/query.zig");
 const factory     = @import("private/tree/factory.zig");
 const refs        = @import("private/tree/references.zig");
@@ -2498,4 +2499,8 @@ test "getOrCreateClass: different names create distinct classes" {
 
     try testing.expect(a != b);
     try testing.expect(a.pathHash != b.pathHash);
+}
+
+test "lexer" {
+    std.testing.refAllDecls(cpp_lexer);
 }
