@@ -29,3 +29,5 @@ zigpub fn retainClass(store: *storage.ParamStorage, data: *class.ClassData) !voi
         if (current.parent.handleOrNull()) |parentHandle| { // ← only parent
 retain/release should also walk the base chain when a base is set - otherwise a base class's reference count doesn't fully account for all its users.
 The acquire path in memory 2 scans ALL slabs from index 0 every call looking for one with next_free != null. As slabs fill, this becomes O(slabs × slab_size). current_slab was clearly intended to cache the index of the last slab with free space, avoiding the full scan. Either use it or remove it.
+The SlabPool.acquire has a subtle inefficiency: after a free-list miss, it linearly scans all slabs for next_free even though the free list exists to avoid that.
+rwlock over class instead of refs?

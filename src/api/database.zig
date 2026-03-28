@@ -53,35 +53,34 @@ pub const ParamDatabase = struct {
     }
 
     pub fn deinit(self: *ParamDatabase, allocator: Allocator, io: std.Io) void {
-        while(!self.lock.tryLock(io))
-            std.Io.sleep(io, .fromMilliseconds(1), .real) catch @panic("Failed to acquire lock for deinitialization");
-        defer self.lock.unlock(io);
+        self.lock.lockUncancelable(io);
+        self.lock.lockSharedUncancelable(io);
 
         self.store.deinit(allocator);
     }
 
     pub fn findClassesByPattern(self: *const ParamDatabase, allocator: Allocator, io: std.Io, pattern: []const u8) ![]query.QueryResult {
-        while (!self.lock.tryLockShared(io))
-            std.Io.sleep(io, .fromMilliseconds(1), .real) catch @panic("Failed to acquire lock for lookup");
-        defer self.lock.unlockShared(io);
+        self.lock.lockUncancelable(io);
+        self.lock.lockSharedUncancelable(io);
 
         return query.findClassesByPattern(allocator, &self.store, &self.store.root, pattern);
     }
 
     pub fn lookupParameter(self: *ParamDatabase, io: std.Io, path: []const u8) ?*params.ParameterData {
-        while (!self.lock.tryLockShared(io))
-            std.Io.sleep(io, .fromMilliseconds(1), .real) catch @panic("Failed to acquire lock for lookup");
-
-        defer self.lock.unlockShared(io);
+        self.lock.lockUncancelable(io);
+        self.lock.lockSharedUncancelable(io);
 
         return query.lookupParameter(&self.store, path);
     }
 
     pub fn lookupClass(self: *ParamDatabase, io: std.Io, path: []const u8) ?*class.ClassData {
-        while (!self.lock.tryLockShared(io))
-            std.Io.sleep(io, .fromMilliseconds(1), .real) catch @panic("Failed to acquire lock for lookup");
-        defer self.lock.unlockShared(io);
+        self.lock.lockUncancelable(io);
+        self.lock.lockSharedUncancelable(io);
 
+        return query.lookupClass(&self.store, path);
+    }
+
+    fn lookupClassUnlocked(self: *ParamDatabase, path: []const u8) ?*class.ClassData {
         return query.lookupClass(&self.store, path);
     }
 
@@ -98,30 +97,25 @@ pub const ParamDatabase = struct {
     }
 
     pub fn deleteClass(self: *ParamDatabase, allocator: Allocator, io: std.Io, clazz: *class.ClassData) !void {
-        while (!self.lock.tryLock(io))
-            std.Io.sleep(io, .fromMilliseconds(1), .real) catch @panic("Failed to acquire lock for deleteClass");
-        defer self.lock.unlock(io);
+        self.lock.lockUncancelable(io);
+        self.lock.lockSharedUncancelable(io);
 
         try factory.deleteClass(allocator, &self.store, clazz.createHandle(self.store));
     }
 
     pub fn deleteParameter(self: *ParamDatabase, allocator: Allocator, io: std.Io, param: *params.ParameterData) !void {
-        while (!self.lock.tryLock(io))
-            std.Io.sleep(io, .fromMilliseconds(1), .real) catch @panic("Failed to acquire lock for deleteParameter");
-
-        defer self.lock.unlock(io);
+        self.lock.lockUncancelable(io);
+        self.lock.lockSharedUncancelable(io);
 
         try factory.deleteParameter(allocator, &self.store, param.createHandle(self.store));
     }
 
-    pub fn createClass(self: *ParamDatabase, allocator: Allocator, io: std.Io, parentPath: ?[]const u8, args: class.ClassInit) *class.ClassData {
-        while (!self.lock.tryLock(io))
-            std.Io.sleep(io, .fromMilliseconds(1), .real) catch @panic("Failed to acquire lock for deleteParameter");
-
-        defer self.lock.unlock(io);
+    pub fn createClass(self: *ParamDatabase, allocator: Allocator, io: std.Io, parentPath: ?[]const u8, args: class.ClassInit) !*class.ClassData {
+        self.lock.lockUncancelable(io);
+        self.lock.lockSharedUncancelable(io);
 
         if(parentPath) |path| {
-            const parentData: *class.ClassData = (self.lookupClass( io, path) orelse return error.InvalidParent);
+            const parentData: *class.ClassData = (self.lookupClassUnlocked( io, path) orelse return error.InvalidParent);
             args.parent = parentData.createHandle(self.store);
         }
         return factory.createClass(allocator, io, self.store, args);
