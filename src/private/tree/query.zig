@@ -52,7 +52,7 @@ pub fn lookupParameter(store: *storage.ParamStorage, path: []const u8) ?*const p
     return data;
 }
 
-pub fn getClassByNameHash(store: *storage.ParamStorage, parent: *const class.ClassData, hash: u64) !?class.ClassHandle {
+pub fn findClassByNameHash(store: *storage.ParamStorage, parent: *const class.ClassData, hash: u64) !?class.ClassHandle {
     const iter = parent.children.iterator(store);
     while (iter.next()) |next_handle|{
         if(hash == (try next_handle.current(store)).nameHash) return next_handle.handle;
@@ -60,7 +60,7 @@ pub fn getClassByNameHash(store: *storage.ParamStorage, parent: *const class.Cla
     return null;
 }
 
-pub fn getParameterByNameHash(store: *storage.ParamStorage, parent: *const class.ClassData, hash: u64) !?params.ParameterHandle {
+pub fn findParameterByNameHash(store: *storage.ParamStorage, parent: *const class.ClassData, hash: u64) !?params.ParameterHandle {
     const iter = parent.params.iterator(store);
     while (iter.next()) |next_handle|{
         if(hash == (try next_handle.current(store)).nameHash) return next_handle.handle;

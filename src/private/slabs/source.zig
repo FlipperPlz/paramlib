@@ -13,6 +13,12 @@ pub const SourcePosition = struct {
     index:  SourceIndex,
     line:   f32,
     column: u32,
+
+    pub const start: SourcePosition = .{
+        .index = 0,
+        .line = 1,
+        .column = 1
+    };
 };
 pub const SourceSlabSize = 256;
 
@@ -96,7 +102,7 @@ pub const RuntimeContent = struct {
         data: []const u8,
     };
 
-    fn read(self: MemoryContent) []const u8 {
+    fn read(self: RuntimeContent) []const u8 {
         return self.data;
     }
 };
@@ -109,7 +115,7 @@ pub const FileContent = struct {
         path: []const u8,
     };
 
-    fn read(self: FileContent, allocator: Allocator, io: std.Io) []const u8 {
+    fn read(self: FileContent, allocator: Allocator, io: std.Io) ![]const u8 {
         var readerBuffer: [1024]u8 = undefined;
         const fileReader = self.file.reader(io, &readerBuffer);
         var reader = fileReader.interface;

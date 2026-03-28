@@ -35,7 +35,6 @@ pub fn joinPaths(allocator: Allocator, paths: []const []const u8) ![]const u8 {
     return combined_buffer;
 }
 
-
 pub const PathType = union(query.QueryType) {
     class: *const class.ClassData,
     parameter: *const parameter.ParameterData,

@@ -183,11 +183,6 @@ pub const ParamStorage = struct {
                 };
             },
             .clazz => |class_init| {
-                const clazz    = try self.classes.acquire(allocator);
-                errdefer self.classes.release(allocator, clazz.index) catch @panic("oom");
-
-                const nameHash = class_init.nameHash orelse hasher.hash(class_init.name);
-                const nameIdx  = class_init.nameIdx orelse (try self.pathSegments.intern(allocator, class_init.name)).idx;
                 const pathHash = class_init.pathHash orelse blk: {
                     const parentHandle = class_init.parent orelse break :blk hasher.hash(class_init.name);
                     const parentIdx = parentHandle.id.toIndex() orelse return error.InvalidId;
@@ -202,6 +197,21 @@ pub const ParamStorage = struct {
 
                     break :blk hasher.hash(joined);
                 };
+                if (class_init.parent) |parent_handle| {
+                    const parentIdx = parent_handle.id.toIndex() orelse return error.InvalidId;
+                    if (parentIdx < self.classes.slabs.items.len * class.ClassSlabSize) {
+                        const parent = self.classes.getConst(parent_handle.id);
+                        if (parent.access == .readOnly or parent.access == .readOnlyVerified) {
+                            return error.AccessDenied;
+                        }
+                    }
+                }
+                const clazz    = try self.classes.acquire(allocator);
+                errdefer self.classes.release(allocator, clazz.index) catch @panic("oom");
+
+                const nameHash = class_init.nameHash orelse hasher.hash(class_init.name);
+                const nameIdx  = class_init.nameIdx orelse (try self.pathSegments.intern(allocator, class_init.name)).idx;
+
                 try self.pathToId.put(allocator, pathHash, .create(clazz.index));
                 errdefer self.pathToId.remove(pathHash);
 

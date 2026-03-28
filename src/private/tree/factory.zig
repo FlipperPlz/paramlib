@@ -98,6 +98,8 @@ pub fn deleteClass(
     const result = try handles.validateHandle(store, handle);
     const data: *class.ClassData = @constCast(@ptrCast(@alignCast(result.ptr)));
 
+    if(data.references.load(.monotonic) > 1) return error.ClassInUse;
+
     var child = data.children;
     while (child.hasNext()) {
         const childHandle = child.handle;

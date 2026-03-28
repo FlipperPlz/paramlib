@@ -127,8 +127,8 @@ pub const ParameterData = struct {
         return ParameterIdentifier{ .id = (store.pathToId.get(self.pathHash) orelse return null).par };
     }
 
-    pub fn createHandle(self: *const ParameterData, store: *const storage.ParamStorage) ?ParameterData {
-        return ParameterData {
+    pub fn createHandle(self: *const ParameterData, store: *const storage.ParamStorage) ?ParameterHandle {
+        return ParameterHandle {
             .generation = self.generation,
             .id = self.getIdentifier(store) orelse return null
         };

@@ -61,7 +61,7 @@ pub const ParamDatabase = struct {
     }
 
     pub fn findClassesByPattern(self: *const ParamDatabase, allocator: Allocator, io: std.Io, pattern: []const u8) ![]query.QueryResult {
-        while (self.lock.tryLockShared(io))
+        while (!self.lock.tryLockShared(io))
             std.Io.sleep(io, .fromMilliseconds(1), .real) catch @panic("Failed to acquire lock for lookup");
         defer self.lock.unlockShared(io);
 
@@ -69,7 +69,7 @@ pub const ParamDatabase = struct {
     }
 
     pub fn lookupParameter(self: *ParamDatabase, io: std.Io, path: []const u8) ?*params.ParameterData {
-        while (self.lock.tryLockShared(io))
+        while (!self.lock.tryLockShared(io))
             std.Io.sleep(io, .fromMilliseconds(1), .real) catch @panic("Failed to acquire lock for lookup");
 
         defer self.lock.unlockShared(io);
@@ -78,7 +78,7 @@ pub const ParamDatabase = struct {
     }
 
     pub fn lookupClass(self: *ParamDatabase, io: std.Io, path: []const u8) ?*class.ClassData {
-        while (self.lock.tryLockShared(io))
+        while (!self.lock.tryLockShared(io))
             std.Io.sleep(io, .fromMilliseconds(1), .real) catch @panic("Failed to acquire lock for lookup");
         defer self.lock.unlockShared(io);
 
@@ -120,10 +120,10 @@ pub const ParamDatabase = struct {
 
         defer self.lock.unlock(io);
 
-        if(parentPath) {
-            const parentData: *class.ClassData = (self.lookupClass( io, parentPath) orelse return error.InvalidParent);
+        if(parentPath) |path| {
+            const parentData: *class.ClassData = (self.lookupClass( io, path) orelse return error.InvalidParent);
             args.parent = parentData.createHandle(self.store);
         }
-        return factory.createClass(allocator, io, self.store, init);
+        return factory.createClass(allocator, io, self.store, args);
     }
 };

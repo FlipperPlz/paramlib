@@ -41,13 +41,13 @@ pub fn mergeClass(
         if(srcChild.is_delete_marker) {
             containsDelete = true;
 
-            if(query.getClassByNameHash(store, target, srcChild.nameHash)) |victimHandle| {
+            if(query.findClassByNameHash(store, target, srcChild.nameHash)) |victimHandle| {
                 try factory.deleteClass(allocator, store, victimHandle);
             }
             continue;
         }
 
-        if(query.getClassByNameHash(store, target, srcChild.nameHash)) |targetChildHandle| {
+        if(query.findClassByNameHash(store, target, srcChild.nameHash)) |targetChildHandle| {
             if(effectiveAccess == .readCreate) {
                 allOverloaded = false;
                 continue;
@@ -69,7 +69,7 @@ pub fn mergeClass(
     var paramIter = src.params.iterator(store);
     while (paramIter.next()) |paramStorage| {
         const srcParam = try paramStorage.current(store);
-        if(query.getParameterByNameHash(store, target, srcParam.nameHash)) | targetParameterHandle | {
+        if(query.findParameterByNameHash(store, target, srcParam.nameHash)) | targetParameterHandle | {
             if (effectiveAccess == .readCreate or 
                 effectiveAccess == .readOnly or
                 effectiveAccess == .readOnlyVerified) {
@@ -162,7 +162,7 @@ fn mergeBase(
 
 fn resolveBaseInScope(
     allocator:  Allocator,
-    store:      storage.ParamStorage,
+    store:      *storage.ParamStorage,
     baseName:   []const u8,
     fromHandle: class.ClassHandle
 ) !?class.ClassHandle {

@@ -20,3 +20,12 @@ Enum storage isn't hooked up - database.zig creates an EnumStorage field but sto
 WyHash incremental parsing for creating path hashes
 make merge remove old
 The same collect+reverse pattern with merge applies in your text parser when you finish parsing a class body and want to hand off its children to a merge. Parse top-to-bottom produces items in the prepend-reversed list; before merging into an existing dst class, reverse the collected source entries so the merge processes them in parse order. Since the merge itself uses findByNameHash (order-agnostic), it mostly doesn't matter for correctness - but it matters for allOverloaded semantics and for stable addon layering behaviour.
+9. references.zig - retainClass only walks the parent chain, not the base chain
+createClass in factory.zig calls refs.retainHandle(store, baseHandle) when a base is set. retainHandle calls retainClass, which walks up the parent chain only:
+zigpub fn retainClass(store: *storage.ParamStorage, data: *class.ClassData) !void {
+    var next: ?*class.ClassData = data;
+    while (next) |current| {
+        _ = current.references.fetchAdd(1, .monotonic);
+        if (current.parent.handleOrNull()) |parentHandle| { // ← only parent
+retain/release should also walk the base chain when a base is set - otherwise a base class's reference count doesn't fully account for all its users.
+The acquire path in memory 2 scans ALL slabs from index 0 every call looking for one with next_free != null. As slabs fill, this becomes O(slabs × slab_size). current_slab was clearly intended to cache the index of the last slab with free space, avoiding the full scan. Either use it or remove it.

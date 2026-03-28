@@ -83,7 +83,7 @@ pub const ClassAccess = enum(u2) {
 
 pub const ClassInit = struct {
     name:             []const u8,
-    parent:           ?ClassHandle,
+    parent:           ?ClassHandle                 = null,
     source:           source.SourceHandle,
     nameHash:         ?u64                         = null,
     nameIdx:          ?paths.PathSegmentIdentifier = null,
