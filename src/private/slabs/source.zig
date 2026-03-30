@@ -80,10 +80,10 @@ pub const SourceContent = union(SourceType) {
 };
 
 pub const MemoryContent = struct {
-    data: []const u8,
+    data: [:0]const u8,
     pub const Init = struct {
         name: []const u8,
-        data: []const u8,
+        data: [:0]const u8,
     };
 
     fn read(self: MemoryContent) []const u8 {
@@ -96,10 +96,10 @@ pub const MemoryContent = struct {
 };
 
 pub const RuntimeContent = struct {
-    data: []const u8,
+    data: [:0]const u8,
     pub const Init = struct {
         name: []const u8,
-        data: []const u8,
+        data: [:0]const u8
     };
 
     fn read(self: RuntimeContent) []const u8 {
@@ -115,16 +115,15 @@ pub const FileContent = struct {
         path: []const u8,
     };
 
-    fn read(self: FileContent, allocator: Allocator, io: std.Io) ![]const u8 {
+    fn read(self: FileContent, allocator: Allocator, io: std.Io) ![:0]const u8 {
         var readerBuffer: [1024]u8 = undefined;
         const fileReader = self.file.reader(io, &readerBuffer);
         var reader = fileReader.interface;
-    
-        const data = try reader.readAlloc(allocator, reader.end);
 
-        errdefer allocator.free(data);
-        
-        return data;
+        const data = allocator.allocSentinel(u8, reader.end, 0);
+        try reader.readSliceAll(data);
+
+        return data ;
     }
 };
 

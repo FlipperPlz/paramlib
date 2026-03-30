@@ -30,7 +30,7 @@ pub const ParamDatabase = struct {
         const src = try store.alloc(allocator, io, .createSource(.{
             .runtime = .{
                 .name = pathString,
-                .data = pathString,
+                .data = "",
             },
         }));
         errdefer store.free(allocator, src.index) catch @panic("OOM");
