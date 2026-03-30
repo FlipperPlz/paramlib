@@ -68,13 +68,16 @@ pub fn findParameterByNameHash(store: *storage.ParamStorage, parent: *const clas
     return null;
 }
 
-pub fn lookupClass(store: *storage.ParamStorage, path: []const u8) ?*const class.ClassData {
-    const hash = hasher.hash(path);
+pub fn lookupClassByPathHash(store: *storage.ParamStorage, hash: u64) ?*const class.ClassData {
     const id = store.pathToId.get(hash) orelse return null;
     if (id != .clazz) return null;
     const data: *const class.ClassData = @ptrCast(@alignCast((store.retrieve(id) catch return null)));
     if (!data.alive or data.is_delete_marker) return null;
     return data;
+}
+
+pub inline fn lookupClass(store: *storage.ParamStorage, path: []const u8) ?*const class.ClassData {
+    return lookupClassByPathHash(store, hasher.hash(path));
 }
 
 pub fn findClassesByPattern(allocator: Allocator, store: *storage.ParamStorage, siblings: *const class.ClassStorage("sibling"), pattern: []const u8,) ![]QueryResult {

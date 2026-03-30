@@ -53,29 +53,27 @@ pub const ParamDatabase = struct {
     }
 
     pub fn deinit(self: *ParamDatabase, allocator: Allocator, io: std.Io) void {
-        self.lock.lockUncancelable(io);
-        self.lock.lockSharedUncancelable(io);
-
+        _ = io;
         self.store.deinit(allocator);
     }
 
     pub fn findClassesByPattern(self: *const ParamDatabase, allocator: Allocator, io: std.Io, pattern: []const u8) ![]query.QueryResult {
-        self.lock.lockUncancelable(io);
         self.lock.lockSharedUncancelable(io);
+        defer self.lock.unlockShared(io);
 
         return query.findClassesByPattern(allocator, &self.store, &self.store.root, pattern);
     }
 
     pub fn lookupParameter(self: *ParamDatabase, io: std.Io, path: []const u8) ?*params.ParameterData {
-        self.lock.lockUncancelable(io);
         self.lock.lockSharedUncancelable(io);
+        defer self.lock.unlockShared(io);
 
         return query.lookupParameter(&self.store, path);
     }
 
     pub fn lookupClass(self: *ParamDatabase, io: std.Io, path: []const u8) ?*class.ClassData {
-        self.lock.lockUncancelable(io);
         self.lock.lockSharedUncancelable(io);
+        defer self.lock.unlockShared(io);
 
         return query.lookupClass(&self.store, path);
     }
@@ -98,24 +96,24 @@ pub const ParamDatabase = struct {
 
     pub fn deleteClass(self: *ParamDatabase, allocator: Allocator, io: std.Io, clazz: *class.ClassData) !void {
         self.lock.lockUncancelable(io);
-        self.lock.lockSharedUncancelable(io);
+        defer self.lock.unlock(io);
 
         try factory.deleteClass(allocator, &self.store, clazz.createHandle(self.store));
     }
 
     pub fn deleteParameter(self: *ParamDatabase, allocator: Allocator, io: std.Io, param: *params.ParameterData) !void {
         self.lock.lockUncancelable(io);
-        self.lock.lockSharedUncancelable(io);
+        defer self.lock.unlock(io);
 
         try factory.deleteParameter(allocator, &self.store, param.createHandle(self.store));
     }
 
     pub fn createClass(self: *ParamDatabase, allocator: Allocator, io: std.Io, parentPath: ?[]const u8, args: class.ClassInit) !*class.ClassData {
         self.lock.lockUncancelable(io);
-        self.lock.lockSharedUncancelable(io);
+        defer self.lock.unlock(io);
 
         if(parentPath) |path| {
-            const parentData: *class.ClassData = (self.lookupClassUnlocked( io, path) orelse return error.InvalidParent);
+            const parentData: *class.ClassData = (self.lookupClassUnlocked(path) orelse return error.InvalidParent);
             args.parent = parentData.createHandle(self.store);
         }
         return factory.createClass(allocator, io, self.store, args);

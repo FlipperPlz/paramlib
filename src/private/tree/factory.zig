@@ -25,16 +25,14 @@ pub fn getOrCreateClass(allocator: Allocator, io: std.Io, store: *storage.ParamS
     if (resolved_init.pathHash == null) {
         const path = if (init.parent) |parentHandle| blk: {
             const parentData: *class.ClassData = @constCast(@ptrCast(@alignCast((try handles.validateHandle(store, parentHandle)).ptr)));
-            const parentPath = try paths.getPath(allocator, store, .createClass(parentData));
-            defer allocator.free(parentPath);
-            break :blk try paths.joinPaths(allocator, &[_][]const u8{ parentPath, init.name });
+            //Using FNV-1a a non stateful hash really gives us leverage here
+            break :blk paths.getPathHash(parentData.pathHash, init.name);
         } else blk: {
-            break :blk try allocator.dupe(u8, init.name);
+            break :blk hasher.hash(init.name);
         };
-        defer allocator.free(path);
 
-        if (query.lookupClass(store, path)) |existing| return @constCast(existing);
-        resolved_init.pathHash = hasher.hash(path);
+        if (query.lookupClassByPathHash(store, path)) |existing| return @constCast(existing);
+        resolved_init.pathHash = path;
     }
 
     return createClass(allocator, io, store, resolved_init);

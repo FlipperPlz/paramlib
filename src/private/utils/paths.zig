@@ -6,6 +6,7 @@ const Allocator   = std.mem.Allocator;
 const handles     = @import("./handles.zig");
 const parameter   = @import("../slabs/parameter.zig");
 const query       = @import("../tree/query.zig");
+const hasher     = @import("./hasher.zig");
 pub const PathSeparator         = ".";
 pub const PathSegmentIdentifier = identifiers.TypedId("PathSegment");
 
@@ -47,6 +48,12 @@ pub const PathType = union(query.QueryType) {
         return .{ .parameter = data };
     }
 };
+
+pub fn getPathHash(parent: u64, child_path: []const u8) u64 {
+    var inc = hasher.IncrementalHasher.load(parent);
+    return inc.update(child_path)
+              .final();
+}
 
 pub fn getPath(allocator: Allocator, store: *const storage.ParamStorage, pathType: PathType) ![]const u8 {
     var next: class.ClassStorage("parent") = undefined;

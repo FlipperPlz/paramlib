@@ -1,6 +1,5 @@
 const std = @import("std");
 const source = @import("../../slabs/source.zig");
-const hasher = @import("../../utils/hasher.zig");
 
 const CF_WHITESPACE:          u8 = 1 << 0;
 const CF_STRING_WHITESPACE:   u8 = 1 << 1;
@@ -60,11 +59,11 @@ pub const LineTable = struct {
 
         const offsets = try allocator.alloc(u32, count);
         var i: usize = 0;
-        for (src, 0..) |c, idx| {
-            if (c == '\n') {
-                offsets[i] = @intCast(idx);
-                i += 1;
-            }
+        var pos: usize = 0;
+        while (std.mem.indexOfScalarPos(u8, src, pos, '\n')) |idx| {
+            offsets[i] = @intCast(idx);
+            i += 1;
+            pos = idx + 1;
         }
         return .{ .newline_offsets = offsets };
     }
@@ -348,14 +347,15 @@ pub const Tokenizer = struct {
         var out = try std.ArrayList(u8).initCapacity(allocator, raw.len);
         errdefer out.deinit(allocator);
 
-        var i: usize = 0;
-        while (i < raw.len) {
-            if (raw[i] == '"' and i + 1 < raw.len and raw[i + 1] == '"') {
-                try out.append(allocator, '"');
-                i += 2;
+        var rest = raw;
+        while (rest.len > 0) {
+            if (std.mem.indexOf(u8, rest, "\"\"")) |pos| {
+                try out.appendSlice(allocator, rest[0..pos]);
+                try out.append(allocator,'"');
+                rest = rest[pos + 2..];
             } else {
-                try out.append(allocator, raw[i]);
-                i += 1;
+                try out.appendSlice(allocator, rest);
+            break;
             }
         }
         return out.toOwnedSlice(allocator);
@@ -817,11 +817,13 @@ pub const Tokenizer = struct {
                 if (isIdentifierStart(c)) {
                     const identText = self.scanIdentifier();
                     const kind      = KEYWORDS.get(identText) orelse .identifier;
-                    return .{ .kind = kind, .data = .{ .hash = hasher.hash(identText) }, .pos = pos };
+                    return .{ .kind = kind, .data = .{  .text = identText }, .pos = pos };
                 }
 
                 if (isDigit(c) or c == '-' or c == '+') {
                     const raw = self.scanUnquotedValue();
+                    //fixme: this is doing multiple passes over the same text
+                    //can we do better by integrating detection into the scanning loop?
                     return switch (detectNumeric(raw)) {
                         .int        => |v| .{ .kind = .intLiteral,    .data = .{ .int   = v   }, .pos = pos },
                         .int64      => |v| .{ .kind = .int64Literal,  .data = .{ .int64 = v   }, .pos = pos },
@@ -904,21 +906,9 @@ pub const Tokenizer = struct {
     }
 
     test "bench - tokenizer throughput" {
-        const BENCH_ITERS: u64 = 10_000;
+        const BENCH_ITERS: u64 = 100;
 
-        const BENCH_SRC: [:0]const u8 =
-            \\class MyObject {
-            \\    // A comment
-            \\    intVal    = 42;
-            \\    floatVal  = 3.14;
-            \\    hexVal    = 0xFF;
-            \\    strVal    = "hello world";
-            \\    expr      = @someExpression;
-            \\    nested    = {
-            \\        child = 1;
-            \\    };
-            \\}
-        ++ [_:0]u8{};
+        const BENCH_SRC: *const [210147:0]u8 = @embedFile("game.cpp");
         var totalTokens: usize = 0;
 
         const start = std.Io.Timestamp.now(std.testing.io, .real).nanoseconds;
