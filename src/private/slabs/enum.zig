@@ -27,7 +27,7 @@ pub const EnumData = struct {
             @compileError("Arguments not initialized for EnumData");
         }
 
-        const timestamp = std.Io.Timestamp.now(io, .real);
+        const timestamp = std.Io.Timestamp.now(io, .real).toMilliseconds();
         return .{
             .alive      = true,
             .generation = 1,

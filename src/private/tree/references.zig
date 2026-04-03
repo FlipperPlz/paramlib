@@ -18,7 +18,7 @@ pub fn retainClass(store: *storage.ParamAllocator, data: *class.ClassData) !void
     while (next) |current| {
         _ = current.references.fetchAdd(1, .monotonic);
         if (current.parent.handleOrNull()) |parentHandle| {
-            const parentData: *class.ClassData = (try parentHandle.validateHandle(store)).ptr;
+            const parentData: *class.ClassData = (try parentHandle.validateHandle(store)).ptr.getMutable();
             next = parentData;
         } else {
             next = null;

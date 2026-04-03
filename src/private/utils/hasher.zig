@@ -48,9 +48,7 @@ pub const IncrementalHasher = struct {
     }
 
     pub inline fn updateSep(self: *IncrementalHasher) *IncrementalHasher {
-        self.update(paths.PathSeparator);
-
-        return self;
+        return self.update(paths.PathSeparator);
     }
 
     pub inline fn final(self: *const IncrementalHasher) u64 {

@@ -53,7 +53,7 @@ pub fn lookupParameter(store: *storage.ParamAllocator, path: []const u8) ?*const
 }
 
 pub fn findClassByNameHash(store: *storage.ParamAllocator, parent: *const class.ClassData, hash: u64) !?class.ClassHandle {
-    const iter = parent.children.iterator(store);
+    var iter = parent.children.iterator(store);
     while (iter.next()) |next_handle|{
         if(hash == (try next_handle.current(store)).nameHash) return next_handle.handle;
     }
@@ -61,7 +61,7 @@ pub fn findClassByNameHash(store: *storage.ParamAllocator, parent: *const class.
 }
 
 pub fn findParameterByNameHash(store: *storage.ParamAllocator, parent: *const class.ClassData, hash: u64) !?params.ParameterHandle {
-    const iter = parent.params.iterator(store);
+    var iter = parent.params.iterator(store);
     while (iter.next()) |next_handle|{
         if(hash == (try next_handle.current(store)).nameHash) return next_handle.handle;
     }
@@ -156,7 +156,7 @@ pub fn findParametersByPattern(
 
         var param_iter = parent_class.params.iterator(store);
         while (param_iter.next()) |param_storage| {
-            const param: *params.ParameterData = try store.retrieve(param_storage.handle.id);
+            const param: *const params.ParameterData = try store.retrieve(param_storage.handle.id);
             if (!param.alive) continue;
 
             if (is_wildcard) {
@@ -172,4 +172,279 @@ pub fn findParametersByPattern(
 
     const slice = try results.toOwnedSlice(allocator);
     return slice;
+}
+
+const source = @import("../slabs/source.zig");
+const values = @import("../data/value.zig");
+
+test "query: findClass returns null on empty store" {
+    var store = storage.ParamAllocator.empty;
+    defer store.deinit(std.testing.allocator);
+
+    try std.testing.expect(lookupClass(&store, "player") == null);
+}
+
+test "query: findClass finds a root class by path" {
+    var store = storage.ParamAllocator.empty;
+    defer store.deinit(std.testing.allocator);
+
+    _ = try store.alloc(std.testing.allocator, std.testing.io, class.ClassInit {
+        .name = "enemy", .parent = null, .source = source.SourceHandle.invalid,
+    });
+
+    const found = lookupClass(&store, "enemy");
+    try std.testing.expect(found != null);
+    try std.testing.expect(found.?.alive);
+}
+
+test "query: findClass returns null for wrong path" {
+    var store = storage.ParamAllocator.empty;
+    defer store.deinit(std.testing.allocator);
+
+    _ = try store.alloc(std.testing.allocator, std.testing.io, class.ClassInit {
+        .name = "npc", .parent = null, .source = source.SourceHandle.invalid,
+    });
+
+    try std.testing.expect(lookupClass(&store, "player") == null);
+    try std.testing.expect(lookupClass(&store, "npc.stats") == null);
+}
+
+test "query: findClass finds nested class" {
+    var store = storage.ParamAllocator.empty;
+    defer store.deinit(std.testing.allocator);
+
+    const root = try store.alloc(std.testing.allocator, std.testing.io, class.ClassInit {
+        .name = "world", .parent = null, .source = source.SourceHandle.invalid,
+    });
+    const rootHandle = class.ClassHandle{
+        .id         = root.index,
+        .generation = root.ptr.generation,
+    };
+    _ = try store.alloc(std.testing.allocator, std.testing.io, class.ClassInit {
+        .name = "zone1", .parent = rootHandle, .source = source.SourceHandle.invalid,
+    });
+
+    try std.testing.expect(lookupClass(&store, "world.zone1") != null);
+    try std.testing.expect(lookupClass(&store, "world") != null);
+    try std.testing.expect(lookupClass(&store, "zone1") == null); // not a root path
+}
+
+test "query: findClass does not return a parameter" {
+    var store = storage.ParamAllocator.empty;
+    defer store.deinit(std.testing.allocator);
+
+    const root = try store.alloc(std.testing.allocator, std.testing.io, class.ClassInit {
+        .name = "cfg", .parent = null, .source = source.SourceHandle.invalid,
+    });
+    const parentHandle = class.ClassHandle{
+        .id         = root.index,
+        .generation = root.ptr.generation,
+    };
+    _ = try store.alloc(std.testing.allocator, std.testing.io, params.ParameterInit{
+        .name = "volume", .parent = parentHandle,
+        .source = source.SourceHandle.invalid, .value = values.Value.initF32(1.0),
+    });
+
+    // "cfg.volume" is a parameter, not a class — findClass must return null
+    try std.testing.expect(lookupClass(&store, "cfg.volume") == null);
+}
+
+test "query: findParameter returns null on empty store" {
+    var store = storage.ParamAllocator.empty;
+    defer store.deinit(std.testing.allocator);
+
+    try std.testing.expect(lookupParameter(&store, "player.health") == null);
+}
+
+test "query: findParameter finds a parameter by full path" {
+    var store = storage.ParamAllocator.empty;
+    defer store.deinit(std.testing.allocator);
+
+    const root = try store.alloc(std.testing.allocator, std.testing.io, class.ClassInit{
+        .name = "player", .parent = null, .source = source.SourceHandle.invalid,
+    });
+    const parentHandle = class.ClassHandle{
+        .id         = root.index,
+        .generation = root.ptr.generation,
+    };
+    _ = try store.alloc(std.testing.allocator, std.testing.io, params.ParameterInit{
+        .name = "health", .parent = parentHandle,
+        .source = source.SourceHandle.invalid, .value = values.Value.initI32(100),
+    });
+
+    const found = lookupParameter(&store, "player.health");
+    try std.testing.expect(found != null);
+    try std.testing.expect(found.?.alive);
+    try std.testing.expectEqual(values.Value.initI32(100), found.?.value);
+}
+
+test "query: findParameter does not return a class" {
+    var store = storage.ParamAllocator.empty;
+    defer store.deinit(std.testing.allocator);
+
+    _ = try store.alloc(std.testing.allocator, std.testing.io, class.ClassInit{
+        .name = "player", .parent = null, .source = source.SourceHandle.invalid,
+    });
+
+    // "player" is a class, not a parameter — findParameter must return null
+    try std.testing.expect(lookupParameter(&store, "player") == null);
+}
+
+test "query: findParameter returns null for wrong path" {
+    var store = storage.ParamAllocator.empty;
+    defer store.deinit(std.testing.allocator);
+
+    const root = try store.alloc(std.testing.allocator, std.testing.io, class.ClassInit{
+        .name = "cfg", .parent = null, .source = source.SourceHandle.invalid,
+    });
+    const parentHandle = class.ClassHandle{
+        .id         = root.index,
+        .generation = root.ptr.generation,
+    };
+    _ = try store.alloc(std.testing.allocator, std.testing.io, params.ParameterInit{
+        .name = "volume", .parent = parentHandle,
+        .source = source.SourceHandle.invalid, .value = values.Value.initF32(0.5),
+    });
+
+    try std.testing.expect(lookupParameter(&store, "cfg.brightness") == null);
+    try std.testing.expect(lookupParameter(&store, "volume") == null);
+}
+
+const database = @import("../../api/database.zig");
+
+test "query: findClassesByPattern empty pattern returns empty" {
+    var db = try database.ParamDatabase.init(std.testing.allocator, std.testing.io);
+    defer db.deinit(std.testing.allocator, std.testing.io);
+
+    _ = try db.store.alloc(std.testing.allocator, std.testing.io, class.ClassInit{
+        .name = "player", .parent = null, .source = source.SourceHandle.invalid
+    });
+    const root = &db.store.root;
+
+    const results = try findClassesByPattern(std.testing.allocator, &db.store, root, "");
+    defer std.testing.allocator.free(results);
+    try std.testing.expectEqual(@as(usize, 0), results.len);
+}
+
+test "query: findClassesByPattern exact root name match" {
+    var db = try database.ParamDatabase.init(std.testing.allocator, std.testing.io);
+    defer db.deinit(std.testing.allocator, std.testing.io);
+
+    _ = try db.store.alloc(std.testing.allocator, std.testing.io, class.ClassInit{
+        .name = "enemy", .parent = null, .source = source.SourceHandle.invalid
+    });
+    _ = try db.store.alloc(std.testing.allocator, std.testing.io, class.ClassInit{
+        .name = "player", .parent = null, .source = source.SourceHandle.invalid
+    });
+
+    const root = &db.store.root;
+    const results = try findClassesByPattern(std.testing.allocator, &db.store, root, "enemy");
+    defer std.testing.allocator.free(results);
+    try std.testing.expectEqual(@as(usize, 1), results.len);
+}
+
+test "query: findClassesByPattern wildcard matches all root classes" {
+    var db = try database.ParamDatabase.init(std.testing.allocator, std.testing.io);
+    defer db.deinit(std.testing.allocator, std.testing.io);
+
+    _ = try db.store.alloc(std.testing.allocator, std.testing.io, class.ClassInit{
+        .name = "a", .parent = null, .source = source.SourceHandle.invalid
+    });
+    _ = try db.store.alloc(std.testing.allocator, std.testing.io, class.ClassInit{
+        .name = "b", .parent = null, .source = source.SourceHandle.invalid
+    });
+    _ = try db.store.alloc(std.testing.allocator, std.testing.io, class.ClassInit{
+        .name = "c", .parent = null, .source = source.SourceHandle.invalid
+    });
+
+    const root = &db.store.root;
+    const results = try findClassesByPattern(std.testing.allocator, &db.store, root, "*");
+    defer std.testing.allocator.free(results);
+    try std.testing.expectEqual(@as(usize, 3), results.len);
+}
+
+test "query: findClassesByPattern no match returns empty" {
+    var db = try database.ParamDatabase.init(std.testing.allocator, std.testing.io);
+    defer db.deinit(std.testing.allocator, std.testing.io);
+
+    _ = try db.store.alloc(std.testing.allocator, std.testing.io, class.ClassInit{
+        .name = "npc", .parent = null, .source = source.SourceHandle.invalid
+    });
+
+    const root = &db.store.root;
+    const results = try findClassesByPattern(std.testing.allocator, &db.store, root, "player");
+    defer std.testing.allocator.free(results);
+    try std.testing.expectEqual(@as(usize, 0), results.len);
+}
+
+test "query: findParametersByPattern empty pattern returns empty" {
+    var db = try database.ParamDatabase.init(std.testing.allocator, std.testing.io);
+    defer db.deinit(std.testing.allocator, std.testing.io);
+
+    const root = try db.store.alloc(std.testing.allocator, std.testing.io, class.ClassInit{
+        .name = "cfg", .parent = null, .source = source.SourceHandle.invalid
+    });
+    const parentHandle = class.ClassHandle{
+        .id         = root.index,
+        .generation = root.ptr.generation,
+    };
+    const clazz: *const class.ClassData = root.ptr;
+
+    const results = try findParametersByPattern(std.testing.allocator, &db.store, clazz, "");
+    defer std.testing.allocator.free(results);
+    try std.testing.expectEqual(@as(usize, 0), results.len);
+    _ = parentHandle;
+}
+
+test "query: findParametersByPattern exact name match" {
+    var db = try database.ParamDatabase.init(std.testing.allocator, std.testing.io);
+    defer db.deinit(std.testing.allocator, std.testing.io);
+
+    const root = try db.store.alloc(std.testing.allocator, std.testing.io, class.ClassInit{
+        .name = "settings", .parent = null, .source = source.SourceHandle.invalid
+    });
+    const parentHandle = class.ClassHandle{
+        .id         = root.index,
+        .generation =  root.ptr.generation,
+    };
+    _ = try db.store.alloc(std.testing.allocator, std.testing.io, params.ParameterInit{
+        .name = "volume", .parent = parentHandle,
+        .source = source.SourceHandle.invalid, .value = values.Value.initF32(0.8),
+    });
+    _ = try db.store.alloc(std.testing.allocator, std.testing.io, params.ParameterInit{
+        .name = "brightness", .parent = parentHandle,
+        .source = source.SourceHandle.invalid, .value = values.Value.initF32(1.0),
+    });
+
+    const clazz: *const class.ClassData =root.ptr;
+    const results = try findParametersByPattern(std.testing.allocator, &db.store, clazz, "volume");
+    defer std.testing.allocator.free(results);
+    try std.testing.expectEqual(@as(usize, 1), results.len);
+}
+
+test "query: findParametersByPattern wildcard returns all parameters" {
+    var db = try database.ParamDatabase.init(std.testing.allocator, std.testing.io);
+    defer db.deinit(std.testing.allocator, std.testing.io);
+
+    const root = try db.store.alloc(std.testing.allocator, std.testing.io, class.ClassInit{
+        .name = "audio", .parent = null, .source = source.SourceHandle.invalid,
+    });
+    const parentHandle = class.ClassHandle{
+        .id         = @enumFromInt(root.index.toIndex().?),
+        .generation = (@as(*const class.ClassData, @ptrCast(@alignCast(root.ptr)))).generation,
+    };
+    _ = try db.store.alloc(std.testing.allocator, std.testing.io, params.ParameterInit{
+        .name = "master",  .parent = parentHandle, .source = source.SourceHandle.invalid, .value = values.Value.initF32(1.0),
+    });
+    _ = try db.store.alloc(std.testing.allocator, std.testing.io, params.ParameterInit{
+        .name = "music",   .parent = parentHandle, .source = source.SourceHandle.invalid, .value = values.Value.initF32(0.7),
+    });
+    _ = try db.store.alloc(std.testing.allocator, std.testing.io, params.ParameterInit{
+        .name = "effects", .parent = parentHandle, .source = source.SourceHandle.invalid, .value = values.Value.initF32(0.9),
+    });
+
+    const clazz: *const class.ClassData = @ptrCast(@alignCast(root.ptr));
+    const results = try findParametersByPattern(std.testing.allocator, &db.store, clazz, "*");
+    defer std.testing.allocator.free(results);
+    try std.testing.expectEqual(@as(usize, 3), results.len);
 }

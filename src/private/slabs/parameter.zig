@@ -103,7 +103,7 @@ pub const ParameterData = struct {
 
     pub fn init(io: std.Io, args: ParameterInit) ParameterData {
         std.debug.assert(args.nameIdx != null and args.nameHash != null and args.pathHash != null);
-        const timestamp = std.Io.Timestamp.now(io, .real);
+        const timestamp = std.Io.Timestamp.now(io, .real).toMilliseconds();
 
         return .{
             .alive      = true,

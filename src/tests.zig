@@ -11,6 +11,17 @@ const strings     = @import("private/utils/strings.zig");
 const memory      = @import("private/utils/memory.zig");
 const paths       = @import("private/utils/paths.zig");
 const storage     = @import("private/data/storage.zig");
+const source      = @import("private/slabs/source.zig");
+const query       = @import("private/tree/query.zig");
+const factory     = @import("private/tree/factory.zig");
+
+test "query tests" {
+    std.testing.refAllDecls(query);
+}
+
+test "factory tests" {
+    std.testing.refAllDecls(factory);
+}
 
 test "paths tests" {
     std.testing.refAllDecls(paths);
@@ -22,6 +33,10 @@ test "storage tests" {
 
 test "identifiers tests" {
     std.testing.refAllDecls(identifiers);
+}
+
+test "source tests" {
+    std.testing.refAllDecls(source);
 }
 
 test "slabpool tests" {

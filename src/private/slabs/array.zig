@@ -75,7 +75,7 @@ pub const ArrayData = struct {
     modifiedAt:  i64,
 
     pub fn init(allocator: Allocator, io: std.Io, args: ArrayInit) !ArrayData {
-        const timestamp = std.Io.Timestamp.now(io, .real);
+        const timestamp = std.Io.Timestamp.now(io, .real).toMilliseconds();
 
         return .{
             .alive       = true,

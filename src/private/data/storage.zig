@@ -72,7 +72,8 @@ pub const ParamAllocator = struct {
                     if (parentIdx >= self.classes.slabs.items.len * class.ClassSlabSize) return error.InvalidId;
                     const parent = self.classes.getConst(parentHandle.id);
 
-                    break :blk hasher.IncrementalHasher.load(parent.pathHash).updateSep().update(class_init.name).final();
+                    var hash = hasher.IncrementalHasher.load(parent.pathHash);
+                    break :blk hash.updateSep().update(class_init.name).final();
 
                 };
                 if (class_init.parent) |parent_handle| {
@@ -139,7 +140,8 @@ pub const ParamAllocator = struct {
                     if (!param_init.parent.isValid()) break :blk hasher.hash(param_init.name);
                     const parent = self.classes.getConst(param_init.parent.id);
 
-                    break :blk hasher.IncrementalHasher.load(parent.pathHash).updateSep().update(param_init.name).final();
+                    var hash = hasher.IncrementalHasher.load(parent.pathHash);
+                    break :blk hash.updateSep().update(param_init.name).final();
                 };
 
                 try self.pathToId.put(allocator, pathHash, .create(param.index));
@@ -229,6 +231,7 @@ pub const ParamAllocator = struct {
         self.sources.deinit(allocator);
         self.pathSegments.deinit(allocator);
         self.stringValues.deinit(allocator);
+        self.pathToId.deinit(allocator);
     }
 };
 
@@ -423,4 +426,106 @@ test "storage: multiple strings all independently retrievable" {
 test "storage: deinit on empty store does not crash" {
     var store = ParamAllocator.empty;
     store.deinit(std.testing.allocator);
+}
+
+test "storage: alloc root class — basic fields" {
+    var store = ParamAllocator.empty;
+    defer store.deinit(std.testing.allocator);
+
+    const result = try store.alloc(std.testing.allocator, std.testing.io, class.ClassInit {
+        .name   = "player",
+        .parent = null,
+        .source = source.SourceHandle.invalid,
+    });
+
+    try std.testing.expect(result.index.isValid());
+    const data: *const class.ClassData = result.ptr;
+    _ = data;
+}
+
+test "storage: alloc root class — pathToId lookup works" {
+    var store = ParamAllocator.empty;
+    defer store.deinit(std.testing.allocator);
+
+    _ = try store.alloc(std.testing.allocator, std.testing.io, class.ClassInit {
+        .name   = "world",
+        .parent = null,
+        .source = source.SourceHandle.invalid,
+    });
+
+    const hash = hasher.hash("world");
+    const found = store.pathToId.get(hash);
+    try std.testing.expect(found != null);
+    try std.testing.expect(found.?.isValid());
+}
+
+test "storage: alloc two root classes get distinct identifiers" {
+    var store = ParamAllocator.empty;
+    defer store.deinit(std.testing.allocator);
+
+    const a = try store.alloc(std.testing.allocator, std.testing.io, class.ClassInit {
+        .name = "zone_a", .parent = null, .source = source.SourceHandle.invalid,
+    });
+    const b = try store.alloc(std.testing.allocator, std.testing.io, class.ClassInit {
+        .name = "zone_b", .parent = null, .source = source.SourceHandle.invalid,
+    });
+
+    try std.testing.expect(a.index.toIndex() != b.index.toIndex());
+}
+
+test "storage: alloc child class — pathHash includes parent path" {
+    var store = ParamAllocator.empty;
+    defer store.deinit(std.testing.allocator);
+
+    const root = try store.alloc(std.testing.allocator, std.testing.io, class.ClassInit {
+        .name = "game", .parent = null, .source = source.SourceHandle.invalid,
+    });
+    const rootHandle = class.ClassHandle{
+        .id         = root.index,
+        .generation = root.ptr.generation,
+    };
+
+    _ = try store.alloc(std.testing.allocator, std.testing.io, class.ClassInit {
+        .name   = "player",
+        .parent = rootHandle,
+        .source = source.SourceHandle.invalid,
+    });
+
+    const expected_hash = hasher.hash("game.player");
+    try std.testing.expect(store.pathToId.get(expected_hash) != null);
+}
+
+test "storage: alloc parameter in class" {
+    var store = ParamAllocator.empty;
+    defer store.deinit(std.testing.allocator);
+
+    const root = try store.alloc(std.testing.allocator, std.testing.io, class.ClassInit {
+        .name = "entity", .parent = null, .source = source.SourceHandle.invalid,
+    });
+    const parentHandle = class.ClassHandle{
+        .id         = root.index,
+        .generation = root.ptr.generation,
+    };
+
+    const param = try store.alloc(std.testing.allocator, std.testing.io, parameter.ParameterInit {
+        .name   = "speed",
+        .parent = parentHandle,
+        .source = source.SourceHandle.invalid,
+        .value  = value.Value.initF32(5.0),
+    });
+
+    try std.testing.expect(param.index.isValid());
+    const expected = hasher.hash("entity.speed");
+    try std.testing.expect(store.pathToId.get(expected) != null);
+}
+
+test "storage: free class releases slot" {
+    var store = ParamAllocator.empty;
+    defer store.deinit(std.testing.allocator);
+
+    const c = try store.alloc(std.testing.allocator, std.testing.io, class.ClassInit {
+        .name = "tmp", .parent = null, .source = source.SourceHandle.invalid,
+    });
+    try store.free(std.testing.allocator, c.index);
+    try std.testing.expectError(error.InvalidId, store.free(std.testing.allocator, class.ClassIdentifier.invalid));
 }

@@ -116,7 +116,7 @@ pub const ClassData = struct {
 
     pub fn init(io: std.Io, args: ClassInit) ClassData {
         std.debug.assert(args.nameIdx != null and args.pathHash != null);
-        const timestamp = std.Io.Timestamp.now(io, .real);
+        const timestamp = std.Io.Timestamp.now(io, .real).toMilliseconds();
         const nameHash = args.nameHash orelse hasher.hash(args.name);
         return .{
             .alive            = true,

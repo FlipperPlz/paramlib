@@ -177,6 +177,7 @@ pub const SnippetContent = struct {
 };
 
 pub const SourceInit = union(SourceType) {
+    pub const _identifier = SourceIdentifier;
     file:    FileContent.Init,
     snippet: SnippetContent.Init,
     runtime: RuntimeContent.Init,
@@ -184,7 +185,6 @@ pub const SourceInit = union(SourceType) {
 };
 
 pub const SourceContent = union(SourceType) {
-    pub const _identifier = SourceIdentifier;
     file:    FileContent,
     snippet: SnippetContent,
     runtime: RuntimeContent,
@@ -202,3 +202,91 @@ pub const SourcePosition = struct {
         .column = 1
     };
 };
+
+test "source: SourceHandle invalid is not valid" {
+    try std.testing.expect(!SourceHandle.invalid.isValid());
+}
+
+test "source: SourceData init memory content" {
+    const src = try SourceData.init(.{
+        .memory = .{ .name = "test_memory_source", .data = "x = 10; y = 20;" },
+    });
+    try std.testing.expect(src.alive);
+    try std.testing.expectEqual(@as(u32, 1), src.generation);
+    try std.testing.expectEqualStrings("test_memory_source", src.name);
+    try std.testing.expect(src.nameHash != 0);
+    switch (src.content) {
+        .memory => |m| try std.testing.expectEqualStrings("x = 10; y = 20;", m.data),
+        else    => return error.UnexpectedContentType,
+    }
+}
+
+test "source: SourceData init runtime content" {
+    const src = try SourceData.init(.{
+        .runtime = .{ .name = "runtime_config", .data = "player_speed=5.0" },
+    });
+    try std.testing.expect(src.alive);
+    try std.testing.expectEqual(@as(u32, 1), src.generation);
+    try std.testing.expectEqualStrings("runtime_config", src.name);
+    switch (src.content) {
+        .runtime => |r| try std.testing.expectEqualStrings("player_speed=5.0", r.data),
+        else     => return error.UnexpectedContentType,
+    }
+}
+
+test "source: SourceData init snippet content" {
+    const src = try SourceData.init(.{
+        .snippet = .{
+            .name   = "health_snippet",
+            .source = SourceHandle.invalid,
+            .start  = .{ .index = 0,  .line = 1, .column = 0  },
+            .end    = .{ .index = 50, .line = 3, .column = 20 },
+        },
+    });
+    try std.testing.expect(src.alive);
+    try std.testing.expectEqualStrings("health_snippet", src.name);
+    switch (src.content) {
+        .snippet => |s| {
+            try std.testing.expectEqual(@as(u64, 0),  s.start.index);
+            try std.testing.expectEqual(@as(u64, 50), s.end.index);
+            try std.testing.expectEqual(1, s.start.line);
+            try std.testing.expectEqual(3, s.end.line);
+        },
+        else => return error.UnexpectedContentType,
+    }
+}
+
+test "source: SourceData nameHash consistent across same name" {
+    const s1 = try SourceData.init(.{ .memory = .{ .name = "config.par", .data = "" } });
+    const s2 = try SourceData.init(.{ .memory = .{ .name = "config.par", .data = "" } });
+    const s3 = try SourceData.init(.{ .memory = .{ .name = "other.par",  .data = "" } });
+    try std.testing.expectEqual(s1.nameHash, s2.nameHash);
+    try std.testing.expect(s1.nameHash != s3.nameHash);
+}
+
+test "source: SourceData starts alive with generation 1 and empty next chain" {
+    const mem = try SourceData.init(.{ .memory  = .{ .name = "a", .data = "" } });
+    const rt  = try SourceData.init(.{ .runtime = .{ .name = "b", .data = "" } });
+    try std.testing.expect(mem.alive);
+    try std.testing.expect(rt.alive);
+    try std.testing.expectEqual(@as(u32, 1), mem.generation);
+    try std.testing.expectEqual(@as(u32, 1), rt.generation);
+    try std.testing.expect(!mem.next.hasNext());
+    try std.testing.expect(!rt.next.hasNext());
+}
+
+test "source: snippet with zero-length range is valid" {
+    const src = try SourceData.init(.{
+        .snippet = .{
+            .name   = "zero_span",
+            .source = SourceHandle.invalid,
+            .start  = .{ .index = 10, .line = 2, .column = 5 },
+            .end    = .{ .index = 10, .line = 2, .column = 5 },
+        },
+    });
+    try std.testing.expect(src.alive);
+    switch (src.content) {
+        .snippet => |s| try std.testing.expectEqual(s.start.index, s.end.index),
+        else     => return error.UnexpectedContentType,
+    }
+}
