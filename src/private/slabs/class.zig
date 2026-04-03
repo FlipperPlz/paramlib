@@ -139,12 +139,13 @@ pub const ClassData = struct {
         };
     }
 
-    pub fn getMutable(self: *const ClassData) *ClassData {
-        return @constCast(self);
+    pub fn getMutable(self: *const ClassData, store: *storage.ParamAllocator) !*ClassData {
+        const id = self.getIdentifier(store) orelse return error.NotFound;
+        return try store.retrieveMut(id);
     }
 
     pub fn getIdentifier(self: *const ClassData, store: *const storage.ParamAllocator) ?ClassIdentifier {
-        return ClassIdentifier{ .id = (store.pathToId.get(self.pathHash) orelse return null).clazz };
+        return (store.pathToId.get(self.pathHash) orelse return null).clazz;
     }
 
     pub fn createHandle(self: *const ClassData, store: *const storage.ParamAllocator) ClassHandle {

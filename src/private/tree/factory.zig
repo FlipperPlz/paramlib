@@ -66,7 +66,7 @@ pub fn deleteParameter(
 
     if (param.parent.handleOrNull()) |parentHandle| {
         const parentResult = try parentHandle.validateHandle(store);
-        const parentData: *class.ClassData = parentResult.ptr.getMutable();
+        const parentData: *class.ClassData = try parentResult.ptr.getMutable(store);
 
         var cur = parentData.params;
         if (cur.handle.id == handle.id) {
@@ -74,7 +74,7 @@ pub fn deleteParameter(
         } else {
             while (cur.hasNext()) {
                 const curResult = try cur.handle.validateHandle(store);
-                const curData: *params.ParameterData = curResult.ptr.getMutable();
+                const curData: *params.ParameterData = try curResult.ptr.getMutable(store);
                 if (curData.sibling.handle.id == handle.id) {
                     curData.sibling = param.sibling;
                     break;
@@ -95,7 +95,7 @@ pub fn deleteClass(
     handle:    class.ClassHandle,
 ) !void {
     const result = try handle.validateHandle(store);
-    const data: *class.ClassData = result.ptr.getMutable();
+    const data: *class.ClassData =  try result.ptr.getMutable(store);
 
     if(data.references.load(.monotonic) > 1) return error.ClassInUse;
 
@@ -123,14 +123,14 @@ pub fn deleteClass(
 
     if (data.parent.handleOrNull()) |parentHandle| {
         if (parentHandle.validateHandle(store)) |parentResult| {
-            const parentData: *class.ClassData = parentResult.ptr.getMutable();
+            const parentData: *class.ClassData = try parentResult.ptr.getMutable(store);
             var cur = parentData.children;
             if (cur.handle.id == handle.id) {
                 parentData.children = data.sibling;
             } else {
                 while (cur.hasNext()) {
                     const curResult = cur.handle.validateHandle(store) catch break;
-                    const curData: *class.ClassData = curResult.ptr.getMutable();
+                    const curData: *class.ClassData = try curResult.ptr.getMutable(store);
                     if (curData.sibling.handle.id == handle.id) {
                         curData.sibling = data.sibling;
                         break;
@@ -146,7 +146,7 @@ pub fn deleteClass(
         } else {
             while (cur.hasNext()) {
                 const curResult = cur.handle.validateHandle(store ) catch break;
-                const curData: *class.ClassData = curResult.ptr.getMutable();
+                const curData: *class.ClassData = try curResult.ptr.getMutable(store);
                 if (curData.sibling.handle.id == handle.id) {
                     curData.sibling = data.sibling;
                     break;

@@ -160,7 +160,7 @@ pub const LineTable = struct {
         const r = self.resolve(offset);
         return .{
             .index  = offset,
-            .line   = @floatFromInt(r.line),
+            .line   = r.line,
             .column = r.column,
         };
     }

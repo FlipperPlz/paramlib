@@ -186,7 +186,7 @@ pub const ParamAllocator = struct {
         };
     }
 
-    pub inline fn retrieve(
+    pub fn retrieve(
         self: *const ParamAllocator,
         id: anytype,
     ) !@TypeOf(id)._targetConst {
@@ -197,6 +197,22 @@ pub const ParamAllocator = struct {
             .enumeration => self.enums.getConst(id),
             .par         => self.parameters.getConst(id),
             .src         => self.sources.getConst(id),
+            .segment     => try self.pathSegments.get(id) orelse return error.NotFound,
+            .str         => try self.stringValues.get(id) orelse return error.NotFound,
+        };
+    }
+
+    pub fn retrieveMut(
+        self: *ParamAllocator,
+        id: anytype,
+    ) !@TypeOf(id)._target {
+        if (!id.isValid()) return error.InvalidId;
+        return switch (comptime @TypeOf(id)._storageType) {
+            .arr         => self.arrays.get(id),
+            .clazz       => self.classes.get(id),
+            .enumeration => self.enums.get(id),
+            .par         => self.parameters.get(id),
+            .src         => self.sources.get(id),
             .segment     => try self.pathSegments.get(id) orelse return error.NotFound,
             .str         => try self.stringValues.get(id) orelse return error.NotFound,
         };

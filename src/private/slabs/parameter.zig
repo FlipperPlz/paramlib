@@ -121,12 +121,13 @@ pub const ParameterData = struct {
         };
     }
 
-    pub fn getMutable(self: *const ParameterData) *ParameterData {
-        return @constCast(self);
+    pub fn getMutable(self: *const ParameterData, store: *storage.ParamAllocator) !*ParameterData {
+        const id = self.getIdentifier(store) orelse return error.NotFound;
+        return try store.retrieveMut(id);
     }
 
     pub fn getIdentifier(self: *const ParameterData, store: *const storage.ParamAllocator) ?ParameterIdentifier {
-        return ParameterIdentifier{ .id = (store.pathToId.get(self.pathHash) orelse return null).par };
+        return (store.pathToId.get(self.pathHash) orelse return null).par;
     }
 
     pub fn createHandle(self: *const ParameterData, store: *const storage.ParamAllocator) ?ParameterHandle {

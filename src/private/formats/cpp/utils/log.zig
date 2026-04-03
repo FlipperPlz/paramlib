@@ -209,7 +209,7 @@ pub fn stderrLog(
     filename:   []const u8,
     use_color: bool,
 ) ParseLog {
-    var buffer: [1024]u8 = undefined;
+    var buffer: [4096]u8 = undefined;
     const stderr = std.Io.File.stderr().writer(io, &buffer);
 
     const interface: std.Io.Writer = stderr.interface;
