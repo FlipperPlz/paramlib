@@ -1,0 +1,175 @@
+const std     = @import("std");
+const storage = @import("../data/storage.zig");
+const params  = @import("../slabs/parameter.zig");
+const class   = @import("../slabs/class.zig");
+const hasher  = @import("../utils/hasher.zig");
+const Allocator = std.mem.Allocator;
+
+pub const QueryType = enum {
+    class,
+    parameter,
+};
+
+pub const QueryResult = union(enum) {
+    class:     *const class.ClassData,
+    parameter: *const params.ParameterData,
+};
+
+const PatternSegments = struct {
+    segments: [][]const u8,
+
+    fn init(allocator: Allocator, pattern: []const u8) !PatternSegments {
+        var segments = std.ArrayList([]const u8).empty;
+        defer segments.deinit(allocator);
+
+        var iter = std.mem.splitSequence(u8, pattern, ".");
+        while (iter.next()) |segment| {
+            if (segment.len > 0) {
+                try segments.append(allocator, segment);
+            }
+        }
+
+        return .{
+            .segments = try segments.toOwnedSlice(allocator),
+        };
+    }
+
+    fn deinit(self: *PatternSegments, allocator: Allocator) void {
+        allocator.free(self.segments);
+    }
+
+    fn isWildcard(segment: []const u8) bool {
+        return std.mem.eql(u8, segment, "*");
+    }
+};
+
+pub fn lookupParameter(store: *storage.ParamAllocator, path: []const u8) ?*const params.ParameterData {
+    const hash = hasher.hash(path);
+    const id = store.pathToId.get(hash) orelse return null;
+    if (id != .par) return null;
+    const data: *const params.ParameterData = store.retrieve(id.par) catch return null;
+    if (!data.alive) return null;
+    return data;
+}
+
+pub fn findClassByNameHash(store: *storage.ParamAllocator, parent: *const class.ClassData, hash: u64) !?class.ClassHandle {
+    const iter = parent.children.iterator(store);
+    while (iter.next()) |next_handle|{
+        if(hash == (try next_handle.current(store)).nameHash) return next_handle.handle;
+    }
+    return null;
+}
+
+pub fn findParameterByNameHash(store: *storage.ParamAllocator, parent: *const class.ClassData, hash: u64) !?params.ParameterHandle {
+    const iter = parent.params.iterator(store);
+    while (iter.next()) |next_handle|{
+        if(hash == (try next_handle.current(store)).nameHash) return next_handle.handle;
+    }
+    return null;
+}
+
+pub fn lookupClassByPathHash(store: *storage.ParamAllocator, hash: u64) ?*const class.ClassData {
+    const id = store.pathToId.get(hash) orelse return null;
+    if (id != .clazz) return null;
+    const data: *const class.ClassData = store.retrieve(id.clazz) catch return null;
+    if (!data.alive or data.is_delete_marker) return null;
+    return data;
+}
+
+pub inline fn lookupClass(store: *storage.ParamAllocator, path: []const u8) ?*const class.ClassData {
+    return lookupClassByPathHash(store, hasher.hash(path));
+}
+
+pub fn findClassesByPattern(allocator: Allocator, store: *storage.ParamAllocator, siblings: *const class.ClassStorage("sibling"), pattern: []const u8,) ![]QueryResult {
+    var segments = try PatternSegments.init(allocator, pattern);
+    defer segments.deinit(allocator);
+
+    var results = std.ArrayList(QueryResult).empty;
+    errdefer results.deinit(allocator);
+
+    if (segments.segments.len == 0) {
+        return results.toOwnedSlice(allocator);
+    }
+
+    try matchClassesRecursive(allocator, store, siblings, segments.segments, 0, &results);
+
+    const slice = try results.toOwnedSlice(allocator);
+    return slice;
+}
+
+fn matchClassesRecursive(
+    allocator:        Allocator,
+    store:            *storage.ParamAllocator,
+    current_class:    *const class.ClassStorage("sibling"),
+    pattern_segments: [][]const u8,
+    segment_idx:      usize,
+    results:          *std.ArrayList(QueryResult),
+) !void {
+    if (segment_idx >= pattern_segments.len) {
+        return;
+    }
+
+    const current_segment = pattern_segments[segment_idx];
+    const is_wildcard = PatternSegments.isWildcard(current_segment);
+    const is_last_segment = segment_idx == pattern_segments.len - 1;
+
+    var iter = current_class.iterator(store);
+    while (iter.next()) |sibling_storage| {
+        const sibling: *const class.ClassData = try store.retrieve(sibling_storage.handle.id);
+
+        if (!sibling.alive or sibling.is_delete_marker) continue;
+
+        const sibling_name_segment = (store.pathSegments.get(sibling.nameIdx) catch continue) orelse continue;
+
+        const name_matches = is_wildcard or std.mem.eql(u8, sibling_name_segment, current_segment);
+
+        if (!name_matches) continue;
+
+        if (is_last_segment) {
+            try results.append(allocator, .{ .class = sibling });
+        } else {
+            var children = sibling.children;
+            try matchClassesRecursive(allocator, store, &children, pattern_segments, segment_idx + 1, results);
+        }
+    }
+}
+
+pub fn findParametersByPattern(
+    allocator:    Allocator,
+    store:        *storage.ParamAllocator,
+    parent_class: *const class.ClassData,
+    pattern:      []const u8,
+) ![]QueryResult {
+    var segments = try PatternSegments.init(allocator, pattern);
+    defer segments.deinit(allocator);
+
+    var results = std.ArrayList(QueryResult).empty;
+    errdefer results.deinit(allocator);
+
+    if (segments.segments.len == 0) {
+        return results.toOwnedSlice(allocator);
+    }
+
+    if (segments.segments.len == 1) {
+        const segment = segments.segments[0];
+        const is_wildcard = PatternSegments.isWildcard(segment);
+
+        var param_iter = parent_class.params.iterator(store);
+        while (param_iter.next()) |param_storage| {
+            const param: *params.ParameterData = try store.retrieve(param_storage.handle.id);
+            if (!param.alive) continue;
+
+            if (is_wildcard) {
+                try results.append(allocator, .{ .parameter = param });
+            } else {
+                const param_name_segment = (store.pathSegments.get(param.nameIdx) catch continue) orelse continue;
+                if (std.mem.eql(u8, param_name_segment, segment)) {
+                    try results.append(allocator, .{ .parameter = param });
+                }
+            }
+        }
+    }
+
+    const slice = try results.toOwnedSlice(allocator);
+    return slice;
+}
