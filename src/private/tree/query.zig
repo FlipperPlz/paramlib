@@ -76,6 +76,14 @@ pub fn lookupClassByPathHash(store: *storage.ParamAllocator, hash: u64) ?*const 
     return data;
 }
 
+pub fn lookupParameterByPathHash(store: *storage.ParamAllocator, hash: u64) ?*const params.ParameterData {
+    const id = store.pathToId.get(hash) orelse return null;
+    if (id != .par) return null;
+    const data: *const params.ParameterData = store.retrieve(id.par) catch return null;
+    if (!data.alive) return null;
+    return data;
+}
+
 pub inline fn lookupClass(store: *storage.ParamAllocator, path: []const u8) ?*const class.ClassData {
     return lookupClassByPathHash(store, hasher.hash(path));
 }

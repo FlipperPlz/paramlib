@@ -8,7 +8,7 @@ pub const ValueType = enum {
     i32,
     i64,
     f32,
-    f64,
+    // f64,
     string,
     array,
 };
@@ -17,7 +17,7 @@ pub const Value = union(ValueType) {
     i32:    i32,
     i64:    i64,
     f32:    f32,
-    f64:    f64,
+    // f64:    f64,
     string: usize,
     array:  usize,
 
@@ -33,9 +33,9 @@ pub const Value = union(ValueType) {
         return .{ .f32 = val };
     }
 
-    pub fn initF64(val: f64) Value {
-        return .{ .f64 = val };
-    }
+    // pub fn initF64(val: f64) Value {
+    //     return .{ .f64 = val };
+    // }
 
     pub fn initString(idx: usize) Value {
         return .{ .string = idx };
@@ -51,7 +51,9 @@ pub const Value = union(ValueType) {
 
     pub fn isNumeric(self: Value) bool {
         return switch (self) {
-            .i32, .i64, .f32, .f64 => true,
+            .i32, .i64, .f32,
+            // .f64,
+            => true,
             else => false,
         };
     }
@@ -66,13 +68,11 @@ test "value: Value initialization methods" {
     const v_i32    = Value.initI32(42);
     const v_i64    = Value.initI64(1000);
     const v_f32    = Value.initF32(3.14);
-    const v_f64    = Value.initF64(2.71828);
     const v_string = Value.initString(5);
     const v_array  = Value.initArray(10);
     try std.testing.expectEqual(v_i32.i32, 42);
     try std.testing.expectEqual(v_i64.i64, 1000);
     try std.testing.expectApproxEqAbs(v_f32.f32, 3.14, 0.01);
-    try std.testing.expectApproxEqAbs(v_f64.f64, 2.71828, 0.00001);
     try std.testing.expectEqual(v_string.string, 5);
     try std.testing.expectEqual(v_array.array, 10);
 }
@@ -81,7 +81,6 @@ test "value: needsCleanup is true only for array" {
     try std.testing.expect(!Value.initI32(0).needsCleanup());
     try std.testing.expect(!Value.initI64(0).needsCleanup());
     try std.testing.expect(!Value.initF32(0.0).needsCleanup());
-    try std.testing.expect(!Value.initF64(0.0).needsCleanup());
     try std.testing.expect(!Value.initString(0).needsCleanup());
     try std.testing.expect(Value.initArray(0).needsCleanup());
 }
@@ -90,7 +89,6 @@ test "value: isNumeric is true for numeric types only" {
     try std.testing.expect(Value.initI32(0).isNumeric());
     try std.testing.expect(Value.initI64(0).isNumeric());
     try std.testing.expect(Value.initF32(0.0).isNumeric());
-    try std.testing.expect(Value.initF64(0.0).isNumeric());
     try std.testing.expect(!Value.initString(0).isNumeric());
     try std.testing.expect(!Value.initArray(0).isNumeric());
 }
@@ -124,17 +122,10 @@ test "value: f32 special values" {
     try std.testing.expect(!v_inf.needsCleanup());
 }
 
-test "value: f64 precision (pi)" {
-    const v = Value.initF64(std.math.pi);
-    try std.testing.expectApproxEqAbs(std.math.pi, v.f64, 1e-15);
-    try std.testing.expect(v.isNumeric());
-}
-
 test "value: active tag matches init method" {
     try std.testing.expect(Value.initI32(1)   == .i32);
     try std.testing.expect(Value.initI64(1)   == .i64);
     try std.testing.expect(Value.initF32(1.0) == .f32);
-    try std.testing.expect(Value.initF64(1.0) == .f64);
     try std.testing.expect(Value.initString(0) == .string);
     try std.testing.expect(Value.initArray(0)  == .array);
 }
@@ -143,7 +134,6 @@ test "value: negative numeric values" {
     try std.testing.expectEqual(@as(i32, -42),    Value.initI32(-42).i32);
     try std.testing.expectEqual(@as(i64, -1000),  Value.initI64(-1000).i64);
     try std.testing.expect(Value.initF32(-3.14).isNumeric());
-    try std.testing.expect(Value.initF64(-2.71828).isNumeric());
 }
 
 test "value: large index values" {

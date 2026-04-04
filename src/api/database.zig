@@ -15,7 +15,6 @@ const paths       = @import("../private/utils/paths.zig");
 
 pub const ParamDatabase = struct {
     store:   storage.ParamAllocator,
-    enums:   enumeration.EnumStorage("next"),
     params:  params.ParameterStorage("next"),
     sources: source.SourceStorage("next"),
     runtime: source.SourceHandle,
@@ -25,7 +24,6 @@ pub const ParamDatabase = struct {
         var store                    = storage.ParamAllocator.empty;
         const path                   = try store.alloc(allocator, io, paths.SegmentInit.create(""));
         const pathString             = path.ptr;
-        const enums                  = enumeration.EnumStorage("next").empty;
 
         const src = try store.alloc(allocator, io, source.SourceInit {
             .runtime = .{
@@ -45,7 +43,6 @@ pub const ParamDatabase = struct {
 
         return .{
             .store   = store,
-            .enums   = enums,
             .runtime = sourceHandle,
             .sources = sources,
             .params  = .empty,

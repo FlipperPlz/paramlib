@@ -8,7 +8,7 @@ const handles     = @import("../utils/handles.zig");
 const query       = @import("./query.zig");
 const refs        = @import("./references.zig");
 const paths       = @import("../utils/paths.zig");
-
+const enumerable  = @import("../slabs/enum.zig");
 
 pub fn createClass(allocator: Allocator, io: std.Io, store: *storage.ParamAllocator, init: class.ClassInit) !*const class.ClassData {
     const clazz = try store.alloc(allocator, io, init);
@@ -18,6 +18,52 @@ pub fn createClass(allocator: Allocator, io: std.Io, store: *storage.ParamAlloca
         try refs.retainHandle(store, baseHandle);
 
     return clazz.ptr;
+}
+
+pub fn createParameter(
+    allocator: Allocator,
+    io: std.Io,
+    store: *storage.ParamAllocator,
+    init: params.ParameterInit
+) !struct{id: params.ParameterIdentifier, ptr: *const params.ParameterData }{
+    const param = try store.alloc(allocator, io, init);
+    errdefer store.free(allocator, param.index);
+
+    return .{.id = param.index, .ptr = param.ptr};
+}
+
+
+
+pub fn getOrCreateParameter(
+    allocator: Allocator,
+    io: std.Io,
+    store: *storage.ParamAllocator,
+    init: params.ParameterInit
+) !struct{id: params.ParameterIdentifier, ptr: *const params.ParameterData } {
+    var resolved_init = init;
+
+    if (resolved_init.pathHash == null) {
+        const path = blk: {
+            const parentData: *const class.ClassData = (try init.parent.validateHandle(store)).ptr;
+            var hash = hasher.IncrementalHasher.load(parentData.pathHash);
+            break :blk hash.updateSep().update(init.name).final();
+        };
+
+        resolved_init.pathHash = path;
+    }
+
+    if (query.lookupParameterByPathHash(store, resolved_init.pathHash.?)) |existing|{
+        return .{
+            .id = existing.getIdentifier(store) orelse return error.UnknownIdentifier,
+            .ptr = existing,
+        };
+    }
+
+    const next = try createParameter(allocator, io, store, init);
+    return .{
+        .id = next.id,
+        .ptr = next.ptr,
+    };
 }
 
 pub fn getOrCreateClass(allocator: Allocator, io: std.Io, store: *storage.ParamAllocator, init: class.ClassInit) !*const class.ClassData {
@@ -32,9 +78,9 @@ pub fn getOrCreateClass(allocator: Allocator, io: std.Io, store: *storage.ParamA
             break :blk hasher.hash(init.name);
         };
 
-        if (query.lookupClassByPathHash(store, path)) |existing| return existing;
         resolved_init.pathHash = path;
     }
+    if (query.lookupClassByPathHash(store, resolved_init.pathHash.?)) |existing| return existing;
 
     return createClass(allocator, io, store, resolved_init);
 }
@@ -52,7 +98,7 @@ pub fn createDeleteMarker(
         .parent           = parent,
         .source           = src,
         .access           = .readOnly,
-        .is_delete = true,
+        .is_delete        = true,
     });
 }
 
@@ -88,6 +134,7 @@ pub fn deleteParameter(
 
     try store.free(allocator, handle.id);
 }
+
 
 pub fn deleteClass(
     allocator: Allocator,

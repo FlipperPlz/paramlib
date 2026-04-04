@@ -21,6 +21,16 @@ pub const SourceData = struct {
     content:    SourceContent,
     next:       SourceStorage("next"),
 
+    pub fn read(self: SourceData, store: *const storage.ParamAllocator, allocator: Allocator, io: std.Io) ![:0]const u8 {
+        _ = store;
+        return switch (self.content) {
+            .memory  => |m| m.data,
+            .runtime => |r| r.data,
+            .file    => |f| try f.read(allocator, io),
+            .snippet => error.SnippetRequiresStore,
+        };
+    }
+
     pub fn init(args: SourceInit) !SourceData {
         return switch (args) {
             .file => |fileArgs| {
