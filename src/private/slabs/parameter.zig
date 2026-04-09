@@ -17,44 +17,54 @@ pub const ParameterPool       = memory.SlabPool(ParameterData, ParameterIdentifi
 pub fn ParameterStorage(comptime field: []const u8) type {
     return struct {
         const Self = @This();
-        handle: ParameterHandle,
+        head: ParameterHandle,
+        tail: ParameterHandle,
 
         pub fn init(handle: ParameterHandle) Self {
-            return .{ .handle = handle };
-        }
-
-        pub fn nextOrNull(self: Self, store: *const storage.ParamAllocator) !?Self {
-            if (!self.hasNext()) return null;
-            const data: *const ParameterData = try store.retrieve(self.handle.id);
-            return @field(data, field);
+            return .{ .head = handle, .tail = handle };
         }
 
         pub fn hasNext(self: Self) bool {
-            return self.handle.isValid();
+            return self.head.isValid();
         }
 
         pub fn next(self: Self, store: *const storage.ParamAllocator) !Self {
             return (try nextOrNull(self, store)) orelse error.EndOfList;
         }
 
-        pub fn current (self: Self, store: *const storage.ParamAllocator) !*const ParameterData {
+        pub fn current(self: Self, store: *const storage.ParamAllocator) !*const ParameterData {
             return (try currentOrNull(self, store)) orelse return error.EndOfList;
         }
 
         pub fn currentOrNull(self: Self, store: *const storage.ParamAllocator) !?*const ParameterData {
             if (!self.hasNext()) return null;
-            return try store.retrieve(self.handle.id);
+            return try store.retrieve(self.head.id);
         }
 
         pub fn handleOrNull(self: Self) ?ParameterHandle {
             if (!self.hasNext()) return null;
-            return self.handle;
+            return self.head;
         }
 
+        pub fn nextOrNull(self: Self, store: *const storage.ParamAllocator) !?Self {
+            if (!self.hasNext()) return null;
+            const data: *const ParameterData = try store.retrieve(self.head.id);
+            return @field(data, field);
+        }
 
+        pub fn append(self: *Self, store: *storage.ParamAllocator, handle: ParameterHandle) !void {
+            const new_node = Self.init(handle);
+            if (!self.hasNext()) {
+                self.* = new_node;
+                return;
+            }
+            const tail_data: *ParameterData = try store.retrieveMut(self.tail.id);
+            @field(tail_data, field) = new_node;
+            self.tail = handle;
+        }
 
         pub const Iterator = struct {
-            store: *const storage.ParamAllocator,
+            store:   *const storage.ParamAllocator,
             current: Self,
 
             pub fn next(it: *@This()) ?Self {
@@ -66,13 +76,10 @@ pub fn ParameterStorage(comptime field: []const u8) type {
         };
 
         pub fn iterator(self: Self, store: *const storage.ParamAllocator) Iterator {
-            return .{
-                .store = store,
-                .current = self,
-            };
+            return .{ .store = store, .current = self };
         }
 
-        pub const empty: Self = .{ .handle = ParameterHandle.invalid };
+        pub const empty: Self = .{ .head = ParameterHandle.invalid, .tail = ParameterHandle.invalid };
     };
 }
 

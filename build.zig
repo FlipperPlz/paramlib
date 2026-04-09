@@ -46,6 +46,25 @@ pub fn build(b: *std.Build) void {
 
     b.installArtifact(exe);
 
+    // --- LSP server ---------------------------------------------------------
+    const lsp_exe = b.addExecutable(.{
+        .name = "paramlib-lsp",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/private/formats/cpp/lsp/main.zig"),
+            .target   = target,
+            .optimize = optimize,
+            .imports  = &.{
+                .{ .name = "paramlib", .module = mod },
+            },
+        }),
+    });
+    b.installArtifact(lsp_exe);
+
+    const lsp_run      = b.addRunArtifact(lsp_exe);
+    const lsp_run_step = b.step("lsp", "Run the LSP server");
+    lsp_run_step.dependOn(&lsp_run.step);
+    // ------------------------------------------------------------------------
+
     const run_step = b.step("run", "Run the app");
 
     const run_cmd = b.addRunArtifact(exe);

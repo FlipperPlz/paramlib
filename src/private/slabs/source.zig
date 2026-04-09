@@ -87,20 +87,32 @@ const SourceType = enum {
 pub fn SourceStorage(comptime field: []const u8) type {
     return struct {
         const Self = @This();
-        handle: SourceHandle,
+        head: SourceHandle,
+        tail: SourceHandle,
 
         pub fn init(handle: SourceHandle) Self {
-            return .{ .handle = handle };
+            return .{ .head = handle, .tail = handle };
         }
 
         pub fn hasNext(self: Self) bool {
-            return self.handle.isValid();
+            return self.head.isValid();
         }
 
         pub fn next(self: Self, store: *storage.ParamAllocator) !Self {
             if (!self.hasNext()) return error.EndOfList;
             const data: *SourceData = try store.retrieve(self.handle.id);
             return @field(data, field);
+        }
+
+        pub fn append(self: *Self, store: *storage.ParamAllocator, handle: SourceHandle) !void {
+            const new_node = Self.init(handle);
+            if (!self.hasNext()) {
+                self.* = new_node;
+                return;
+            }
+            const tail_data: *SourceHandle = try store.retrieveMut(self.tail.id);
+            @field(tail_data, field) = new_node;
+            self.tail = handle;
         }
 
         pub const Iterator = struct {
@@ -122,7 +134,7 @@ pub fn SourceStorage(comptime field: []const u8) type {
             };
         }
 
-        pub const empty: Self = .{ .handle = SourceHandle.invalid };
+        pub const empty: Self = .{ .head = .invalid, .tail = .invalid };
     };
 }
 

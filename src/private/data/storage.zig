@@ -113,17 +113,14 @@ pub const ParamAllocator = struct {
                 if (class_init.parent) |parent_handle| {
                     if (parent_handle.isValid()) {
                         const parent_data = self.classes.get(parent_handle.id);
-                        clazz.ptr.sibling    = parent_data.children;
-                        parent_data.children = class.ClassStorage("sibling").init(new_handle);
+                        try parent_data.children.append(self, new_handle);
                     } else {
                         // Todo maybe want to return an error here instead of silently treating it as a root class?
                         // Invalid parent handle treat as root class.
-                        clazz.ptr.sibling = self.root;
-                        self.root = class.ClassStorage("sibling").init(new_handle);
+                        try self.root.append(self, new_handle);
                     }
                 } else {
-                    clazz.ptr.sibling = self.root;
-                    self.root = class.ClassStorage("sibling").init(new_handle);
+                    try self.root.append(self, new_handle);
                 }
 
                 return .{.index = clazz.index, .ptr = clazz.ptr};
@@ -163,8 +160,7 @@ pub const ParamAllocator = struct {
                         .id         = param.index,
                         .generation = param.ptr.generation,
                     };
-                    param.ptr.sibling  = parent_data.params;
-                    parent_data.params = parameter.ParameterStorage("sibling").init(new_param_handle);
+                    try parent_data.params.append(self, new_param_handle);
                 }
 
                 return .{ .index = param.index, .ptr = param.ptr};

@@ -115,14 +115,26 @@ pub fn deleteParameter(
         const parentData: *class.ClassData = try parentResult.ptr.getMutable(store);
 
         var cur = parentData.params;
-        if (cur.handle.id == handle.id) {
-            parentData.params = param.sibling;
+        if (cur.head.id == handle.id) {
+            if (param.sibling.hasNext()) {
+                parentData.params.head = param.sibling.head;
+            } else {
+                parentData.params = params.ParameterStorage("sibling").empty;
+            }
         } else {
             while (cur.hasNext()) {
-                const curResult = try cur.handle.validateHandle(store);
+                const curResult = try cur.head.validateHandle(store);
                 const curData: *params.ParameterData = try curResult.ptr.getMutable(store);
-                if (curData.sibling.handle.id == handle.id) {
-                    curData.sibling = param.sibling;
+                if (curData.sibling.head.id == handle.id) {
+                    if (param.sibling.hasNext()) {
+                        curData.sibling.head = param.sibling.head;
+                        if (parentData.params.tail.id == handle.id) {
+                            parentData.params.tail = cur.head;
+                        }
+                    } else {
+                        curData.sibling = params.ParameterStorage("sibling").empty;
+                        parentData.params.tail = cur.head;
+                    }
                     break;
                 }
                 cur = curData.sibling;
@@ -148,7 +160,7 @@ pub fn deleteClass(
 
     var child = data.children;
     while (child.hasNext()) {
-        const childHandle = child.handle;
+        const childHandle = child.head;
         const childData: *const class.ClassData = (try childHandle.validateHandle(store)).ptr;
         child = childData.sibling;
         try deleteClass(allocator, store, childHandle);
@@ -156,7 +168,7 @@ pub fn deleteClass(
 
     var p = data.params;
     while (p.hasNext()) {
-        const paramHandle = p.handle;
+        const paramHandle = p.head;
         const paramData: *const params.ParameterData = (try paramHandle.validateHandle(store)).ptr;
         p = paramData.sibling;
         _ = store.pathToId.remove(paramData.pathHash);
@@ -172,14 +184,26 @@ pub fn deleteClass(
         if (parentHandle.validateHandle(store)) |parentResult| {
             const parentData: *class.ClassData = try parentResult.ptr.getMutable(store);
             var cur = parentData.children;
-            if (cur.handle.id == handle.id) {
-                parentData.children = data.sibling;
+            if (cur.head.id == handle.id) {
+                if (data.sibling.hasNext()) {
+                    parentData.children.head = data.sibling.head;
+                } else {
+                    parentData.children = class.ClassStorage("sibling").empty;
+                }
             } else {
                 while (cur.hasNext()) {
-                    const curResult = cur.handle.validateHandle(store) catch break;
+                    const curResult = cur.head.validateHandle(store) catch break;
                     const curData: *class.ClassData = try curResult.ptr.getMutable(store);
-                    if (curData.sibling.handle.id == handle.id) {
-                        curData.sibling = data.sibling;
+                    if (curData.sibling.head.id == handle.id) {
+                        if (data.sibling.hasNext()) {
+                            curData.sibling.head = data.sibling.head;
+                            if (parentData.children.tail.id == handle.id) {
+                                parentData.children.tail = cur.head;
+                            }
+                        } else {
+                            curData.sibling = class.ClassStorage("sibling").empty;
+                            parentData.children.tail = cur.head;
+                        }
                         break;
                     }
                     cur = curData.sibling;
@@ -188,14 +212,26 @@ pub fn deleteClass(
         } else |_| {}
     } else {
         var cur = store.root;
-        if (cur.handle.id == handle.id) {
-            store.root = data.sibling;
+        if (cur.head.id == handle.id) {
+            if (data.sibling.hasNext()) {
+                store.root.head = data.sibling.head;
+            } else {
+                store.root = class.ClassStorage("sibling").empty;
+            }
         } else {
             while (cur.hasNext()) {
-                const curResult = cur.handle.validateHandle(store ) catch break;
+                const curResult = cur.head.validateHandle(store) catch break;
                 const curData: *class.ClassData = try curResult.ptr.getMutable(store);
-                if (curData.sibling.handle.id == handle.id) {
-                    curData.sibling = data.sibling;
+                if (curData.sibling.head.id == handle.id) {
+                    if (data.sibling.hasNext()) {
+                        curData.sibling.head = data.sibling.head;
+                        if (store.root.tail.id == handle.id) {
+                            store.root.tail = cur.head;
+                        }
+                    } else {
+                        curData.sibling = class.ClassStorage("sibling").empty;
+                        store.root.tail = cur.head;
+                    }
                     break;
                 }
                 cur = curData.sibling;
@@ -214,7 +250,6 @@ test "factory: createClass root class — alive and generation 1" {
     var store = storage.ParamAllocator.empty;
     defer store.deinit(std.testing.allocator);
 
-    // Need a root handle as parent — create one via storage directly first
     const root_raw = try store.alloc(std.testing.allocator, std.testing.io, class.ClassInit{
         .name = "__root__", .parent = null, .source = source.SourceHandle.invalid,
     });
@@ -387,11 +422,8 @@ test "delete marker: tombstone is hidden from lookupClass" {
         "ToDelete", null, source.SourceHandle.invalid,
     );
 
-    // lookupClass must NOT expose tombstones to callers
     try std.testing.expect(query.lookupClass(&store, "ToDelete") == null);
 
-    // But the entry IS in pathToId — merge logic needs to find it via
-    // the raw store, not via the public query API
     const h = hasher.hash("ToDelete");
     try std.testing.expect(store.pathToId.contains(h));
 }
@@ -410,7 +442,6 @@ test "delete marker: tombstone is skipped by findClassesByPattern wildcard" {
     const results = try query.findClassesByPattern(std.testing.allocator, &store, root, "*");
     defer std.testing.allocator.free(results);
 
-    // Only RealClass should appear — GhostClass is a tombstone and must be filtered
     try std.testing.expectEqual(@as(usize, 1), results.len);
     const name = try store.retrieve(results[0].class.nameIdx);
     try std.testing.expectEqualStrings("RealClass", name);
@@ -647,7 +678,6 @@ test "getOrCreateClass: second call with same name returns existing class" {
         .source = source.SourceHandle.invalid,
     });
 
-    // Same pointer — no duplicate allocated
     try std.testing.expectEqual(a, b);
     try std.testing.expectEqual(a.pathHash, b.pathHash);
 }

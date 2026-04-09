@@ -55,7 +55,7 @@ pub fn lookupParameter(store: *storage.ParamAllocator, path: []const u8) ?*const
 pub fn findClassByNameHash(store: *storage.ParamAllocator, parent: *const class.ClassData, hash: u64) !?class.ClassHandle {
     var iter = parent.children.iterator(store);
     while (iter.next()) |next_handle|{
-        if(hash == (try next_handle.current(store)).nameHash) return next_handle.handle;
+        if(hash == (try next_handle.current(store)).nameHash) return next_handle.head;
     }
     return null;
 }
@@ -63,7 +63,7 @@ pub fn findClassByNameHash(store: *storage.ParamAllocator, parent: *const class.
 pub fn findParameterByNameHash(store: *storage.ParamAllocator, parent: *const class.ClassData, hash: u64) !?params.ParameterHandle {
     var iter = parent.params.iterator(store);
     while (iter.next()) |next_handle|{
-        if(hash == (try next_handle.current(store)).nameHash) return next_handle.handle;
+        if(hash == (try next_handle.current(store)).nameHash) return next_handle.head;
     }
     return null;
 }
@@ -123,7 +123,7 @@ fn matchClassesRecursive(
 
     var iter = current_class.iterator(store);
     while (iter.next()) |sibling_storage| {
-        const sibling: *const class.ClassData = try store.retrieve(sibling_storage.handle.id);
+        const sibling: *const class.ClassData = try store.retrieve(sibling_storage.head.id);
 
         if (!sibling.alive or sibling.is_delete_marker) continue;
 

@@ -6,9 +6,8 @@ pub fn main(init: std.process.Init) !void {
     const BENCH_ITERS: u64 = 100;
 
     const src = \\
-            \\class MyBase;
-            \\class MyClass : MyBase {
-            \\    value = 42
+            \\class MyClass {
+            \\    value = 42;
             \\    name  = "hello";
             \\};
         ++ [_:0]u8{};
@@ -16,8 +15,8 @@ pub fn main(init: std.process.Init) !void {
     var iter: u64 = 0;
     while (iter < BENCH_ITERS) : (iter += 1) {
 
-        var parsed = try cpp_parser.parseSource(init.io, init.arena.allocator(), src, "MyClass.cpp", true);
-        defer parsed.deinit(init.arena.allocator());
+        var parsed = try cpp_parser.parseSource(init.io, init.gpa, src, "MyClass.cpp", true);
+        defer parsed.deinit(init.gpa);
     }
     const elapsed_ns: u64 = @intCast(std.Io.Timestamp.now(init.io, .real).nanoseconds - start);
 
