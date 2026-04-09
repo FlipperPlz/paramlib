@@ -14,9 +14,14 @@ const storage     = @import("private/data/storage.zig");
 const source      = @import("private/slabs/source.zig");
 const query       = @import("private/tree/query.zig");
 const factory     = @import("private/tree/factory.zig");
+const parser      = @import("private/formats/cpp/parser.zig");
 
 test "query tests" {
     std.testing.refAllDecls(query);
+}
+
+test "parser tests" {
+    std.testing.refAllDecls(parser);
 }
 
 test "factory tests" {

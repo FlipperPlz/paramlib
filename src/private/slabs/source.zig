@@ -167,7 +167,7 @@ pub const FileContent = struct {
         const fileReader = self.file.reader(io, &readerBuffer);
         var reader = fileReader.interface;
 
-        const data = allocator.allocSentinel(u8, reader.end, 0);
+        const data = try allocator.allocSentinel(u8, reader.end, 0);
         try reader.readSliceAll(data);
 
         return data ;

@@ -46,7 +46,7 @@ pub const ParamAllocator = struct {
                 arr.ptr.* = try array.ArrayData.init(allocator, io, array_init);
 
                 return .{
-                    .index = .create(arr.index),
+                    .index = arr.index,
                     .ptr   = arr.ptr
                 };
             },

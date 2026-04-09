@@ -1,27 +1,28 @@
 const std = @import("std");
 const cpp_lexer = @import("private/formats/cpp/lexer.zig");
+const cpp_parser = @import("private/formats/cpp/parser.zig");
 
 pub fn main(init: std.process.Init) !void {
     const BENCH_ITERS: u64 = 100;
 
-    const BENCH_SRC: *const [210147:0]u8 = @embedFile("private/formats/cpp/tests/game.cpp");
-    var totalTokens: usize = 0;
-
+    const src = \\
+            \\class MyBase;
+            \\class MyClass : MyBase {
+            \\    value = 42
+            \\    name  = "hello";
+            \\};
+        ++ [_:0]u8{};
     const start = std.Io.Timestamp.now(init.io, .real).nanoseconds;
     var iter: u64 = 0;
     while (iter < BENCH_ITERS) : (iter += 1) {
-        var t = cpp_lexer.Tokenizer.init(BENCH_SRC);
-        while (true) {
-            const tok = t.next() catch break;
-            totalTokens += 1;
-            if (tok.kind == .eof) break;
-        }
+
+        var parsed = try cpp_parser.parseSource(init.io, init.arena.allocator(), src, "MyClass.cpp", true);
+        defer parsed.deinit(init.arena.allocator());
     }
     const elapsed_ns: u64 = @intCast(std.Io.Timestamp.now(init.io, .real).nanoseconds - start);
-    const ns_per_token = elapsed_ns / totalTokens;
 
     std.debug.print(
-        "\n[bench] tokenizer: {} tokens in {} iters - {d} ns/token\n",
-        .{ totalTokens / BENCH_ITERS, BENCH_ITERS, ns_per_token },
+        "\n[bench] tokenizer: {}  -\n",
+        .{ elapsed_ns },
     );
 }

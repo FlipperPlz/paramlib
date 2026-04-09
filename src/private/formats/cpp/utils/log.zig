@@ -40,22 +40,22 @@ pub const Level = enum {
 pub const ParseLog = struct {
     const Self = @This();
 
-    writer:     std.Io.Writer,
+    io:         std.Io,
     line_table: *const lexer.LineTable,
     filename:   []const u8,
-    use_color: bool,
+    use_color:  bool,
 
     pub fn init(
-        writer:     std.Io.Writer,
+        io:         std.Io,
         line_table: *const lexer.LineTable,
         filename:   []const u8,
-        use_color: bool,
+        use_color:  bool,
     ) Self {
         return .{
-            .writer     = writer,
+            .io         = io,
             .line_table = line_table,
             .filename   = filename,
-            .use_color = use_color,
+            .use_color  = use_color,
         };
     }
 
@@ -72,8 +72,11 @@ pub const ParseLog = struct {
         message:    []const u8,
         label_text: ?[]const u8,
     ) void {
-        var w   = self.writer;
+        var buffer: [4096]u8 = undefined;
+        var wr = std.Io.File.stderr().writer(self.io, &buffer);
+        const w = &wr.interface;
         const pos = self.line_table.resolve(token.pos);
+        std.debug.print("[emit] token.pos={d} → line={d} col={d}\n", .{ token.pos, pos.line, pos.column });
 
         if (err_code) |c| {
             w.print("{s}{s}[{s}]{s}: {s}{s}{s}\n", .{
@@ -115,12 +118,13 @@ pub const ParseLog = struct {
         const col0: usize = pos.column - 1;
         const span        = tokenSpan(token, line_text, col0);
 
-        writeRepeat(&w, ' ', col0) catch return;
+        writeRepeat(w, ' ', col0) catch return;
         w.print("{s}", .{ self.ansi(level.color()) }) catch return;
-        writeRepeat(&w, '^', span) catch return;
+        writeRepeat(w, '^', @max(1, span)) catch return;
 
         const lbl = label_text orelse message;
         w.print(" {s}{s}\n\n", .{ lbl, self.ansi(Color.reset) }) catch return;
+        w.flush() catch return;
     }
 
     pub fn err(self: *const Self, source: [:0]const u8, code: ?[]const u8, token: lexer.Token, msg: []const u8) void {
@@ -157,7 +161,7 @@ fn lineSlice(source: []const u8, lt: *const lexer.LineTable, line: u32) []const 
     return source[start..end];
 }
 
-fn tokenSpan(token: lexer.Token, line_text: []const u8, col0: usize) usize {
+fn tokenSpan(token: *const lexer.Token, line_text: []const u8, col0: usize) usize {
     switch (token.data) {
         .text => |t| {
             const extra: usize = switch (token.kind) {
@@ -197,27 +201,16 @@ fn spaces(n: usize) []const u8 {
 }
 
 fn writeRepeat(writer: *std.Io.Writer, ch: u8, n: usize) !void {
-    const count = if (n == 0) 1 else n;
     var i: usize = 0;
-    while (i < count) : (i += 1) try writer.writeByte(ch);
+    while (i < n) : (i += 1) try writer.writeByte(ch);
+    try writer.flush();
 }
 
-
 pub fn stderrLog(
-    io: std.Io,
+    io:         std.Io,
     line_table: *const lexer.LineTable,
     filename:   []const u8,
-    use_color: bool,
+    use_color:  bool,
 ) ParseLog {
-    var buffer: [4096]u8 = undefined;
-    const stderr = std.Io.File.stderr().writer(io, &buffer);
-
-    const interface: std.Io.Writer = stderr.interface;
-
-    return ParseLog.init(
-        interface,
-        line_table,
-        filename,
-        use_color,
-    );
+    return ParseLog.init(io, line_table, filename, use_color);
 }
