@@ -548,7 +548,7 @@ pub const Tokenizer = struct {
                     if (self.peek() != ch) { matches = false; break; }
                     self.advance();
                 }
-                if (!matches) {
+                if (matches) {
                     skipWhileInline(self, isSpace);
                     self.index = saved;
                     const numStart = self.index;

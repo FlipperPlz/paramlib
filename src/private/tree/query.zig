@@ -164,7 +164,7 @@ pub fn findParametersByPattern(
 
         var param_iter = parent_class.params.iterator(store);
         while (param_iter.next()) |param_storage| {
-            const param: *const params.ParameterData = try store.retrieve(param_storage.handle.id);
+            const param: *const params.ParameterData = try store.retrieve(param_storage.head.id);
             if (!param.alive) continue;
 
             if (is_wildcard) {

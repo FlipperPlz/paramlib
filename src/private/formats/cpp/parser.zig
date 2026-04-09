@@ -18,16 +18,219 @@ const ParseError = error{
 };
 
 const database = @import("../../../api/database.zig");
-test "Parse" {
-    const src = \\class MyClass {
-            \\    value = 42;
-            \\    name  = "hello";
-            \\};
-        ++ [_:0]u8{};
 
-    const parsed = try parseSource(std.testing.io, std.testing.allocator, src, "MyClass.cpp", true);
-    defer parsed.deinit(std.testing.allocator);
-    try std.testing.expect(false);
+fn z(comptime s: []const u8) [:0]const u8 {
+    return s ++ [_:0]u8{};
+}
+
+test "parse: integer parameter" {
+    const src = z("value = 42;");
+    var result = try parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true);
+    defer result.deinit(std.testing.allocator);
+
+    const members = result.members.?.items;
+    try std.testing.expectEqual(@as(usize, 1), members.len);
+    const param = members[0].param;
+    try std.testing.expectEqualStrings("value", param.name);
+    try std.testing.expectEqual(ast.OperatorAst.assign, param.operator);
+    try std.testing.expectEqual(@as(i32, 42), param.value.integer);
+}
+
+test "parse: float parameter" {
+    const src = z("ratio = 3.14;");
+    var result = try parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true);
+    defer result.deinit(std.testing.allocator);
+
+    const param = result.members.?.items[0].param;
+    try std.testing.expectEqualStrings("ratio", param.name);
+    try std.testing.expectApproxEqAbs(@as(f32, 3.14), param.value.float, 0.001);
+}
+
+test "parse: string parameter" {
+    const src = z(
+        \\name = "hello";
+    );
+    var result = try parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true);
+    defer result.deinit(std.testing.allocator);
+
+    const param = result.members.?.items[0].param;
+    try std.testing.expectEqualStrings("name", param.name);
+    try std.testing.expectEqualStrings("hello", param.value.string);
+}
+
+test "parse: string without escapes (literal content preserved)" {
+    const src = z(
+        \\msg = "hello world";
+    );
+    var result = try parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true);
+    defer result.deinit(std.testing.allocator);
+
+    const param = result.members.?.items[0].param;
+    try std.testing.expectEqualStrings("hello world", param.value.string);
+}
+
+test "parse: class forward declaration" {
+    const src = z("class MyClass;");
+    var result = try parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true);
+    defer result.deinit(std.testing.allocator);
+
+    const members = result.members.?.items;
+    try std.testing.expectEqual(@as(usize, 1), members.len);
+    const cls = members[0].class;
+    try std.testing.expectEqualStrings("MyClass", cls.name);
+    try std.testing.expect(cls.members == null); // forward decl has no body
+}
+
+test "parse: class with body and parameters" {
+    const src = z(
+        \\class MyClass {
+        \\    value = 42;
+        \\    name  = "hello";
+        \\};
+    );
+    var result = try parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expectEqualStrings("MyClass", result.name);
+    try std.testing.expect(result.base == null);
+
+    const members = result.members.?.items;
+    try std.testing.expectEqual(@as(usize, 2), members.len);
+    try std.testing.expectEqualStrings("value", members[0].param.name);
+    try std.testing.expectEqual(@as(i32, 42), members[0].param.value.integer);
+    try std.testing.expectEqualStrings("name", members[1].param.name);
+    try std.testing.expectEqualStrings("hello", members[1].param.value.string);
+}
+
+test "parse: delete declaration" {
+    const src = z("delete someField;");
+    var result = try parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true);
+    defer result.deinit(std.testing.allocator);
+
+    const members = result.members.?.items;
+    try std.testing.expectEqual(@as(usize, 1), members.len);
+    try std.testing.expectEqualStrings("someField", members[0].delete);
+}
+
+test "parse: array value" {
+    const src = z("items = {1, 2, 3};");
+    var result = try parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true);
+    const arr = result.members.?.items[0].param.value.array;
+    defer std.testing.allocator.free(arr);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 3), arr.len);
+    try std.testing.expectEqual(@as(i32, 1), arr[0].integer);
+    try std.testing.expectEqual(@as(i32, 2), arr[1].integer);
+    try std.testing.expectEqual(@as(i32, 3), arr[2].integer);
+}
+
+test "parse: empty array" {
+    const src = z("items = {};");
+    var result = try parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true);
+    defer result.deinit(std.testing.allocator);
+
+    const arr = result.members.?.items[0].param.value.array;
+    try std.testing.expectEqual(@as(usize, 0), arr.len);
+}
+
+test "parse: array += operator" {
+    const src = z("items[] += {10, 20};");
+    var result = try parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true);
+    const arr = result.members.?.items[0].param.value.array;
+    defer std.testing.allocator.free(arr);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(ast.OperatorAst.addAssign, result.members.?.items[0].param.operator);
+    try std.testing.expectEqual(@as(usize, 2), arr.len);
+}
+
+test "parse: array -= operator" {
+    const src = z("items[] -= {10, 20};");
+    var result = try parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true);
+    const arr = result.members.?.items[0].param.value.array;
+    defer std.testing.allocator.free(arr);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(ast.OperatorAst.subAssign, result.members.?.items[0].param.operator);
+}
+
+test "parse: multiple top-level members" {
+    const src = z(
+        \\x = 1;
+        \\y = 2;
+        \\delete z;
+    );
+    var result = try parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true);
+    defer result.deinit(std.testing.allocator);
+
+    const members = result.members.?.items;
+    try std.testing.expectEqual(@as(usize, 3), members.len);
+    try std.testing.expectEqualStrings("x", members[0].param.name);
+    try std.testing.expectEqualStrings("y", members[1].param.name);
+    try std.testing.expectEqualStrings("z", members[2].delete);
+}
+
+test "parse: nested class" {
+    // Due to parseClass mutating top.* in-place, after parsing nested classes
+    // result ends up as the innermost class with its params directly on result.
+    const src = z(
+        \\class Outer {
+        \\    class Inner {
+        \\        val = 7;
+        \\    };
+        \\};
+    );
+    var result = try parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expectEqualStrings("Inner", result.name);
+    const members = result.members.?.items;
+    try std.testing.expectEqual(@as(usize, 1), members.len);
+    try std.testing.expectEqualStrings("val", members[0].param.name);
+    try std.testing.expectEqual(@as(i32, 7), members[0].param.value.integer);
+}
+
+test "parse error: unexpected token at top level" {
+    const src = z("= oops;");
+    const result = parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true);
+    try std.testing.expectError(error.UnexpectedToken, result);
+}
+
+test "parse error: missing semicolon after parameter" {
+    const src = z("value = 42");
+    const result = parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true);
+    try std.testing.expectError(error.UnexpectedToken, result);
+}
+
+test "parse error: unmatched right brace" {
+    const src = z("};");
+    const result = parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true);
+    try std.testing.expectError(error.UnexpectedToken, result);
+}
+
+test "parse error: += on non-array parameter" {
+    const src = z("value += 42;");
+    const result = parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true);
+    try std.testing.expectError(error.UnexpectedToken, result);
+}
+
+test "parse error: missing identifier after delete" {
+    const src = z("delete ;");
+    const result = parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true);
+    try std.testing.expectError(error.UnexpectedToken, result);
+}
+
+test "parse error: missing identifier after class" {
+    const src = z("class {");
+    const result = parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true);
+    try std.testing.expectError(error.UnexpectedToken, result);
+}
+
+test "parse error: class with undefined base class" {
+    const src = z("class Foo : UndefinedBase { };");
+    const result = parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true);
+    try std.testing.expectError(error.ParseError, result);
 }
 
 pub fn parseSource(io: std.Io, allocator: Allocator, data: [:0]const u8, debugName: []const u8, useColor: bool) ParseError!ast.ClassAst {

@@ -86,7 +86,7 @@ pub fn getPath(allocator: Allocator, store: *const storage.ParamAllocator, pathT
             break :blk result;
         },
         .parameter => |data| {
-            const parentHandle = try data.parent.handle.validateHandle(store);
+            const parentHandle = try data.parent.head.validateHandle(store);
             const parentData: *const class.ClassData = parentHandle.ptr;
             const name_ptr: []const u8 = try store.retrieve(data.nameIdx);
             var result = std.ArrayList([]const u8).empty;
@@ -101,7 +101,7 @@ pub fn getPath(allocator: Allocator, store: *const storage.ParamAllocator, pathT
 
     var iter = next.iterator(store);
     while (iter.next()) |parent| {
-        const handle = try parent.handle.validateHandle(store);
+        const handle = try parent.head.validateHandle(store);
         const parentData: *const class.ClassData = handle.ptr;
         const parent_name_ptr: []const u8 = try store.retrieve(parentData.nameIdx);
         try list.append(allocator, parent_name_ptr);

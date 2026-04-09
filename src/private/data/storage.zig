@@ -92,7 +92,7 @@ pub const ParamAllocator = struct {
                 const nameIdx  = class_init.nameIdx orelse (try self.pathSegments.intern(allocator, class_init.name)).idx;
 
                 try self.pathToId.put(allocator, pathHash, .create(clazz.index));
-                errdefer self.pathToId.remove(pathHash);
+                errdefer _ = self.pathToId.remove(pathHash);
 
                 clazz.ptr.* = class.ClassData.init(io, .{
                     .name      = class_init.name,
@@ -142,7 +142,7 @@ pub const ParamAllocator = struct {
                 };
 
                 try self.pathToId.put(allocator, pathHash, .create(param.index));
-                errdefer self.pathToId.remove(pathHash);
+                errdefer _ = self.pathToId.remove(pathHash);
 
                 param.ptr.* = parameter.ParameterData.init(io, .{
                     .name     = param_init.name,
