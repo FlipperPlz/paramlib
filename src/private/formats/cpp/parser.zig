@@ -244,7 +244,9 @@ fn isStatementStart(kind: lexer.TokenKind) bool {
     };
 }
 
+
 fn synchronize(tokenizer: *lexer.Tokenizer, next: *lexer.Token) ParseError!void {
+    if (isStatementStart(next.kind) or next.kind == .rightBrace or next.kind == .eof) return;
     var depth: usize = 0;
     while (next.kind != .eof) {
         switch (next.kind) {
@@ -269,7 +271,6 @@ fn synchronize(tokenizer: *lexer.Tokenizer, next: *lexer.Token) ParseError!void 
                 next.* = try tokenizer.next();
             },
             else => {
-                if (depth == 0 and isStatementStart(next.kind)) return;
                 next.* = try tokenizer.next();
             },
         }
@@ -405,6 +406,7 @@ fn parseClass(allocator: Allocator, tokenizer: *lexer.Tokenizer, next: *lexer.To
 
             astClass.base = top.*.find(next.data.text, true, true, false) orelse {
                 log.emit(tokenizer.source, .err, "C06", next, "Undefined base class set.", null);
+                next.* = try tokenizer.next();
                 return error.ParseError;
             };
 
@@ -460,7 +462,6 @@ fn parseParameter(allocator: Allocator, tokenizer: *lexer.Tokenizer, next: *lexe
             log.emit(tokenizer.source, .err, "P02", next, "Expected ']' after '[' in parameter declaration.", null);
             return error.UnexpectedToken;
         }
-        const Propegation = null;
         next.* = try tokenizer.next();
         break :blk true;
     };
@@ -500,12 +501,11 @@ fn parseParameter(allocator: Allocator, tokenizer: *lexer.Tokenizer, next: *lexe
         log.emit(tokenizer.source, .err, "P01", next, "Expected array after operator in parameter declaration.", null);
         return error.UnexpectedToken;
     }
-
-    const value_token = next.*;
+    const valueToken = next.*;
     next.* = try tokenizer.next();
 
     if(next.kind != TokenKind.semicolon) {
-        log.emit(tokenizer.source, .err, "P04", &value_token, "Expected ';' after value in parameter declaration.", null);
+        log.emit(tokenizer.source, .err, "P04", &valueToken, "Expected ';' after value in parameter declaration.", null);
         return error.UnexpectedToken;
     }
 
