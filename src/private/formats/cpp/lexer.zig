@@ -320,7 +320,7 @@ pub const Tokenizer = struct {
         self.index += 1;
     }
 
-    inline fn skipWhileInline(self: *Tokenizer, comptime predicate: fn (u8) callconv(.@"inline") bool) void {
+    pub inline fn skipWhileInline(self: *Tokenizer, comptime predicate: fn (u8) callconv(.@"inline") bool) void {
         while (true) {
             const c = self.peek();
             if (c == 0 or !predicate(c)) break;
@@ -328,7 +328,7 @@ pub const Tokenizer = struct {
         }
     }
 
-    inline fn skipWhile(self: *Tokenizer, comptime predicate: fn (u8) bool) void {
+    pub inline fn skipWhile(self: *Tokenizer, comptime predicate: fn (u8) bool) void {
         while (true) {
             const c = self.peek();
             if (c == 0 or !predicate(c)) break;
@@ -921,7 +921,7 @@ pub const Tokenizer = struct {
     test "bench - tokenizer throughput" {
         const BENCH_ITERS: u64 = 100;
 
-        const BENCH_SRC: *const [210147:0]u8 = @embedFile("tests/game.cpp");
+        const BENCH_SRC: *const [210143:0]u8 = @embedFile("tests/game.cpp");
         var totalTokens: usize = 0;
 
         const start = std.Io.Timestamp.now(std.testing.io, .real).nanoseconds;

@@ -177,43 +177,103 @@ test "parse: multiple top-level members" {
 test "parse error: unexpected token at top level" {
     const src = z("= oops;");
     const result = parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true);
-    try std.testing.expectError(error.UnexpectedToken, result);
+    try std.testing.expectError(error.ParseError, result);
 }
 
 test "parse error: missing semicolon after parameter" {
     const src = z("value = 42");
     const result = parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true);
-    try std.testing.expectError(error.UnexpectedToken, result);
+    try std.testing.expectError(error.ParseError, result);
 }
 
 test "parse error: unmatched right brace" {
     const src = z("};");
     const result = parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true);
-    try std.testing.expectError(error.UnexpectedToken, result);
+    try std.testing.expectError(error.ParseError, result);
 }
 
 test "parse error: += on non-array parameter" {
     const src = z("value += 42;");
     const result = parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true);
-    try std.testing.expectError(error.UnexpectedToken, result);
+    try std.testing.expectError(error.ParseError, result);
 }
 
 test "parse error: missing identifier after delete" {
     const src = z("delete ;");
     const result = parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true);
-    try std.testing.expectError(error.UnexpectedToken, result);
+    try std.testing.expectError(error.ParseError, result);
 }
 
 test "parse error: missing identifier after class" {
     const src = z("class {");
     const result = parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true);
-    try std.testing.expectError(error.UnexpectedToken, result);
+    try std.testing.expectError(error.ParseError, result);
 }
 
 test "parse error: class with undefined base class" {
     const src = z("class Foo : UndefinedBase { };");
     const result = parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true);
     try std.testing.expectError(error.ParseError, result);
+}
+
+test "parse recovery: valid declarations after bad one are collected" {
+    const src = z(
+        \\x = 42
+        \\y = 2;
+        \\delete z;
+    );
+    const result = parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true);
+    try std.testing.expectError(error.ParseError, result);
+}
+
+
+test "parse recovery: multiple missing semicolons" {
+    const src = z(
+        \\x = 42
+        \\y = 2
+        \\delete z
+    );
+    const result = parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true);
+    try std.testing.expectError(error.ParseError, result);
+}
+
+fn isStatementStart(kind: lexer.TokenKind) bool {
+    return switch (kind) {
+        .identifier, .classKeyword, .deleteKeyword, .enumKeyword, .execKeyword => true,
+        else => false,
+    };
+}
+
+fn synchronize(tokenizer: *lexer.Tokenizer, next: *lexer.Token) ParseError!void {
+    var depth: usize = 0;
+    while (next.kind != .eof) {
+        switch (next.kind) {
+            .leftBrace => {
+                depth += 1;
+                next.* = try tokenizer.next();
+            },
+            .rightBrace => {
+                if (depth == 0) return;
+                depth -= 1;
+                next.* = try tokenizer.next();
+                if (depth == 0) {
+                    if (next.kind == .semicolon) next.* = try tokenizer.next();
+                    return;
+                }
+            },
+            .semicolon => {
+                if (depth == 0) {
+                    next.* = try tokenizer.next();
+                    return;
+                }
+                next.* = try tokenizer.next();
+            },
+            else => {
+                if (depth == 0 and isStatementStart(next.kind)) return;
+                next.* = try tokenizer.next();
+            },
+        }
+    }
 }
 
 pub fn parseSource(io: std.Io, allocator: Allocator, data: [:0]const u8, debugName: []const u8, useColor: bool) ParseError!ast.ClassAst {
@@ -231,6 +291,7 @@ pub fn parseSource(io: std.Io, allocator: Allocator, data: [:0]const u8, debugNa
         .parent = null,
     };
 
+    var errored: bool = false;
     var topAst: *ast.ClassAst = &root;
     var next = try l.next();
     while (next.kind != .eof)  {
@@ -238,36 +299,56 @@ pub fn parseSource(io: std.Io, allocator: Allocator, data: [:0]const u8, debugNa
 
         switch (tokenKind) {
             .rightBrace => {
-                if(topAst.parent == null) {
+                if(topAst == &root) {
                     log.emit(l.source, .err, "U03", &next, "Invalid '}' no class or array to exit.", null);
-                    return error.UnexpectedToken;
+                    errored = true;
                 }
                 next = try l.next();
 
                 if(next.kind != .semicolon) {
                     log.emit(l.source, .err, "U02", &next, "Expected ';' after right brace to end class segment.", null);
-                    return error.UnexpectedToken;
+                    errored = true;
+                    continue;
                 }
 
                 while (next.kind == .semicolon) next = try l.next();
 
-                const parent = topAst.parent.?;
-                try parent.members.?.append(allocator, .{ .class = topAst.* });
-                allocator.destroy(topAst);
-                topAst = parent;
+                if(topAst.parent) |parent| {
+                    try parent.members.?.append(allocator, .{ .class = topAst.* });
+                    allocator.destroy(topAst);
+                    topAst = parent;
+                }
                 continue;
             },
-            .deleteKeyword => try parseDelete(allocator, &l, &next, &log, topAst),
-            .classKeyword => try parseClass(allocator, &l, &next, &log, &topAst),
+            .deleteKeyword => parseDelete(allocator, &l, &next, &log, topAst) catch {
+                errored = true;
+                try synchronize(&l, &next);
+                continue;
+            },
+            .classKeyword => parseClass(allocator, &l, &next, &log, &topAst) catch {
+                errored = true;
+                try synchronize(&l, &next);
+                continue;
+            },
             // .enumKeyword => try mergeEnum(allocator, io, store, srcHandle, &l, &next, &log),
             // .execKeyword => try mergeExex(log, l),
-            .identifier => try parseParameter(allocator, &l, &next, &log, topAst),
+            .identifier => parseParameter(allocator, &l, &next, &log, topAst) catch {
+                errored = true;
+                try synchronize(&l, &next);
+                continue;
+            },
             else => {
                 log.emit(l.source, .err, "U01", &next, "Unexpected token. Expected 'class', '__EXEC()', 'enum', 'delete' or parameter declaration.", null);
-                return error.UnexpectedToken;
+                errored = true;
+                try synchronize(&l, &next);
+                continue;
             }
         }
         next = try l.next();
+    }
+    if(errored == true) {
+        root.deinit(allocator);
+        return error.ParseError;
     }
     return root;
 }
@@ -304,8 +385,8 @@ fn parseClass(allocator: Allocator, tokenizer: *lexer.Tokenizer, next: *lexer.To
     }
 
     var astClass = ast.ClassAst {
-        .base = undefined,
-        .members = undefined,
+        .base = null,
+        .members = null,
         .name = next.data.text,
         .parent = top.*,
     };
@@ -322,7 +403,6 @@ fn parseClass(allocator: Allocator, tokenizer: *lexer.Tokenizer, next: *lexer.To
                 return error.UnexpectedToken;
             }
 
-
             astClass.base = top.*.find(next.data.text, true, true, false) orelse {
                 log.emit(tokenizer.source, .err, "C06", next, "Undefined base class set.", null);
                 return error.ParseError;
@@ -336,15 +416,12 @@ fn parseClass(allocator: Allocator, tokenizer: *lexer.Tokenizer, next: *lexer.To
             }
         },
         TokenKind.semicolon => {
-            astClass.members = null;
-            astClass.base = null;
             return top.*.members.?.append(allocator, .{ .class = astClass }) catch {
                 log.emit(tokenizer.source, .err, "C05", next, "Failed to add external class declaration to AST stack", null);
                 return error.ParseError;
             };
         },
         TokenKind.leftBrace => {
-            astClass.base = null;
             astClass.members = .empty;
         },
         else => {
@@ -353,7 +430,12 @@ fn parseClass(allocator: Allocator, tokenizer: *lexer.Tokenizer, next: *lexer.To
         }
     }
 
+    const prevTop = top.*;
     const heapClass = try allocator.create(ast.ClassAst);
+    errdefer {
+        allocator.destroy(heapClass);
+        top.* = prevTop;
+    }
     heapClass.* = astClass;
     top.* = heapClass;
 }
@@ -378,7 +460,7 @@ fn parseParameter(allocator: Allocator, tokenizer: *lexer.Tokenizer, next: *lexe
             log.emit(tokenizer.source, .err, "P02", next, "Expected ']' after '[' in parameter declaration.", null);
             return error.UnexpectedToken;
         }
-
+        const Propegation = null;
         next.* = try tokenizer.next();
         break :blk true;
     };
@@ -400,7 +482,7 @@ fn parseParameter(allocator: Allocator, tokenizer: *lexer.Tokenizer, next: *lexe
             break :blk ast.OperatorAst.subAssign;
         },
         else => {
-            log.emit(tokenizer.source, .err, "P01", next, "Expected brackets or operation after parameter name.", null);
+            log.emit(tokenizer.source, .err, "P06", next, "Expected brackets or operation after parameter name.", null);
             return error.UnexpectedToken;
         }
     };
@@ -458,8 +540,23 @@ fn parseValue(allocator: Allocator, tokenizer: *lexer.Tokenizer, log: *const log
     };
 }
 
+fn freeValue(allocator: Allocator, value: ast.ValueAst) void {
+    switch (value) {
+        .string => |s| allocator.free(s),
+        .array => |a| {
+            for (a) |item| freeValue(allocator, item);
+            allocator.free(a);
+        },
+        else => {},
+    }
+}
+
 fn parseArray(allocator: Allocator, tokenizer: *lexer.Tokenizer, log: *const logger.ParseLog, start: *lexer.Token) ParseError!ast.ValueAst {
     var values = std.ArrayList(ast.ValueAst).empty;
+    errdefer {
+        for (values.items) |item| freeValue(allocator, item);
+        values.deinit(allocator);
+    }
     defer values.deinit(allocator);
 
     var expectComma = false;
