@@ -11,6 +11,9 @@ const paths       = @import("../utils/paths.zig");
 const enumerable  = @import("../slabs/enum.zig");
 
 pub fn createClass(allocator: Allocator, io: std.Io, store: *storage.ParamAllocator, init: class.ClassInit) !*const class.ClassData {
+    if (init.parent) |parentHandle|
+        _ = try parentHandle.validateHandle(store);
+
     const clazz = try store.alloc(allocator, io, init);
     errdefer store.free(allocator, clazz.index) catch @panic("OOM");
 

@@ -157,7 +157,7 @@ pub const ClassData = struct {
         return (store.pathToId.get(self.pathHash) orelse return null).clazz;
     }
 
-    pub fn createHandle(self: *const ClassData, store: *const storage.ParamAllocator) ClassHandle {
+    pub fn createHandle(self: *const ClassData, store: *const storage.ParamAllocator) ?ClassHandle {
         return ClassHandle {
             .generation = self.generation,
             .id = self.getIdentifier(store) orelse return null

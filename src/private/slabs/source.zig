@@ -100,7 +100,7 @@ pub fn SourceStorage(comptime field: []const u8) type {
 
         pub fn next(self: Self, store: *storage.ParamAllocator) !Self {
             if (!self.hasNext()) return error.EndOfList;
-            const data: *SourceData = try store.retrieve(self.handle.id);
+            const data: *SourceData = try store.retrieve(self.head.id);
             return @field(data, field);
         }
 
@@ -110,7 +110,7 @@ pub fn SourceStorage(comptime field: []const u8) type {
                 self.* = new_node;
                 return;
             }
-            const tail_data: *SourceHandle = try store.retrieveMut(self.tail.id);
+            const tail_data: *SourceData = try store.retrieveMut(self.tail.id);
             @field(tail_data, field) = new_node;
             self.tail = handle;
         }

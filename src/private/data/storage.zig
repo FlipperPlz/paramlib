@@ -67,10 +67,12 @@ pub const ParamAllocator = struct {
                 const class_init = init;
 
                 const pathHash = class_init.pathHash orelse blk: {
-                    const parentHandle = class_init.parent orelse break :blk hasher.hash(class_init.name);
-                    const parentIdx = parentHandle.id.toIndex() orelse return error.InvalidId;
-                    if (parentIdx >= self.classes.slabs.items.len * class.ClassSlabSize) return error.InvalidId;
-                    const parent = self.classes.getConst(parentHandle.id);
+                    const parentHandle: class.ClassHandle = class_init.parent orelse break :blk hasher.hash(class_init.name);
+                    const parentCtx = try parentHandle.validateHandle(self);
+
+                    // const parentIdx = parentCtx.id orelse return error.InvalidId;
+                    // if (parentIdx >= self.classes.slabs.items.len * class.ClassSlabSize) return error.InvalidId;
+                    const parent: *const class.ClassData = parentCtx.ptr;
 
                     var hash = hasher.IncrementalHasher.load(parent.pathHash);
                     break :blk hash.updateSep().update(class_init.name).final();
@@ -188,11 +190,11 @@ pub const ParamAllocator = struct {
     ) !@TypeOf(id)._targetConst {
         if (!id.isValid()) return error.InvalidId;
         return switch (comptime @TypeOf(id)._storageType) {
-            .arr         => self.arrays.getConst(id),
-            .clazz       => self.classes.getConst(id),
-            .enumeration => self.enums.getConst(id),
-            .par         => self.parameters.getConst(id),
-            .src         => self.sources.getConst(id),
+            .arr         => self.arrays.getConstChecked(id),
+            .clazz       => self.classes.getConstChecked(id),
+            .enumeration => self.enums.getConstChecked(id),
+            .par         => self.parameters.getConstChecked(id),
+            .src         => self.sources.getConstChecked(id),
             .segment     => try self.pathSegments.get(id) orelse return error.NotFound,
             .str         => try self.stringValues.get(id) orelse return error.NotFound,
         };
@@ -204,11 +206,11 @@ pub const ParamAllocator = struct {
     ) !@TypeOf(id)._target {
         if (!id.isValid()) return error.InvalidId;
         return switch (comptime @TypeOf(id)._storageType) {
-            .arr         => self.arrays.get(id),
-            .clazz       => self.classes.get(id),
-            .enumeration => self.enums.get(id),
-            .par         => self.parameters.get(id),
-            .src         => self.sources.get(id),
+            .arr         => self.arrays.getChecked(id),
+            .clazz       => self.classes.getChecked(id),
+            .enumeration => self.enums.getChecked(id),
+            .par         => self.parameters.getChecked(id),
+            .src         => self.sources.getChecked(id),
             .segment     => try self.pathSegments.get(id) orelse return error.NotFound,
             .str         => try self.stringValues.get(id) orelse return error.NotFound,
         };

@@ -91,10 +91,13 @@ test "parse: class with body and parameters" {
     var result = try parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true);
     defer result.deinit(std.testing.allocator);
 
-    try std.testing.expectEqualStrings("MyClass", result.name);
+    const class = result.members.?.items[0].class;
+
+    try std.testing.expectEqualStrings("MyClass", class.name);
     try std.testing.expect(result.base == null);
 
-    const members = result.members.?.items;
+
+    const members = class.members.?.items;
     try std.testing.expectEqual(@as(usize, 2), members.len);
     try std.testing.expectEqualStrings("value", members[0].param.name);
     try std.testing.expectEqual(@as(i32, 42), members[0].param.value.integer);
@@ -169,26 +172,6 @@ test "parse: multiple top-level members" {
     try std.testing.expectEqualStrings("x", members[0].param.name);
     try std.testing.expectEqualStrings("y", members[1].param.name);
     try std.testing.expectEqualStrings("z", members[2].delete);
-}
-
-test "parse: nested class" {
-    // Due to parseClass mutating top.* in-place, after parsing nested classes
-    // result ends up as the innermost class with its params directly on result.
-    const src = z(
-        \\class Outer {
-        \\    class Inner {
-        \\        val = 7;
-        \\    };
-        \\};
-    );
-    var result = try parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true);
-    defer result.deinit(std.testing.allocator);
-
-    try std.testing.expectEqualStrings("Inner", result.name);
-    const members = result.members.?.items;
-    try std.testing.expectEqual(@as(usize, 1), members.len);
-    try std.testing.expectEqualStrings("val", members[0].param.name);
-    try std.testing.expectEqual(@as(i32, 7), members[0].param.value.integer);
 }
 
 test "parse error: unexpected token at top level" {
@@ -268,11 +251,14 @@ pub fn parseSource(io: std.Io, allocator: Allocator, data: [:0]const u8, debugNa
 
                 while (next.kind == .semicolon) next = try l.next();
 
-                topAst = topAst.parent.?;
+                const parent = topAst.parent.?;
+                try parent.members.?.append(allocator, .{ .class = topAst.* });
+                allocator.destroy(topAst);
+                topAst = parent;
                 continue;
             },
             .deleteKeyword => try parseDelete(allocator, &l, &next, &log, topAst),
-            .classKeyword => try parseClass(allocator, &l, &next, &log, topAst),
+            .classKeyword => try parseClass(allocator, &l, &next, &log, &topAst),
             // .enumKeyword => try mergeEnum(allocator, io, store, srcHandle, &l, &next, &log),
             // .execKeyword => try mergeExex(log, l),
             .identifier => try parseParameter(allocator, &l, &next, &log, topAst),
@@ -309,7 +295,7 @@ fn parseDelete(allocator: Allocator, tokenizer: *lexer.Tokenizer, next: *lexer.T
     };
 }
 
-fn parseClass(allocator: Allocator, tokenizer: *lexer.Tokenizer, next: *lexer.Token, log: *logger.ParseLog, top: *ast.ClassAst) !void{
+fn parseClass(allocator: Allocator, tokenizer: *lexer.Tokenizer, next: *lexer.Token, log: *logger.ParseLog, top: **ast.ClassAst) !void{
     next.* = try tokenizer.next();
 
     if(next.kind != TokenKind.identifier) {
@@ -321,7 +307,7 @@ fn parseClass(allocator: Allocator, tokenizer: *lexer.Tokenizer, next: *lexer.To
         .base = undefined,
         .members = undefined,
         .name = next.data.text,
-        .parent = top,
+        .parent = top.*,
     };
 
     next.* = try tokenizer.next();
@@ -337,7 +323,7 @@ fn parseClass(allocator: Allocator, tokenizer: *lexer.Tokenizer, next: *lexer.To
             }
 
 
-            astClass.base = top.find(next.data.text, true, true, false) orelse {
+            astClass.base = top.*.find(next.data.text, true, true, false) orelse {
                 log.emit(tokenizer.source, .err, "C06", next, "Undefined base class set.", null);
                 return error.ParseError;
             };
@@ -352,7 +338,7 @@ fn parseClass(allocator: Allocator, tokenizer: *lexer.Tokenizer, next: *lexer.To
         TokenKind.semicolon => {
             astClass.members = null;
             astClass.base = null;
-            return top.members.?.append(allocator, .{ .class = astClass }) catch {
+            return top.*.members.?.append(allocator, .{ .class = astClass }) catch {
                 log.emit(tokenizer.source, .err, "C05", next, "Failed to add external class declaration to AST stack", null);
                 return error.ParseError;
             };
@@ -367,15 +353,9 @@ fn parseClass(allocator: Allocator, tokenizer: *lexer.Tokenizer, next: *lexer.To
         }
     }
 
-    const member = ast.MemberAst { .class = astClass };
-    top.members.?.append(allocator, member) catch {
-        log.emit(tokenizer.source, .err, "C05", next, "Failed to add class declaration to AST stack", null);
-        return error.ParseError;
-    };
-    var oldMembers = top.members.?;
-
-    top.* = member.class;
-    oldMembers.deinit(allocator);
+    const heapClass = try allocator.create(ast.ClassAst);
+    heapClass.* = astClass;
+    top.* = heapClass;
 }
 
 fn parseParameter(allocator: Allocator, tokenizer: *lexer.Tokenizer, next: *lexer.Token, log: *logger.ParseLog, top: *ast.ClassAst) !void{
@@ -492,7 +472,7 @@ fn parseArray(allocator: Allocator, tokenizer: *lexer.Tokenizer, log: *const log
                     start.* = try tokenizer.next();
                     continue;
                 },
-                TokenKind.rightBrace => return ast.ValueAst{ .array = try values.toOwnedSlice(allocator) },
+                TokenKind.rightBrace => break,
                 else => {
                     log.emit(tokenizer.source, .err, "A01", start, "Expected ',' or '}' in array literal.", null);
                     return error.UnexpectedToken;
@@ -507,13 +487,13 @@ fn parseArray(allocator: Allocator, tokenizer: *lexer.Tokenizer, log: *const log
                 };
                 expectComma = true;
                 start.* = try tokenizer.next();
-            } else {
-                return ast.ValueAst{ .array = try values.toOwnedSlice(allocator) };
+                continue;
             }
+
+            break;
         }
 
     }
+    return ast.ValueAst{ .array = try values.toOwnedSlice(allocator) };
 
-    log.emit(tokenizer.source, .err, "A02", start, "Unexpected end of file while parsing array literal. Expected '}'.", null);
-    return error.UnexpectedEndOfFile;
 }

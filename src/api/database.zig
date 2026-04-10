@@ -109,10 +109,12 @@ pub const ParamDatabase = struct {
         self.lock.lockUncancelable(io);
         defer self.lock.unlock(io);
 
+        var initialize = args;
         if(parentPath) |path| {
             const parentData: *class.ClassData = (self.lookupClassUnlocked(path) orelse return error.InvalidParent);
-            args.parent = parentData.createHandle(self.store);
+
+            initialize.parent = parentData.createHandle(self.store);
         }
-        return factory.createClass(allocator, io, self.store, args);
+        return factory.createClass(allocator, io, &self.store, args);
     }
 };

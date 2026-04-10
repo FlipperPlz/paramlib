@@ -121,6 +121,18 @@ pub fn SlabPool(comptime T: type, comptime Tid: type, comptime slab_size: usize)
             return &self.slabs.items[slab_idx].data[slot];
         }
 
+        pub fn getConstChecked(self: *const Self, index: Tid) !*const T {
+            const idx = index.toIndex() orelse return error.InvalidId;
+            if (idx >= self.slabs.items.len * slab_size) return error.InvalidId;
+            return &self.slabs.items[idx / slab_size].data[idx % slab_size];
+        }
+
+        pub fn getChecked(self: *Self, index: Tid) !*T {
+            const idx = index.toIndex() orelse return error.InvalidId;
+            if (idx >= self.slabs.items.len * slab_size) return error.InvalidId;
+            return &self.slabs.items[idx / slab_size].data[idx % slab_size];
+        }
+
         pub fn forEachLive(self: *Self, ctx: anytype, comptime cb: fn(@TypeOf(ctx), *T) void) void {
             for (self.slabs.items) |slab| {
                 var slot: usize = 0;
