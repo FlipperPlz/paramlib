@@ -3831,7 +3831,7 @@ class CfgWorlds
             moonIrradianceCoef="10.0f";
             fadeMaxDistanceKm=300;
             fadeMaxAltitudeKm=15;
-            fadeNumAltitudes=4;
+            fadAltitudes=4;
             fadeNumElevations=8;
             fadeNumDistances=8;
             fadeEarthTest=0;

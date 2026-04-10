@@ -31,12 +31,15 @@ pub const ClassAst = struct {
     }
 
     pub fn find(self: *const ClassAst, name: []const u8, scanParent: bool, scanBase: bool, protect: bool) ?*ClassAst {
-        for (self.members.?.items) |*v| {
-            //todo visibility testing and normalization
-            if(std.mem.eql(u8, v.class.name, name)) {
-                return &v.class;
+        if(self.members) |members| {
+            for (members.items) |*v| {
+                //todo visibility testing and normalization
+                if (v.* == .class and std.mem.eql(u8, v.class.name, name)) {
+                    return &v.class;
+                }
             }
         }
+
 
         if(scanBase) {
             if(self.base) |base| {
