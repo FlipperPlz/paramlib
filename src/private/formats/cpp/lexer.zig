@@ -240,6 +240,7 @@ pub const TokenKind = enum {
 
     eof,
     invalid,
+    comment,
 };
 
 pub const TokenData = union(enum) {
@@ -791,7 +792,59 @@ pub const Tokenizer = struct {
     //   numeric-token     ::= ( digit | '+' | '-' ) unquoted-value
     pub fn next(self: *Tokenizer) TokenizerError!Token {
         try self.skipWhiteSpaceAndComments();
+        return self.scanToken();
+    }
 
+    //   token             ::= EOF
+    //                       | comment
+    //                       | '{' | '}' | '[' | ']' | '(' | ')'
+    //                       | '=' | ';' | ',' | ':'
+    //                       | quoted-string
+    //                       | '@' unquoted-value
+    //                       | keyword
+    //                       | identifier
+    //                       | numeric
+    //                       | invalid-char
+    //   keyword           ::= 'class' | 'delete' | 'enum' | '__EXEC' | '__EVAL'
+    //   numeric-token     ::= ( digit | '+' | '-' ) unquoted-value
+    //   comment           ::= (line-comment | block-comment)
+    //   line-comment      ::= '//' .* EOL
+    //   block-comment     ::= '/*/' | '/*' .* '*/'
+    pub fn nextSemantic(self: *Tokenizer) TokenizerError!Token {
+        while (true) {
+            self.skipWhileInline(isWhitespace);
+
+            const pos = self.index;
+            const c0  = self.peek();
+            const c1  = self.peekForward(1);
+
+            if (c0 == '/' and c1 == '/') {
+                self.index += 2;
+                const rest = self.source[self.index..];
+                if (std.mem.indexOfScalar(u8, rest, '\n')) |rel| {
+                    self.index += @intCast(rel);
+                } else {
+                    self.index = @intCast(self.source.len);
+                }
+                return .{ .kind = .comment, .data = .{ .none = {} }, .pos = pos };
+            }
+
+            if (c0 == '/' and c1 == '*') {
+                self.index += 2;
+                const rest = self.source[self.index..];
+                if (std.mem.indexOf(u8, rest, "*/")) |rel| {
+                    self.index += @intCast(rel + 2);
+                } else {
+                    return TokenizerError.UnterminatedComment;
+                }
+                return .{ .kind = .comment, .data = .{ .none = {} }, .pos = pos };
+            }
+
+            return self.scanToken();
+        }
+    }
+
+    fn scanToken(self: *Tokenizer) TokenizerError!Token {
         const pos = self.index;
         const c   = self.peek();
 

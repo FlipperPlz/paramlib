@@ -3,11 +3,12 @@ const lsp      = @import("lsp");
 const paramlib = @import("paramlib");
 
 const RequestMethods = union(enum) {
-    initialize:                     lsp.types.InitializeParams,
+    initialize:                           lsp.types.InitializeParams,
     shutdown,
-    @"textDocument/hover":          lsp.types.Hover.Params,
-    @"textDocument/documentSymbol": lsp.types.DocumentSymbol.Params,
-    other:                          lsp.MethodWithParams,
+    @"textDocument/hover":                lsp.types.Hover.Params,
+    @"textDocument/documentSymbol":       lsp.types.DocumentSymbol.Params,
+    @"textDocument/semanticTokens/full":  lsp.types.semantic_tokens.Params,
+    other:                                lsp.MethodWithParams,
 };
 
 const NotificationMethods = union(enum) {
@@ -62,6 +63,17 @@ pub fn main(init: std.process.Init) !void {
                                 }},
                                 .hoverProvider          = .{ .bool = true },
                                 .documentSymbolProvider = .{ .bool = true },
+                                .semanticTokensProvider = .{ .semantic_tokens_options = .{
+                                    .legend = .{
+                                        .tokenTypes     = &.{
+                                            "keyword", "comment", "variable",
+                                            "string", "operator", "number",
+                                            "brace", "bracket", "paren"
+                                        },
+                                        .tokenModifiers = &.{}
+                                    },
+                                    .full   = .{ .bool = true }
+                                }}
                             },
                         },
                         .{ .emit_null_optional_fields = false },
@@ -90,6 +102,16 @@ pub fn main(init: std.process.Init) !void {
                     };
                     try transport.writeResponse(io, gpa, req.id,
                         ?[]const lsp.types.SymbolInformation, result,
+                        .{ .emit_null_optional_fields = false },
+                    );
+                },
+
+                .@"textDocument/semanticTokens/full" => |params| {
+                    var arena = std.heap.ArenaAllocator.init(gpa);
+                    defer arena.deinit();
+                    const result = semanticTokensFull(io, &documents, arena.allocator(), params);
+                    try transport.writeResponse(io, gpa, req.id,
+                        ?lsp.types.semantic_tokens.Result, result,
                         .{ .emit_null_optional_fields = false },
                     );
                 },
@@ -178,6 +200,92 @@ fn findNodeAtOffset(class: *const paramlib.cpp.ast.ClassAst, offset: u32) ?Hover
         }
     }
     return null;
+}
+
+fn tokenLength(src: [:0]const u8, tok: paramlib.cpp.lexer.Token) u32 {
+    return switch (tok.data) {
+        .text   => |t| @intCast(t.len),
+        .string => |s| @intCast(s.text.len + 2),
+        .none   => 1,
+        else => blk: {
+            var end = tok.pos;
+            while (end < src.len) : (end += 1) {
+                switch (src[end]) {
+                    0, ' ', '\t', '\r', '\n', ';', '}', ',' => break,
+                    else => {},
+                }
+            }
+            break :blk end - tok.pos;
+        },
+    };
+}
+
+fn semanticTokensFull(
+    io:        std.Io,
+    documents: *const std.StringArrayHashMapUnmanaged([]const u8),
+    arena:     std.mem.Allocator,
+    params:    lsp.types.semantic_tokens.Params,
+) ?lsp.types.semantic_tokens.Result {
+    _ = io;
+    const text = documents.get(params.textDocument.uri) orelse return null;
+    const src   = arena.dupeZ(u8, text) catch return null;
+
+    const line_table = paramlib.cpp.lexer.LineTable.build(arena, src) catch return null;
+
+    var data = std.ArrayList(u32).empty;
+
+    var tokenizer = paramlib.cpp.lexer.Tokenizer.init(src);
+    var prev_line: u32 = 0;
+    var prev_char: u32 = 0;
+
+    while (true) {
+        const tok = tokenizer.nextSemantic() catch break;
+        if (tok.kind == .eof) break;
+
+        const token_type: ?u32 = switch (tok.kind) {
+            .classKeyword,
+            .deleteKeyword,
+            .enumKeyword,
+            .execKeyword,
+            .evalKeyword      => 0,
+            .comment          => 1,
+            .identifier       => 2,
+            .stringLiteral    => 3,
+            .equals,
+            .addAssign,
+            .subAssign        => 4,
+            .intLiteral,
+            .floatLiteral,
+            .int64Literal     => 5,
+            .leftBrace,
+            .rightBrace       => 6,
+            .leftBracket,
+            .rightBracket     => 7,
+            .leftParenthesis,
+            .rightParenthesis => 8,
+            else           => null,
+        };
+
+        const tt = token_type orelse continue;
+
+        const pos    = lspPos(&line_table, tok.pos);
+        const length: u32 = tokenLength(src, tok);
+
+        const delta_line = pos.line - prev_line;
+        const delta_char = if (delta_line == 0) pos.character - prev_char
+        else pos.character;
+
+        data.append(arena, delta_line) catch break;
+        data.append(arena, delta_char) catch break;
+        data.append(arena, length)     catch break;
+        data.append(arena, tt)         catch break;
+        data.append(arena, 0)          catch break;
+
+        prev_line = pos.line;
+        prev_char = pos.character;
+    }
+
+    return .{ .data = data.items };
 }
 
 fn hover(

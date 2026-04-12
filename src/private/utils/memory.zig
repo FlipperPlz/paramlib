@@ -54,23 +54,31 @@ pub fn SlabPool(comptime T: type, comptime Tid: type, comptime slab_size: usize)
                 };
             }
 
-            for (self.slabs.items, 0..) |slab, slab_idx| {
+            while (self.current_slab < self.slabs.items.len) {
+                const slab_idx = self.current_slab;
+                const slab = self.slabs.items[slab_idx];
                 if (slab.next_free) |slot| {
                     slab.used.set(slot);
 
                     slab.next_free = null;
-                    for (0..slab_size) |i| {
+                    for (slot + 1..slab_size) |i| {
                         if (!slab.used.isSet(i)) {
                             slab.next_free = i;
                             break;
                         }
                     }
+
+                    if (slab.next_free == null) {
+                        self.current_slab += 1;
+                    }
+
                     const global_idx = slab_idx * slab_size + slot;
                     return .{
                         .ptr = &slab.data[slot],
                         .index = Tid.fromIndex(global_idx),
                     };
                 }
+                self.current_slab += 1;
             }
 
             const new_slab = try allocator.create(Slab);
@@ -85,6 +93,7 @@ pub fn SlabPool(comptime T: type, comptime Tid: type, comptime slab_size: usize)
             self.total_allocated += 1;
 
             const slab_idx = self.slabs.items.len - 1;
+            self.current_slab = slab_idx;
             const global_idx = slab_idx * slab_size;
 
             return .{
@@ -94,19 +103,25 @@ pub fn SlabPool(comptime T: type, comptime Tid: type, comptime slab_size: usize)
         }
 
         pub fn release(self: *Self, allocator: std.mem.Allocator, index: Tid) !void {
-            const slab_idx = @intFromEnum(index) / slab_size;
-            const slot = @intFromEnum(index) % slab_size;
+            const idx = @intFromEnum(index);
+            const slab_idx = idx / slab_size;
+            const slot = idx % slab_size;
 
             const slab = self.slabs.items[slab_idx];
             slab.used.unset(slot);
 
             if (slab.next_free == null) {
                 slab.next_free = slot;
+                if (slab_idx < self.current_slab) {
+                    self.current_slab = slab_idx;
+                }
             } else {
                 try self.free_list.append(allocator, .{ .slab = slab_idx, .slot = slot });
             }
-            self.slabs.items[slab_idx].data[slot].alive = false;
-            self.slabs.items[slab_idx].data[slot].generation +%= 1;
+
+            const target = &self.slabs.items[slab_idx].data[slot];
+            if (@hasField(T, "alive")) target.alive = false;
+            if (@hasField(T, "generation")) target.generation +%= 1;
         }
 
         pub fn get(self: *Self, index: Tid) *T {
