@@ -604,11 +604,18 @@ fn parseValue(allocator: Allocator, tokenizer: *lexer.Tokenizer, log: *const log
         TokenKind.expression => ast.ValueAst { .expression = token.data.text },
         // TokenKind.evalKeyword => try parseEval(allocator, tokenizer, log, token),
         TokenKind.stringLiteral => blk: {
-            if(token.data.string.needsUnescape) {
-                const unescaped = try lexer.Tokenizer.unescapeString(allocator, token.data.string.text);
-                break :blk ast.ValueAst{ .string = unescaped };
-            }
-            break :blk ast.ValueAst{ .string = token.data.string.text };
+            // quoted strings carry .data.string; unquoted strings carry .data.text
+            const str = switch (token.data) {
+                .string => |s| blk2: {
+                    if (s.needsUnescape) {
+                        break :blk2 try lexer.Tokenizer.unescapeString(allocator, s.text);
+                    }
+                    break :blk2 s.text;
+                },
+                .text => |t| t,
+                else => unreachable,
+            };
+            break :blk ast.ValueAst{ .string = str };
         },
         else => {
             log.emit(.err, "P01", token, "Expected value after operator in parameter declaration.", null);

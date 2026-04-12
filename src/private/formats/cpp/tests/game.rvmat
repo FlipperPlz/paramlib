@@ -1,4 +1,6 @@
-battleyeLicenceUrl="BattlEye\EULA.txt";
+
+
+battleyeLicenceUrl=hi im a string with no quotes try lexing me correctly stupid;
 class CfgMods
 {
     defaultAction="http://www.arma2.com/mods";
@@ -13,7 +15,8 @@ class CfgTextureToMaterial
     class AirborneGlass
     {
         textures[]={};
-        material="#SpecularGlass";
+        material="#Specu"
+                 "larGlass";
     };
     class Metal
     {

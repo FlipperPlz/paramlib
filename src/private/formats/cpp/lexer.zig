@@ -300,11 +300,12 @@ pub const TokenizerError = error{
 };
 
 pub const Tokenizer = struct {
-    source: [:0]const u8,
-    index:  u32,
+    source:       [:0]const u8,
+    index:        u32,
+    after_equals: bool,
 
     pub fn init(src: [:0]const u8) Tokenizer {
-        return .{ .source = src, .index = 0 };
+        return .{ .source = src, .index = 0, .after_equals = false };
     }
 
     inline fn peek(self: *const Tokenizer) u8 {
@@ -851,16 +852,16 @@ pub const Tokenizer = struct {
         if (c == 0) return Token{ .kind = .eof, .data = .{ .none = {} }, .pos = pos };
 
         switch (c) {
-            '{' => { self.advance(); return .{ .kind = .leftBrace,        .data = .{ .none = {} }, .pos = pos }; },
-            '}' => { self.advance(); return .{ .kind = .rightBrace,       .data = .{ .none = {} }, .pos = pos }; },
-            '[' => { self.advance(); return .{ .kind = .leftBracket,      .data = .{ .none = {} }, .pos = pos }; },
-            ']' => { self.advance(); return .{ .kind = .rightBracket,     .data = .{ .none = {} }, .pos = pos }; },
-            '(' => { self.advance(); return .{ .kind = .leftParenthesis,  .data = .{ .none = {} }, .pos = pos }; },
-            ')' => { self.advance(); return .{ .kind = .rightParenthesis, .data = .{ .none = {} }, .pos = pos }; },
-            '=' => { self.advance(); return .{ .kind = .equals,           .data = .{ .none = {} }, .pos = pos }; },
-            ';' => { self.advance(); return .{ .kind = .semicolon,        .data = .{ .none = {} }, .pos = pos }; },
-            ',' => { self.advance(); return .{ .kind = .comma,            .data = .{ .none = {} }, .pos = pos }; },
-            ':' => { self.advance(); return .{ .kind = .colon,            .data = .{ .none = {} }, .pos = pos }; },
+            '{' => { self.advance(); self.after_equals = false; return .{ .kind = .leftBrace,        .data = .{ .none = {} }, .pos = pos }; },
+            '}' => { self.advance(); self.after_equals = false; return .{ .kind = .rightBrace,       .data = .{ .none = {} }, .pos = pos }; },
+            '[' => { self.advance(); self.after_equals = false; return .{ .kind = .leftBracket,      .data = .{ .none = {} }, .pos = pos }; },
+            ']' => { self.advance(); self.after_equals = false; return .{ .kind = .rightBracket,     .data = .{ .none = {} }, .pos = pos }; },
+            '(' => { self.advance(); self.after_equals = false; return .{ .kind = .leftParenthesis,  .data = .{ .none = {} }, .pos = pos }; },
+            ')' => { self.advance(); self.after_equals = false; return .{ .kind = .rightParenthesis, .data = .{ .none = {} }, .pos = pos }; },
+            '=' => { self.advance(); self.after_equals = true;  return .{ .kind = .equals,           .data = .{ .none = {} }, .pos = pos }; },
+            ';' => { self.advance(); self.after_equals = false; return .{ .kind = .semicolon,        .data = .{ .none = {} }, .pos = pos }; },
+            ',' => { self.advance(); self.after_equals = false; return .{ .kind = .comma,            .data = .{ .none = {} }, .pos = pos }; },
+            ':' => { self.advance(); self.after_equals = false; return .{ .kind = .colon,            .data = .{ .none = {} }, .pos = pos }; },
             '"' => {
                 const result = try self.scanQuotedString();
                 return .{ .kind = .stringLiteral, .data = .{ .string = result }, .pos = pos };
@@ -870,32 +871,33 @@ pub const Tokenizer = struct {
                 return .{ .kind = .expression, .data = .{ .text = self.scanUnquotedValue() }, .pos = pos };
             },
             else => {
-                if (isIdentifierStart(c)) {
-                    const identText = self.scanIdentifier();
-                    const kind      = KEYWORDS.get(identText) orelse .identifier;
-                    return .{ .kind = kind, .data = .{  .text = identText }, .pos = pos };
-                }
-
                 if (c == '+' and self.peekForward(1) == '=') {
                     self.index += 2;
+                    self.after_equals = false;
                     return .{ .kind = .addAssign, .data = .{ .none = {} }, .pos = pos };
                 }
 
                 if (c == '-' and self.peekForward(1) == '=') {
                     self.index += 2;
+                    self.after_equals = false;
                     return .{ .kind = .subAssign, .data = .{ .none = {} }, .pos = pos };
+                }
+
+                if (self.after_equals) {
+                    self.after_equals = false;
+                    const raw = self.scanUnquotedValue();
+                    return getNumeric(raw, pos);
+                }
+
+                if (isIdentifierStart(c)) {
+                    const identText = self.scanIdentifier();
+                    const kind      = KEYWORDS.get(identText) orelse .identifier;
+                    return .{ .kind = kind, .data = .{ .text = identText }, .pos = pos };
                 }
 
                 if (isDigit(c) or c == '-' or c == '+') {
                     const raw = self.scanUnquotedValue();
-                    //fixme: this is doing multiple passes over the same text
-                    //can we do better by integrating detection into the scanning loop?
-                    return switch (detectNumeric(raw)) {
-                        .int        => |v| .{ .kind = .intLiteral,    .data = .{ .int   = v   }, .pos = pos },
-                        .int64      => |v| .{ .kind = .int64Literal,  .data = .{ .int64 = v   }, .pos = pos },
-                        .float      => |v| .{ .kind = .floatLiteral,  .data = .{ .float = v   }, .pos = pos },
-                        .notNumeric =>     .{ .kind = .stringLiteral, .data = .{ .text  = raw }, .pos = pos },
-                    };
+                    return getNumeric(raw, pos);
                 }
 
                 self.advance();
@@ -904,6 +906,16 @@ pub const Tokenizer = struct {
         }
     }
 
+    fn getNumeric(raw: []const u8, pos: u32) Token {
+        //fixme: this is doing multiple passes over the same text
+        //can we do better by integrating detection into the scanning loop?
+        return switch (detectNumeric(raw)) {
+            .int        => |v| .{ .kind = .intLiteral,    .data = .{ .int   = v   }, .pos = pos },
+            .int64      => |v| .{ .kind = .int64Literal,  .data = .{ .int64 = v   }, .pos = pos },
+            .float      => |v| .{ .kind = .floatLiteral,  .data = .{ .float = v   }, .pos = pos },
+            .notNumeric =>     .{ .kind = .stringLiteral, .data = .{ .text  = raw }, .pos = pos },
+        };
+    }
     test "keyword tokens" {
         const cases = .{
             .{ "class",  TokenKind.classKeyword  },
