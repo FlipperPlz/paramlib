@@ -25,7 +25,8 @@ fn z(comptime s: []const u8) [:0]const u8 {
 
 test "parse: integer parameter" {
     const src = z("value = 42;");
-    var result = try parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true);
+    var errored: bool = false;
+    var result = try parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true, &errored);
     defer result.deinit(std.testing.allocator);
 
     const members = result.members.?.items;
@@ -34,51 +35,66 @@ test "parse: integer parameter" {
     try std.testing.expectEqualStrings("value", param.name);
     try std.testing.expectEqual(ast.OperatorAst.assign, param.operator);
     try std.testing.expectEqual(@as(i32, 42), param.value.integer);
+    try std.testing.expect(!errored);
 }
 
 test "parse: float parameter" {
     const src = z("ratio = 3.14;");
-    var result = try parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true);
+    var errored: bool = false;
+
+    var result = try parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true, &errored);
     defer result.deinit(std.testing.allocator);
 
     const param = result.members.?.items[0].param;
     try std.testing.expectEqualStrings("ratio", param.name);
     try std.testing.expectApproxEqAbs(@as(f32, 3.14), param.value.float, 0.001);
+    try std.testing.expect(!errored);
+
 }
 
 test "parse: string parameter" {
     const src = z(
         \\name = "hello";
     );
-    var result = try parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true);
+    var errored: bool = false;
+
+    var result = try parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true, &errored);
     defer result.deinit(std.testing.allocator);
 
     const param = result.members.?.items[0].param;
     try std.testing.expectEqualStrings("name", param.name);
     try std.testing.expectEqualStrings("hello", param.value.string);
+    try std.testing.expect(!errored);
+
 }
 
 test "parse: string without escapes (literal content preserved)" {
     const src = z(
         \\msg = "hello world";
     );
-    var result = try parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true);
+    var errored: bool = false;
+
+    var result = try parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true, &errored);
     defer result.deinit(std.testing.allocator);
 
     const param = result.members.?.items[0].param;
     try std.testing.expectEqualStrings("hello world", param.value.string);
+    try std.testing.expect(!errored);
+
 }
 
 test "parse: class forward declaration" {
     const src = z("class MyClass;");
-    var result = try parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true);
+    var errored: bool = false;
+    var result = try parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true, &errored);
     defer result.deinit(std.testing.allocator);
 
     const members = result.members.?.items;
     try std.testing.expectEqual(@as(usize, 1), members.len);
     const cls = members[0].class;
-    try std.testing.expectEqualStrings("MyClass", cls.name);
+    try std.testing.expectEqualStrings("MyClass", cls.name.?);
     try std.testing.expect(cls.members == null); // forward decl has no body
+    try std.testing.expect(!errored);
 }
 
 test "parse: class with body and parameters" {
@@ -88,12 +104,14 @@ test "parse: class with body and parameters" {
         \\    name  = "hello";
         \\};
     );
-    var result = try parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true);
+    var errored: bool = false;
+
+    var result = try parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true, &errored);
     defer result.deinit(std.testing.allocator);
 
     const class = result.members.?.items[0].class;
 
-    try std.testing.expectEqualStrings("MyClass", class.name);
+    try std.testing.expectEqualStrings("MyClass", class.name.?);
     try std.testing.expect(result.base == null);
 
 
@@ -103,21 +121,29 @@ test "parse: class with body and parameters" {
     try std.testing.expectEqual(@as(i32, 42), members[0].param.value.integer);
     try std.testing.expectEqualStrings("name", members[1].param.name);
     try std.testing.expectEqualStrings("hello", members[1].param.value.string);
+    try std.testing.expect(!errored);
+
 }
 
 test "parse: delete declaration" {
     const src = z("delete someField;");
-    var result = try parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true);
+    var errored: bool = false;
+
+    var result = try parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true, &errored);
     defer result.deinit(std.testing.allocator);
 
     const members = result.members.?.items;
     try std.testing.expectEqual(@as(usize, 1), members.len);
-    try std.testing.expectEqualStrings("someField", members[0].delete);
+    try std.testing.expectEqualStrings("someField", members[0].delete.?);
+    try std.testing.expect(!errored);
+
 }
 
 test "parse: array value" {
     const src = z("items = {1, 2, 3};");
-    var result = try parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true);
+    var errored: bool = false;
+
+    var result = try parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true, &errored);
     const arr = result.members.?.items[0].param.value.array;
     defer std.testing.allocator.free(arr);
     defer result.deinit(std.testing.allocator);
@@ -126,34 +152,46 @@ test "parse: array value" {
     try std.testing.expectEqual(@as(i32, 1), arr[0].integer);
     try std.testing.expectEqual(@as(i32, 2), arr[1].integer);
     try std.testing.expectEqual(@as(i32, 3), arr[2].integer);
+    try std.testing.expect(!errored);
+
 }
 
 test "parse: empty array" {
-    const src = z("items = {};");
-    var result = try parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true);
+    const src = z("items[] = {};");
+    var errored: bool = false;
+
+    var result = try parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true, &errored);
     defer result.deinit(std.testing.allocator);
 
     const arr = result.members.?.items[0].param.value.array;
     try std.testing.expectEqual(@as(usize, 0), arr.len);
+    try std.testing.expect(!errored);
+
 }
 
 test "parse: array += operator" {
     const src = z("items[] += {10, 20};");
-    var result = try parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true);
+    var errored: bool = false;
+
+    var result = try parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true, &errored);
     const arr = result.members.?.items[0].param.value.array;
     defer std.testing.allocator.free(arr);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(ast.OperatorAst.addAssign, result.members.?.items[0].param.operator);
     try std.testing.expectEqual(@as(usize, 2), arr.len);
+    try std.testing.expect(!errored);
+
 }
 
 test "parse: array -= operator" {
     const src = z("items[] -= {10, 20};");
-    var result = try parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true);
+    var errored: bool = false;
+    var result = try parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true, &errored);
     const arr = result.members.?.items[0].param.value.array;
     defer std.testing.allocator.free(arr);
     defer result.deinit(std.testing.allocator);
+    try std.testing.expect(!errored);
 
     try std.testing.expectEqual(ast.OperatorAst.subAssign, result.members.?.items[0].param.operator);
 }
@@ -164,56 +202,81 @@ test "parse: multiple top-level members" {
         \\y = 2;
         \\delete z;
     );
-    var result = try parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true);
+    var errored: bool = false;
+
+    var result = try parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true, &errored);
     defer result.deinit(std.testing.allocator);
 
     const members = result.members.?.items;
     try std.testing.expectEqual(@as(usize, 3), members.len);
     try std.testing.expectEqualStrings("x", members[0].param.name);
     try std.testing.expectEqualStrings("y", members[1].param.name);
-    try std.testing.expectEqualStrings("z", members[2].delete);
+    try std.testing.expectEqualStrings("z", members[2].delete.?);
+    try std.testing.expect(!errored);
+
 }
 
 test "parse error: unexpected token at top level" {
     const src = z("= oops;");
-    const result = parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true);
-    try std.testing.expectError(error.ParseError, result);
+    var errored: bool = false;
+    var result = try parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true, &errored);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(errored);
+    try std.testing.expectEqual(@as(usize, 0), result.members.?.items.len);
 }
 
 test "parse error: missing semicolon after parameter" {
     const src = z("value = 42");
-    const result = parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true);
-    try std.testing.expectError(error.ParseError, result);
+    var errored: bool = false;
+    var result = try parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true, &errored);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(errored);
+    try std.testing.expectEqual(@as(usize, 0), result.members.?.items.len);
 }
 
 test "parse error: unmatched right brace" {
     const src = z("};");
-    const result = parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true);
-    try std.testing.expectError(error.ParseError, result);
+    var errored: bool = false;
+    var result = try parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true, &errored);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(errored);
+    try std.testing.expectEqual(@as(usize, 0), result.members.?.items.len);
 }
 
 test "parse error: += on non-array parameter" {
     const src = z("value += 42;");
-    const result = parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true);
-    try std.testing.expectError(error.ParseError, result);
+    var errored: bool = false;
+    var result = try parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true, &errored);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(errored);
+    try std.testing.expectEqual(@as(usize, 0), result.members.?.items.len);
 }
 
 test "parse error: missing identifier after delete" {
     const src = z("delete ;");
-    const result = parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true);
-    try std.testing.expectError(error.ParseError, result);
+    var errored: bool = false;
+    var result = try parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true, &errored);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(errored);
+    try std.testing.expectEqual(@as(usize, 0), result.members.?.items.len);
 }
 
 test "parse error: missing identifier after class" {
     const src = z("class {");
-    const result = parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true);
-    try std.testing.expectError(error.ParseError, result);
+    var errored: bool = false;
+    var result = try parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true, &errored);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(errored);
+    try std.testing.expectEqual(@as(usize, 0), result.members.?.items.len);
 }
 
 test "parse error: class with undefined base class" {
     const src = z("class Foo : UndefinedBase { };");
-    const result = parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true);
-    try std.testing.expectError(error.ParseError, result);
+    var errored: bool = false;
+    var result = try parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true, &errored);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(errored);
+    try std.testing.expectEqual(@as(usize, 0), result.members.?.items.len);
 }
 
 test "parse recovery: valid declarations after bad one are collected" {
@@ -222,10 +285,15 @@ test "parse recovery: valid declarations after bad one are collected" {
         \\y = 2;
         \\delete z;
     );
-    const result = parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true);
-    try std.testing.expectError(error.ParseError, result);
+    var errored: bool = false;
+    var result = try parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true, &errored);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(errored);
+    const members = result.members.?.items;
+    try std.testing.expectEqual(@as(usize, 2), members.len);
+    try std.testing.expectEqualStrings("y", members[0].param.name);
+    try std.testing.expectEqualStrings("z", members[1].delete.?);
 }
-
 
 test "parse recovery: multiple missing semicolons" {
     const src = z(
@@ -233,8 +301,11 @@ test "parse recovery: multiple missing semicolons" {
         \\y = 2
         \\delete z
     );
-    const result = parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true);
-    try std.testing.expectError(error.ParseError, result);
+    var errored: bool = false;
+    var result = try parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true, &errored);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(errored);
+    try std.testing.expectEqual(@as(usize, 0), result.members.?.items.len);
 }
 
 fn isStatementStart(kind: lexer.TokenKind) bool {
@@ -277,22 +348,27 @@ fn synchronize(tokenizer: *lexer.Tokenizer, next: *lexer.Token) ParseError!void 
     }
 }
 
-pub fn parseSource(io: std.Io, allocator: Allocator, data: [:0]const u8, debugName: []const u8, useColor: bool) ParseError!ast.ClassAst {
+pub fn parseSource(io: std.Io, allocator: Allocator, data: [:0]const u8, debugName: []const u8, useColor: bool, errored: *bool) ParseError!ast.ClassAst {
+    return parseSourceFull(io, allocator, data, debugName, useColor, errored, null);
+}
+
+pub fn parseSourceFull(io: std.Io, allocator: Allocator, data: [:0]const u8, debugName: []const u8, useColor: bool, errored: *bool, diag_sink: ?logger.DiagSink) ParseError!ast.ClassAst {
     var l = lexer.Tokenizer.init(data);
 
     const lines = try lexer.LineTable.build(allocator, l.source);
     defer lines.deinit(allocator);
 
-    var log = logger.stderrLog(io, &lines, debugName, useColor);
+    var log = logger.stderrLog(io, &lines, l.source, debugName, useColor);
+    log.diag_sink = diag_sink;
 
     var root = ast.ClassAst {
-        .base = null,
-        .members = .empty,
-        .name = debugName,
-        .parent = null,
+        .base     = null,
+        .members  = .empty,
+        .name     = debugName,
+        .name_pos = 0,
+        .parent   = null,
     };
 
-    var errored: bool = false;
     var topAst: *ast.ClassAst = &root;
     var next = try l.next();
     while (next.kind != .eof)  {
@@ -301,14 +377,14 @@ pub fn parseSource(io: std.Io, allocator: Allocator, data: [:0]const u8, debugNa
         switch (tokenKind) {
             .rightBrace => {
                 if(topAst == &root) {
-                    log.emit(l.source, .err, "U03", &next, "Invalid '}' no class or array to exit.", null);
-                    errored = true;
+                    log.emit(.err, "U03", &next, "Invalid '}' no class or array to exit.", null);
+                    errored.* = true;
                 }
                 next = try l.next();
 
                 if(next.kind != .semicolon) {
-                    log.emit(l.source, .err, "U02", &next, "Expected ';' after right brace to end class segment.", null);
-                    errored = true;
+                    log.emit(.err, "U02", &next, "Expected ';' after right brace to end class segment.", null);
+                    errored.* = true;
                     continue;
                 }
 
@@ -322,35 +398,34 @@ pub fn parseSource(io: std.Io, allocator: Allocator, data: [:0]const u8, debugNa
                 continue;
             },
             .deleteKeyword => parseDelete(allocator, &l, &next, &log, topAst) catch {
-                errored = true;
+                errored.* = true;
                 try synchronize(&l, &next);
                 continue;
             },
-            .classKeyword => parseClass(allocator, &l, &next, &log, &topAst) catch {
-                errored = true;
-                try synchronize(&l, &next);
-                continue;
+            .classKeyword => {
+                topAst = parseClass(allocator, &l, &next, &log, topAst) catch {
+                    errored.* = true;
+                    try synchronize(&l, &next);
+                    continue;
+                };
             },
             // .enumKeyword => try mergeEnum(allocator, io, store, srcHandle, &l, &next, &log),
             // .execKeyword => try mergeExex(log, l),
             .identifier => parseParameter(allocator, &l, &next, &log, topAst) catch {
-                errored = true;
+                errored.* = true;
                 try synchronize(&l, &next);
                 continue;
             },
             else => {
-                log.emit(l.source, .err, "U01", &next, "Unexpected token. Expected 'class', '__EXEC()', 'enum', 'delete' or parameter declaration.", null);
-                errored = true;
+                log.emit(.err, "U01", &next, "Unexpected token. Expected 'class', '__EXEC()', 'enum', 'delete' or parameter declaration.", null);
+                errored.* = true;
                 try synchronize(&l, &next);
                 continue;
             }
         }
         next = try l.next();
     }
-    if(errored == true) {
-        root.deinit(allocator);
-        return error.ParseError;
-    }
+
     return root;
 }
 
@@ -358,7 +433,7 @@ fn parseDelete(allocator: Allocator, tokenizer: *lexer.Tokenizer, next: *lexer.T
     next.* = try tokenizer.next();
 
     if(next.kind != TokenKind.identifier) {
-        log.emit(tokenizer.source, .err, "D02", next, "Expected identifier after 'delete' keyword", null);
+        log.emit(.err, "D02", next, "Expected identifier after 'delete' keyword", null);
         return error.UnexpectedToken;
     }
 
@@ -367,45 +442,52 @@ fn parseDelete(allocator: Allocator, tokenizer: *lexer.Tokenizer, next: *lexer.T
     next.* = try tokenizer.next();
 
     if(next.kind != TokenKind.semicolon) {
-        log.emit(tokenizer.source, .err, "D03", next, "Expected ';' after delete declaration", null);
+        log.emit(.err, "D03", next, "Expected ';' after delete declaration", null);
         return error.UnexpectedToken;
     }
 
     topAst.members.?.append(allocator, .{ .delete = name }) catch {
-        log.emit(tokenizer.source, .err, "D04", next, "Failed to add delete declaration to AST stack", null);
+        log.emit(.err, "D04", next, "Failed to add delete declaration to AST stack", null);
         return error.ParseError;
     };
 }
 
-fn parseClass(allocator: Allocator, tokenizer: *lexer.Tokenizer, next: *lexer.Token, log: *logger.ParseLog, top: **ast.ClassAst) !void{
+fn parseClass(allocator: Allocator, tokenizer: *lexer.Tokenizer, next: *lexer.Token, log: *logger.ParseLog, top: *ast.ClassAst) !*ast.ClassAst {
     next.* = try tokenizer.next();
 
-    if(next.kind != TokenKind.identifier) {
-        log.emit(tokenizer.source, .err, "C02", next, "Expected identifier after 'class' keyword", null);
-        return error.UnexpectedToken;
-    }
+    const heapClass = try allocator.create(ast.ClassAst);
+    errdefer allocator.destroy(heapClass);
 
-    var astClass = ast.ClassAst {
-        .base = null,
-        .members = null,
-        .name = next.data.text,
-        .parent = top.*,
+    heapClass.* = ast.ClassAst {
+        .base     = null,
+        .members  = null,
+        .name     = null,
+        .name_pos = 0,
+        .parent   = top,
     };
+
+    if(next.kind != TokenKind.identifier) {
+        log.emit(.err, "C02", next, "Expected identifier after 'class' keyword", null);
+        return error.UnexpectedToken;
+    } else {
+        heapClass.name     = next.data.text;
+        heapClass.name_pos = next.pos;
+    }
 
     next.* = try tokenizer.next();
 
     switch (next.kind) {
         TokenKind.colon => {
             next.* = try tokenizer.next();
-            astClass.members = .empty;
+            heapClass.members = .empty;
 
             if(next.kind != .identifier) {
-                log.emit(tokenizer.source, .err, "C04", next, "Expected identifier after ':' in class declaration", null);
+                log.emit(.err, "C04", next, "Expected identifier after ':' in class declaration", null);
                 return error.UnexpectedToken;
             }
 
-            astClass.base = top.*.find(next.data.text, true, true, false) orelse {
-                log.emit(tokenizer.source, .err, "C06", next, "Undefined base class set.", null);
+            heapClass.base = top.find(next.data.text, true, true, false) orelse {
+                log.emit(.err, "C06", next, "Undefined base class set.", null);
                 next.* = try tokenizer.next();
                 return error.ParseError;
             };
@@ -413,40 +495,36 @@ fn parseClass(allocator: Allocator, tokenizer: *lexer.Tokenizer, next: *lexer.To
             next.* = try tokenizer.next();
 
             if(next.kind != .leftBrace) {
-                log.emit(tokenizer.source, .err, "C04", next, "Expected  '{' after base class", null);
+                log.emit(.err, "C04", next, "Expected  '{' after base class", null);
                 return error.UnexpectedToken;
             }
         },
         TokenKind.semicolon => {
-            return top.*.members.?.append(allocator, .{ .class = astClass }) catch {
-                log.emit(tokenizer.source, .err, "C05", next, "Failed to add external class declaration to AST stack", null);
+            defer allocator.destroy(heapClass);
+            top.members.?.append(allocator, .{ .class = heapClass.* }) catch {
+                log.emit(.err, "C05", next, "Failed to add external class declaration to AST stack", null);
                 return error.ParseError;
             };
+            return top;
         },
         TokenKind.leftBrace => {
-            astClass.members = .empty;
+            heapClass.members = .empty;
         },
         else => {
-            log.emit(tokenizer.source, .err, "C03", next, "Expected ':', '{' or a ';' after class name", null);
+            log.emit(.err, "C03", next, "Expected ':', '{' or a ';' after class name", null);
             return error.UnexpectedToken;
         }
     }
 
-    const prevTop = top.*;
-    const heapClass = try allocator.create(ast.ClassAst);
-    errdefer {
-        allocator.destroy(heapClass);
-        top.* = prevTop;
-    }
-    heapClass.* = astClass;
-    top.* = heapClass;
+    return heapClass;
 }
 
 fn parseParameter(allocator: Allocator, tokenizer: *lexer.Tokenizer, next: *lexer.Token, log: *logger.ParseLog, top: *ast.ClassAst) !void{
     var astParam = ast.ParameterAst {
-        .name = next.data.text,
+        .name     = next.data.text,
+        .name_pos = next.pos,
         .operator = undefined,
-        .value = undefined,
+        .value    = undefined,
     };
 
     next.* = try tokenizer.next();
@@ -459,7 +537,7 @@ fn parseParameter(allocator: Allocator, tokenizer: *lexer.Tokenizer, next: *lexe
         next.* = try tokenizer.next();
 
         if (next.kind != TokenKind.rightBracket) {
-            log.emit(tokenizer.source, .err, "P02", next, "Expected ']' after '[' in parameter declaration.", null);
+            log.emit(.err, "P02", next, "Expected ']' after '[' in parameter declaration.", null);
             return error.UnexpectedToken;
         }
         next.* = try tokenizer.next();
@@ -470,47 +548,47 @@ fn parseParameter(allocator: Allocator, tokenizer: *lexer.Tokenizer, next: *lexe
         TokenKind.equals => ast.OperatorAst.assign,
         TokenKind.addAssign => blk: {
             if(!isArray) {
-                log.emit(tokenizer.source, .err, "P03", next, "'+=' operator is not valid for non-array parameters.", null);
+                log.emit(.err, "P03", next, "'+=' operator is not valid for non-array parameters.", null);
                 return error.UnexpectedToken;
             }
             break :blk ast.OperatorAst.addAssign;
         },
         TokenKind.subAssign => blk: {
             if(!isArray) {
-                log.emit(tokenizer.source, .err, "P03", next, "'-=' operator is not valid for non-array parameters.", null);
+                log.emit(.err, "P03", next, "'-=' operator is not valid for non-array parameters.", null);
                 return error.UnexpectedToken;
             }
             break :blk ast.OperatorAst.subAssign;
         },
         else => {
-            log.emit(tokenizer.source, .err, "P06", next, "Expected brackets or operation after parameter name.", null);
+            log.emit(.err, "P06", next, "Expected brackets or operation after parameter name.", null);
             return error.UnexpectedToken;
         }
     };
 
     next.* = try tokenizer.next();
     astParam.value = parseValue(allocator, tokenizer, log, next) catch {
-        log.emit(tokenizer.source, .err, "P01", next, "Expected value after operator in parameter declaration.", null);
+        log.emit(.err, "P01", next, "Expected value after operator in parameter declaration.", null);
         return error.ParseError;
     } orelse {
-        log.emit(tokenizer.source, .err, "P01", next, "Expected value after operator in parameter declaration.", null);
+        log.emit(.err, "P01", next, "Expected value after operator in parameter declaration.", null);
         return error.UnexpectedToken;
     };
 
     if(isArray and astParam.value != .array) {
-        log.emit(tokenizer.source, .err, "P01", next, "Expected array after operator in parameter declaration.", null);
+        log.emit(.err, "P01", next, "Expected array after operator in parameter declaration.", null);
         return error.UnexpectedToken;
     }
     const valueToken = next.*;
     next.* = try tokenizer.next();
 
     if(next.kind != TokenKind.semicolon) {
-        log.emit(tokenizer.source, .err, "P04", &valueToken, "Expected ';' after value in parameter declaration.", null);
+        log.emit(.err, "P04", &valueToken, "Expected ';' after value in parameter declaration.", null);
         return error.UnexpectedToken;
     }
 
     top.members.?.append(allocator, .{ .param = astParam }) catch {
-        log.emit(tokenizer.source, .err, "P05", next, "Failed to add parameter declaration to AST stack", null);
+        log.emit(.err, "P05", next, "Failed to add parameter declaration to AST stack", null);
         return error.ParseError;
     };
 }
@@ -523,7 +601,7 @@ fn parseValue(allocator: Allocator, tokenizer: *lexer.Tokenizer, log: *const log
         TokenKind.floatLiteral => ast.ValueAst { .float = token.data.float },
         TokenKind.int64Literal => ast.ValueAst { .i64 = token.data.int64 },
         TokenKind.intLiteral => ast.ValueAst { .integer = token.data.int },
-        TokenKind.expression=> ast.ValueAst { .expression = token.data.text },
+        TokenKind.expression => ast.ValueAst { .expression = token.data.text },
         // TokenKind.evalKeyword => try parseEval(allocator, tokenizer, log, token),
         TokenKind.stringLiteral => blk: {
             if(token.data.string.needsUnescape) {
@@ -533,7 +611,7 @@ fn parseValue(allocator: Allocator, tokenizer: *lexer.Tokenizer, log: *const log
             break :blk ast.ValueAst{ .string = token.data.string.text };
         },
         else => {
-            log.emit(tokenizer.source, .err, "P01", token, "Expected value after operator in parameter declaration.", null);
+            log.emit(.err, "P01", token, "Expected value after operator in parameter declaration.", null);
 
             return error.UnexpectedToken;
         }
@@ -555,7 +633,6 @@ fn parseArray(allocator: Allocator, tokenizer: *lexer.Tokenizer, log: *const log
     var values = std.ArrayList(ast.ValueAst).empty;
     errdefer {
         for (values.items) |item| freeValue(allocator, item);
-        values.deinit(allocator);
     }
     defer values.deinit(allocator);
 
@@ -571,7 +648,7 @@ fn parseArray(allocator: Allocator, tokenizer: *lexer.Tokenizer, log: *const log
                 },
                 TokenKind.rightBrace => break,
                 else => {
-                    log.emit(tokenizer.source, .err, "A01", start, "Expected ',' or '}' in array literal.", null);
+                    log.emit(.err, "A01", start, "Expected ',' or '}' in array literal.", null);
                     return error.UnexpectedToken;
                 }
             }
@@ -579,7 +656,7 @@ fn parseArray(allocator: Allocator, tokenizer: *lexer.Tokenizer, log: *const log
             const val = try parseValue(allocator, tokenizer, log, start);
             if (val) |value| {
                 values.append(allocator, value) catch {
-                    log.emit(tokenizer.source, .err, "A01", start, "Failed to add value to array literal.", null);
+                    log.emit(.err, "A01", start, "Failed to add value to array literal.", null);
                     return error.ParseError;
                 };
                 expectComma = true;

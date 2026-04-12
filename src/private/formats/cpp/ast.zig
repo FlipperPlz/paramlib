@@ -4,7 +4,7 @@ const clazz = @import("../../slabs/class.zig");
 pub const MemberAst = union(enum) {
     class: ClassAst,
     param: ParameterAst,
-    delete: []const u8,
+    delete: ?[]const u8,
     enumerable: EnumerableAst,
 };
 
@@ -13,10 +13,11 @@ pub const EnumerableAst = struct {
 };
 
 pub const ClassAst = struct {
-    parent: ?*ClassAst,
-    name: []const u8,
-    base: ?*ClassAst,
-    members: ?std.ArrayList(MemberAst),
+    parent:   ?*ClassAst,
+    name:     ?[]const u8,
+    name_pos: u32,          // byte offset of the name token (0 for file root)
+    base:     ?*ClassAst,
+    members:  ?std.ArrayList(MemberAst),
 
     pub fn deinit(self: *ClassAst, allocator: std.mem.Allocator) void {
         if (self.members) |*members| {
@@ -34,7 +35,7 @@ pub const ClassAst = struct {
         if(self.members) |members| {
             for (members.items) |*v| {
                 //todo visibility testing and normalization
-                if (v.* == .class and std.mem.eql(u8, v.class.name, name)) {
+                if (v.* == .class and std.mem.eql(u8, v.class.name.?, name)) {
                     return &v.class;
                 }
             }
@@ -64,9 +65,10 @@ pub const OperatorAst = enum {
 };
 
 pub const ParameterAst = struct {
-    name: []const u8,
+    name:     []const u8,
+    name_pos: u32,          // byte offset of the name token in the source
     operator: OperatorAst,
-    value: ValueAst,
+    value:    ValueAst,
 };
 
 pub const ValueAst = union(enum) {

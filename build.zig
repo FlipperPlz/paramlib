@@ -46,7 +46,9 @@ pub fn build(b: *std.Build) void {
 
     b.installArtifact(exe);
 
-    // --- LSP server ---------------------------------------------------------
+    const lsp_mod = b.dependency("lsp_kit", .{})
+        .module("lsp");
+
     const lsp_exe = b.addExecutable(.{
         .name = "paramlib-lsp",
         .root_module = b.createModule(.{
@@ -55,6 +57,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports  = &.{
                 .{ .name = "paramlib", .module = mod },
+                .{ .name = "lsp",      .module = lsp_mod }
             },
         }),
     });
@@ -63,7 +66,6 @@ pub fn build(b: *std.Build) void {
     const lsp_run      = b.addRunArtifact(lsp_exe);
     const lsp_run_step = b.step("lsp", "Run the LSP server");
     lsp_run_step.dependOn(&lsp_run.step);
-    // ------------------------------------------------------------------------
 
     const run_step = b.step("run", "Run the app");
 

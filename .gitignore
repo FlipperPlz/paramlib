@@ -1,4 +1,5 @@
 .idea/
 .zig-cache/
+zig-pkg/
 zig-out/
 docs/private

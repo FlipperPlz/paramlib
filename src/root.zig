@@ -1,0 +1,20 @@
+pub const cpp = struct {
+    pub const parser = @import("private/formats/cpp/parser.zig");
+    pub const lexer = @import("private/formats/cpp/lexer.zig");
+    pub const logger = @import("private/formats/cpp/utils/log.zig");
+    pub const ast = @import("private/formats/cpp/ast.zig");
+};
+
+pub const slabs = struct {
+    pub const array = @import("private/slabs/array.zig");
+    pub const class = @import("private/slabs/class.zig");
+    pub const enumeration = @import("private/slabs/enum.zig");
+    pub const parameter = @import("private/slabs/parameter.zig");
+    pub const source = @import("private/slabs/source.zig");
+};
+
+pub const utils = struct {
+    pub const factory = @import("private/tree/factory.zig");
+    pub const query = @import("private/tree/query.zig");
+    pub const references = @import("private/tree/references.zig");
+};

@@ -12,6 +12,22 @@ const Color = struct {
     const green  = ESC ++ "1;32m";
 };
 
+// ---------------------------------------------------------------------------
+// Diagnostic sink  (optional collector for LSP / tooling consumers)
+// ---------------------------------------------------------------------------
+
+pub const DiagEntry = struct {
+    level:     Level,
+    token_pos: u32,    // byte offset of the token in the source
+    span:      u32,    // byte length of the highlighted region
+    message:   []const u8,
+};
+
+pub const DiagSink = struct {
+    list:  *std.ArrayListUnmanaged(DiagEntry),
+    alloc: std.mem.Allocator,
+};
+
 pub const Level = enum {
     err,
     warning,
@@ -39,19 +55,22 @@ pub const Level = enum {
 
 pub const ParseLog = struct {
     const Self = @This();
-
+    contents:   [:0]const u8,
     io:         std.Io,
     line_table: *const lexer.LineTable,
     filename:   []const u8,
     use_color:  bool,
+    diag_sink:  ?DiagSink = null,
 
     pub fn init(
         io:         std.Io,
         line_table: *const lexer.LineTable,
+        source:     [:0]const u8,
         filename:   []const u8,
         use_color:  bool,
     ) Self {
         return .{
+            .contents   = source,
             .io         = io,
             .line_table = line_table,
             .filename   = filename,
@@ -65,7 +84,6 @@ pub const ParseLog = struct {
 
     pub fn emit(
         self:       *const Self,
-        source:     [:0]const u8,
         level:      Level,
         err_code:   ?[]const u8,
         token:      *const lexer.Token,
@@ -99,7 +117,7 @@ pub const ParseLog = struct {
             self.filename, pos.line, pos.column,
         }) catch return;
 
-        const line_text = lineSlice(source, self.line_table, pos.line);
+        const line_text = lineSlice(self.contents, self.line_table, pos.line);
 
         w.print("{s} {s}|{s}\n", .{
             spaces(margin),
@@ -125,6 +143,19 @@ pub const ParseLog = struct {
         const lbl = label_text orelse message;
         w.print(" {s}{s}\n\n", .{ lbl, self.ansi(Color.reset) }) catch return;
         w.flush() catch return;
+
+        if (self.diag_sink) |sink| {
+            const span2: u32 = switch (token.data) {
+                .text   => |t| @intCast(t.len),
+                else    => 1,
+            };
+            sink.list.append(sink.alloc, .{
+                .level     = level,
+                .token_pos = token.pos,
+                .span      = @max(span2, 1),
+                .message   = message,
+            }) catch {};
+        }
     }
 
     pub fn err(self: *const Self, source: [:0]const u8, code: ?[]const u8, token: lexer.Token, msg: []const u8) void {
@@ -209,8 +240,9 @@ fn writeRepeat(writer: *std.Io.Writer, ch: u8, n: usize) !void {
 pub fn stderrLog(
     io:         std.Io,
     line_table: *const lexer.LineTable,
+    contents:   [:0]const u8,
     filename:   []const u8,
     use_color:  bool,
 ) ParseLog {
-    return ParseLog.init(io, line_table, filename, use_color);
+    return ParseLog.init(io, line_table, contents, filename, use_color);
 }
