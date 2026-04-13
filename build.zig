@@ -63,13 +63,42 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(lsp_exe);
 
+    const wasm_target = b.resolveTargetQuery(.{
+        .cpu_arch = .wasm32,
+        .os_tag   = .wasi
+    });
+
+    const lsp_wasm = b.addExecutable(.{
+        .name               = "paramlib-lsp",
+        .root_module        = b.createModule(.{
+            .target             = wasm_target,
+            .optimize           = optimize,
+            .root_source_file   = b.path("src/private/formats/cpp/lsp/main.zig"),
+            .imports  = &.{
+                .{ .name = "paramlib", .module = mod },
+                .{ .name = "lsp",      .module = lsp_mod }
+            },
+        }),
+    });
+
+
     const lsp_run      = b.addRunArtifact(lsp_exe);
     const lsp_run_step = b.step("lsp", "Run the LSP server");
     lsp_run_step.dependOn(&lsp_run.step);
 
+    const install_wasm = b.addInstallFile(
+        lsp_wasm.getEmittedBin(),
+        "wasm/paramlib-lsp.wasm",
+    );
+
+
+    install_wasm.step.dependOn(&lsp_wasm.step);
+
     const vscode_dir = "src/private/formats/cpp/lsp/vscode-wrapper";
 
     const vscode_install = b.addSystemCommand(&.{ "bun", "install" });
+    vscode_install.step.dependOn(&install_wasm.step);
+
     vscode_install.setCwd(b.path(vscode_dir));
 
     const vscode_compile = b.addSystemCommand(&.{ "bun", "run", "compile" });

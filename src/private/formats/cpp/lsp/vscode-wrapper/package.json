@@ -10,9 +10,23 @@
   "license": "UNLICENSED",
   "repository": "https://github.com/FlipperPlz/paramlib",
   "categories": ["Programming Languages"],
-  "activationEvents": [],
+  "activationEvents": [
+    "onLanguage:paramlib",
+    "onLanguage:cpp",
+    "workspaceContains:**/*.rvmat"
+  ],
   "main": "out/extension.js",
   "contributes": {
+    "semanticTokensProvider": [
+      {
+        "language": "paramlib",
+        "legend": {
+          "tokenTypes": ["keyword", "comment", "variable", "string", "operator", "number"],
+          "tokenModifiers": []
+        },
+        "full": true
+      }
+    ],
     "languages": [
       {
         "id": "paramlib",
@@ -45,6 +59,7 @@
   },
   "dependencies": {
     "@types/node": "^25.6.0",
+    "@vscode/wasm-wasi-lsp": "^0.1.0-pre.1",
     "vscode-languageclient": "^9.0.1"
   },
   "devDependencies": {
