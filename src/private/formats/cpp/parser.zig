@@ -365,7 +365,7 @@ pub fn parseSourceFull(io: std.Io, allocator: Allocator, data: [:0]const u8, deb
         .base     = null,
         .members  = .empty,
         .name     = debugName,
-        .name_pos = 0,
+        .namePos = 0,
         .parent   = null,
     };
 
@@ -380,6 +380,7 @@ pub fn parseSourceFull(io: std.Io, allocator: Allocator, data: [:0]const u8, deb
                     log.emit(.err, "U03", &next, "Invalid '}' no class or array to exit.", null);
                     errored.* = true;
                 }
+                topAst.bodyEndPos = next.pos;
                 next = try l.next();
 
                 if(next.kind != .semicolon) {
@@ -462,7 +463,7 @@ fn parseClass(allocator: Allocator, tokenizer: *lexer.Tokenizer, next: *lexer.To
         .base     = null,
         .members  = null,
         .name     = null,
-        .name_pos = 0,
+        .namePos = 0,
         .parent   = top,
     };
 
@@ -471,7 +472,7 @@ fn parseClass(allocator: Allocator, tokenizer: *lexer.Tokenizer, next: *lexer.To
         return error.UnexpectedToken;
     } else {
         heapClass.name     = next.data.text;
-        heapClass.name_pos = next.pos;
+        heapClass.namePos = next.pos;
     }
 
     next.* = try tokenizer.next();
@@ -522,7 +523,7 @@ fn parseClass(allocator: Allocator, tokenizer: *lexer.Tokenizer, next: *lexer.To
 fn parseParameter(allocator: Allocator, tokenizer: *lexer.Tokenizer, next: *lexer.Token, log: *logger.ParseLog, top: *ast.ClassAst) !void{
     var astParam = ast.ParameterAst {
         .name     = next.data.text,
-        .name_pos = next.pos,
+        .namePos = next.pos,
         .operator = undefined,
         .value    = undefined,
     };
@@ -602,9 +603,7 @@ fn parseValue(allocator: Allocator, tokenizer: *lexer.Tokenizer, log: *const log
         TokenKind.int64Literal => ast.ValueAst { .i64 = token.data.int64 },
         TokenKind.intLiteral => ast.ValueAst { .integer = token.data.int },
         TokenKind.expression => ast.ValueAst { .expression = token.data.text },
-        // TokenKind.evalKeyword => try parseEval(allocator, tokenizer, log, token),
         TokenKind.stringLiteral => blk: {
-            // quoted strings carry .data.string; unquoted strings carry .data.text
             const str = switch (token.data) {
                 .string => |s| blk2: {
                     if (s.needsUnescape) {

@@ -8,6 +8,7 @@ const RequestMethods = union(enum) {
     @"textDocument/hover":                lsp.types.Hover.Params,
     @"textDocument/documentSymbol":       lsp.types.DocumentSymbol.Params,
     @"textDocument/semanticTokens/full":  lsp.types.semantic_tokens.Params,
+    @"textDocument/completion":           lsp.types.completion.Params,
     other:                                lsp.MethodWithParams,
 };
 
@@ -63,12 +64,14 @@ pub fn main(init: std.process.Init) !void {
                                 }},
                                 .hoverProvider          = .{ .bool = true },
                                 .documentSymbolProvider = .{ .bool = true },
+                                .completionProvider     = .{
+                                    .triggerCharacters = &.{" ", "\t"},
+                                },
                                 .semanticTokensProvider = .{ .semantic_tokens_options = .{
                                     .legend = .{
                                         .tokenTypes     = &.{
                                             "keyword", "comment", "variable",
-                                            "string", "operator", "number",
-                                            "brace", "bracket", "paren"
+                                            "string", "operator", "number"
                                         },
                                         .tokenModifiers = &.{}
                                     },
@@ -112,6 +115,16 @@ pub fn main(init: std.process.Init) !void {
                     const result = semanticTokensFull(io, &documents, arena.allocator(), params);
                     try transport.writeResponse(io, gpa, req.id,
                         ?lsp.types.semantic_tokens.Result, result,
+                        .{ .emit_null_optional_fields = false },
+                    );
+                },
+
+                .@"textDocument/completion" => |params| {
+                    var arena = std.heap.ArenaAllocator.init(gpa);
+                    defer arena.deinit();
+                    const result = completion(io, &documents, arena.allocator(), params);
+                    try transport.writeResponse(io, gpa, req.id,
+                        ?lsp.types.completion.Result, result,
                         .{ .emit_null_optional_fields = false },
                     );
                 },
@@ -184,15 +197,15 @@ fn findNodeAtOffset(class: *const paramlib.cpp.ast.ClassAst, offset: u32) ?Hover
         switch (member.*) {
             .class => |*c| {
                 if (c.name) |name| {
-                    const name_end = c.name_pos + @as(u32, @intCast(name.len));
-                    if (offset >= c.name_pos and offset < name_end)
+                    const name_end = c.namePos + @as(u32, @intCast(name.len));
+                    if (offset >= c.namePos and offset < name_end)
                         return HoverNode{ .class = c };
                 }
                 if (findNodeAtOffset(c, offset)) |found| return found;
             },
             .param => |*p| {
-                const name_end = p.name_pos + @as(u32, @intCast(p.name.len));
-                if (offset >= p.name_pos and offset < name_end)
+                const name_end = p.namePos + @as(u32, @intCast(p.name.len));
+                if (offset >= p.namePos and offset < name_end)
                     return HoverNode{ .param = p };
             },
             .delete    => {},
@@ -257,13 +270,7 @@ fn semanticTokensFull(
             .intLiteral,
             .floatLiteral,
             .int64Literal     => 5,
-            .leftBrace,
-            .rightBrace       => 6,
-            .leftBracket,
-            .rightBracket     => 7,
-            .leftParenthesis,
-            .rightParenthesis => 8,
-            else           => null,
+            else              => null,
         };
 
         const tt = token_type orelse continue;
@@ -371,7 +378,7 @@ fn collectSymbols(
         switch (member.*) {
             .class => |*c| {
                 if (c.name) |name| {
-                    const start = lspPos(line_table, c.name_pos);
+                    const start = lspPos(line_table, c.namePos);
                     const end   = lsp.types.Position{
                         .line      = start.line,
                         .character = start.character + @as(u32, @intCast(name.len)),
@@ -385,7 +392,7 @@ fn collectSymbols(
                 collectSymbols(gpa, c, uri, line_table, list);
             },
             .param => |*p| {
-                const start = lspPos(line_table, p.name_pos);
+                const start = lspPos(line_table, p.namePos);
                 const end   = lsp.types.Position{
                     .line      = start.line,
                     .character = start.character + @as(u32, @intCast(p.name.len)),
@@ -514,4 +521,113 @@ fn offsetOf(lt: paramlib.cpp.lexer.LineTable, src: [:0]const u8, line: u32, col:
 fn lspPos(lt: *const paramlib.cpp.lexer.LineTable, offset: u32) lsp.types.Position {
     const r = lt.resolve(offset);
     return .{ .line = r.line - 1, .character = r.column - 1 };
+}
+
+fn findClassAtOffset(class: *const paramlib.cpp.ast.ClassAst, offset: u32) ?*const paramlib.cpp.ast.ClassAst {
+    const members = class.members orelse return null;
+
+    for (members.items) |*m| {
+        if (m.* != .class) continue;
+        const c = &m.class;
+        if (c.name == null or c.members == null) continue;
+        if (offset > c.namePos and offset <= c.bodyEndPos) {
+            return findClassAtOffset(c, offset) orelse c;
+        }
+    }
+    return null;
+}
+
+fn fmtValue(arena: std.mem.Allocator, value: paramlib.cpp.ast.ValueAst) []const u8 {
+    return switch (value) {
+        .integer    => |v| std.fmt.allocPrint(arena, "{d}",    .{v}) catch "?",
+        .i64        => |v| std.fmt.allocPrint(arena, "{d}",    .{v}) catch "?",
+        .float      => |v| std.fmt.allocPrint(arena, "{d}",    .{v}) catch "?",
+        .string     => |v| std.fmt.allocPrint(arena, "\"{s}\"", .{v}) catch "?",
+        .expression => |v| std.fmt.allocPrint(arena, "@{s}",   .{v}) catch "?",
+        .array      => |v| std.fmt.allocPrint(arena, "{{[{d}]}}",  .{v.len}) catch "?",
+    };
+}
+
+fn completion(
+    io:        std.Io,
+    documents: *const std.StringArrayHashMapUnmanaged([]const u8),
+    arena:     std.mem.Allocator,
+    params:    lsp.types.completion.Params,
+) ?lsp.types.completion.Result {
+    const text = documents.get(params.textDocument.uri) orelse return null;
+    const src   = arena.dupeZ(u8, text) catch return null;
+
+    const lineTable = paramlib.cpp.lexer.LineTable.build(arena, src) catch return null;
+
+    const offset = offsetOf(
+        lineTable, src,
+        @as(u32, @intCast(params.position.line))      + 1,
+        @as(u32, @intCast(params.position.character)) + 1,
+    );
+
+    var errored = false;
+    var root = paramlib.cpp.parser.parseSourceFull(
+        io, arena, src, params.textDocument.uri, false, &errored, null,
+    ) catch return null;
+    defer root.deinit(arena);
+
+    const enclosing = findClassAtOffset(&root, offset) orelse return null;
+
+    if (enclosing.base == null) return null;
+
+    var items = std.ArrayList(lsp.types.completion.Item).empty;
+    var seen = std.StringHashMapUnmanaged(void){};
+    defer seen.deinit(arena);
+    if (enclosing.members) |em| {
+        for (em.items) |*m| {
+            if (m.* == .param) seen.put(arena, m.param.name, {}) catch {};
+        }
+    }
+
+    var current_base: ?*const paramlib.cpp.ast.ClassAst = enclosing.base;
+    while (current_base) |base| {
+        const baseName    = base.name orelse "?";
+        const baseMembers = base.members orelse {
+            current_base = base.base;
+            continue;
+        };
+
+        for (baseMembers.items) |*m| {
+            if (m.* != .param) continue;
+            const p = &m.param;
+
+            if (seen.contains(p.name)) continue;
+            seen.put(arena, p.name, {}) catch {};
+
+            const value_str = fmtValue(arena, p.value);
+            const op_str: []const u8 = switch (p.operator) {
+                .assign    => "=",
+                .addAssign => "+=",
+                .subAssign => "-=",
+            };
+
+            const insert = std.fmt.allocPrint(
+                arena, "{s} {s} {s};", .{ p.name, op_str, value_str },
+            ) catch continue;
+
+            const detail = std.fmt.allocPrint(
+                arena, "{s} {s} {s}  (from {s})", .{ p.name, op_str, value_str, baseName },
+            ) catch continue;
+
+            items.append(arena, lsp.types.completion.Item{
+                .label      = p.name,
+                .kind       = .Field,
+                .detail     = detail,
+                .insertText = insert,
+            }) catch continue;
+        }
+
+        current_base = base.base;
+    }
+
+    if (items.items.len == 0) return null;
+
+    return lsp.types.completion.Result{
+        .completion_items = items.items,
+    };
 }

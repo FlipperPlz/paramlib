@@ -352,16 +352,30 @@ pub const Tokenizer = struct {
         var out = try std.ArrayList(u8).initCapacity(allocator, raw.len);
         errdefer out.deinit(allocator);
 
-        var rest = raw;
-        while (rest.len > 0) {
-            if (std.mem.indexOf(u8, rest, "\"\"")) |pos| {
-                try out.appendSlice(allocator, rest[0..pos]);
-                try out.append(allocator,'"');
-                rest = rest[pos + 2..];
-            } else {
-                try out.appendSlice(allocator, rest);
-                break;
+        var i: usize = 0;
+        while (i < raw.len) {
+            if (i + 1 < raw.len and raw[i] == '"' and raw[i + 1] == '"') {
+                try out.append(allocator, '"');
+                i += 2;
+                continue;
             }
+            if (raw[i] == '"') {
+                var j = i + 1;
+                while (j < raw.len and (raw[j] == ' ' or raw[j] == '\t')) j += 1;
+                if (j < raw.len and raw[j] == '\n') {
+                    j += 1;
+                    while (j < raw.len and (raw[j] == ' ' or raw[j] == '\t')) j += 1;
+                    if (j < raw.len and raw[j] == '"') {
+                        i = j + 1;
+                        continue;
+                    }
+                }
+                try out.append(allocator, '"');
+                i += 1;
+                continue;
+            }
+            try out.append(allocator, raw[i]);
+            i += 1;
         }
         return out.toOwnedSlice(allocator);
     }
@@ -494,13 +508,37 @@ pub const Tokenizer = struct {
         try std.testing.expectEqualStrings("",  buf[0].data.string.text);
     }
 
-    // figure out how handled in original
-    // test "quoted string - line continuation" {
-    //     var buf: [4]Token = undefined;
-    //     _ = try tokenizeAll("\"foo\"\n\"bar\"\x00", &buf);
-    //     try std.testing.expectEqual(TokenKind.stringLiteral, buf[0].kind);
-    //     try std.testing.expectEqualStrings("foo", buf[0].text());
-    // }
+    test "quoted string - line continuation" {
+        var buf: [4]Token = undefined;
+        _ = try tokenizeAll("\"foo\"\n\"bar\"\x00", &buf);
+        try std.testing.expectEqual(TokenKind.stringLiteral, buf[0].kind);
+        try std.testing.expect(buf[0].data.string.needsUnescape);
+        const data = try unescapeString(std.testing.allocator, buf[0].data.string.text);
+        defer std.testing.allocator.free(data);
+        try std.testing.expectEqualStrings(data, "foobar");
+
+    }
+
+    test "quoted string - line continuation joins segments" {
+        const allocator = std.testing.allocator;
+        var buf: [4]Token = undefined;
+        _ = try tokenizeAll("\"foo\"\n\"bar\"\x00", &buf);
+        try std.testing.expectEqual(TokenKind.stringLiteral, buf[0].kind);
+        try std.testing.expect(buf[0].data.string.needsUnescape);
+        const joined = try unescapeString(allocator, buf[0].data.string.text);
+        defer allocator.free(joined);
+        try std.testing.expectEqualStrings("foobar", joined);
+    }
+
+    test "quoted string - line continuation with whitespace" {
+        const allocator = std.testing.allocator;
+        var buf: [4]Token = undefined;
+        _ = try tokenizeAll("\"hello\"  \n  \"world\"\x00", &buf);
+        try std.testing.expectEqual(TokenKind.stringLiteral, buf[0].kind);
+        const joined = try unescapeString(allocator, buf[0].data.string.text);
+        defer allocator.free(joined);
+        try std.testing.expectEqualStrings("helloworld", joined);
+    }
 
     test "quoted string - unterminated returns error" {
         var t = Tokenizer.init("\"unterminated\x00");

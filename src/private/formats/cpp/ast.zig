@@ -13,11 +13,12 @@ pub const EnumerableAst = struct {
 };
 
 pub const ClassAst = struct {
-    parent:   ?*ClassAst,
-    name:     ?[]const u8,
-    name_pos: u32,          // byte offset of the name token (0 for file root)
-    base:     ?*ClassAst,
-    members:  ?std.ArrayList(MemberAst),
+    parent:       ?*ClassAst,
+    name:         ?[]const u8,
+    namePos:      u32,
+    base:         ?*ClassAst,
+    members:      ?std.ArrayList(MemberAst),
+    bodyEndPos:   u32 = 0,
 
     pub fn deinit(self: *ClassAst, allocator: std.mem.Allocator) void {
         if (self.members) |*members| {
@@ -40,7 +41,6 @@ pub const ClassAst = struct {
                 }
             }
         }
-
 
         if(scanBase) {
             if(self.base) |base| {
@@ -66,7 +66,7 @@ pub const OperatorAst = enum {
 
 pub const ParameterAst = struct {
     name:     []const u8,
-    name_pos: u32,          // byte offset of the name token in the source
+    namePos:  u32,
     operator: OperatorAst,
     value:    ValueAst,
 };

@@ -15,8 +15,7 @@ class CfgTextureToMaterial
     class AirborneGlass
     {
         textures[]={};
-        material="#Specu"
-                 "larGlass";
+        material="#SpecularGlass";
     };
     class Metal
     {
