@@ -7,6 +7,7 @@ const RequestMethods = union(enum) {
     shutdown,
     @"textDocument/hover":                lsp.types.Hover.Params,
     @"textDocument/documentSymbol":       lsp.types.DocumentSymbol.Params,
+    @"textDocument/definition":           lsp.types.Definition.Params,
     @"textDocument/semanticTokens/full":  lsp.types.semantic_tokens.Params,
     @"textDocument/completion":           lsp.types.completion.Params,
     other:                                lsp.MethodWithParams,
@@ -64,8 +65,9 @@ pub fn main(init: std.process.Init) !void {
                                 }},
                                 .hoverProvider          = .{ .bool = true },
                                 .documentSymbolProvider = .{ .bool = true },
+                                .definitionProvider     = .{ .bool = true },
                                 .completionProvider     = .{
-                                    .triggerCharacters = &.{" ", "\t"},
+                                    .triggerCharacters  = &.{" ", "\t"},
                                 },
                                 .semanticTokensProvider = .{ .semantic_tokens_options = .{
                                     .legend = .{
@@ -93,6 +95,22 @@ pub fn main(init: std.process.Init) !void {
                     const result = hover(io, &documents, arena.allocator(), params);
                     try transport.writeResponse(io, gpa, req.id,
                         ?lsp.types.Hover, result,
+                        .{ .emit_null_optional_fields = false },
+                    );
+                },
+
+                .@"textDocument/definition" => |params| {
+                    var arena = std.heap.ArenaAllocator.init(gpa);
+                    defer arena.deinit();
+                    const result = definition(io, &documents, arena.allocator(), params);
+                    std.debug.print("def req line={} char={} => {any}\n", .{
+                        params.position.line,
+                        params.position.character,
+                        result != null,
+                    });
+
+                    try transport.writeResponse(io, gpa, req.id,
+                        ?lsp.types.Definition.Result, result,
                         .{ .emit_null_optional_fields = false },
                     );
                 },
@@ -293,6 +311,68 @@ fn semanticTokensFull(
     }
 
     return .{ .data = data.items };
+}
+
+fn definition(
+    io:        std.Io,
+    documents: *const std.StringArrayHashMapUnmanaged([]const u8),
+    arena:     std.mem.Allocator,
+    params:    lsp.types.Definition.Params,
+) ?lsp.types.Definition.Result {
+    const text = documents.get(params.textDocument.uri) orelse return null;
+    const src   = arena.dupeZ(u8, text) catch return null;
+
+    const line_table = paramlib.cpp.lexer.LineTable.build(arena, src) catch return null;
+
+    const offset = offsetOf(
+        line_table, src,
+        @as(u32, @intCast(params.position.line))      + 1,
+        @as(u32, @intCast(params.position.character)) + 1,
+    );
+
+    var errored = false;
+    var root = paramlib.cpp.parser.parseSourceFull(
+        io, arena, src, params.textDocument.uri, false, &errored, null,
+    ) catch return null;
+    defer root.deinit(arena);
+
+    const base_class = findBaseRefAtOffset(&root, offset) orelse return null;
+    const baseNamePos = base_class.namePos;
+    const base_name     = base_class.name orelse return null;
+
+    const start = lspPos(&line_table, baseNamePos);
+    const end   = lsp.types.Position{
+        .line      = start.line,
+        .character = start.character + @as(u32, @intCast(base_name.len)),
+    };
+
+    return lsp.types.Definition.Result{ .definition = .{ .location = .{
+        .uri   = params.textDocument.uri,
+        .range = .{ .start = start, .end = end },
+    }}};
+}
+
+fn findBaseRefAtOffset(
+    class:  *const paramlib.cpp.ast.ClassAst,
+    offset: u32,
+) ?*const paramlib.cpp.ast.ClassAst {
+    const members = class.members orelse return null;
+    for (members.items) |*m| {
+        if (m.* != .class) continue;
+        const c = &m.class;
+
+        if (c.base) |base| {
+            if (base.name) |bname| {
+                const ref_end = c.baseRefPos + @as(u32, @intCast(bname.len));
+                if (offset >= c.baseRefPos and offset < ref_end) {
+                    return base;
+                }
+            }
+        }
+
+        if (findBaseRefAtOffset(c, offset)) |found| return found;
+    }
+    return null;
 }
 
 fn hover(
@@ -520,7 +600,9 @@ fn offsetOf(lt: paramlib.cpp.lexer.LineTable, src: [:0]const u8, line: u32, col:
 
 fn lspPos(lt: *const paramlib.cpp.lexer.LineTable, offset: u32) lsp.types.Position {
     const r = lt.resolve(offset);
-    return .{ .line = r.line - 1, .character = r.column - 1 };
+    const line: u32 = if (r.line > 0) r.line - 1 else 0;
+    const character: u32 = if (r.column > 0) r.column - 1 else 0;
+    return .{ .line = line, .character = character };
 }
 
 fn findClassAtOffset(class: *const paramlib.cpp.ast.ClassAst, offset: u32) ?*const paramlib.cpp.ast.ClassAst {

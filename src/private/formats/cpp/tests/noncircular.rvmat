@@ -8,3 +8,5 @@ class Parent {
         class InnerLeast : InnerLeast {};
     };
 };
+
+class child;

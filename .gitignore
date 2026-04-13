@@ -3,3 +3,5 @@
 zig-pkg/
 zig-out/
 docs/private
+src/private/formats/cpp/lsp/vscode-wrapper/node_modules
+src/private/formats/cpp/lsp/vscode-wrapper/out

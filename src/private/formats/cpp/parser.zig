@@ -472,7 +472,7 @@ fn parseClass(allocator: Allocator, tokenizer: *lexer.Tokenizer, next: *lexer.To
         return error.UnexpectedToken;
     } else {
         heapClass.name     = next.data.text;
-        heapClass.namePos = next.pos;
+        heapClass.namePos  = next.pos;
     }
 
     next.* = try tokenizer.next();
@@ -487,6 +487,7 @@ fn parseClass(allocator: Allocator, tokenizer: *lexer.Tokenizer, next: *lexer.To
                 return error.UnexpectedToken;
             }
 
+            heapClass.baseRefPos = next.pos;
             heapClass.base = top.find(next.data.text, true, true, false) orelse {
                 log.emit(.err, "C06", next, "Undefined base class set.", null);
                 next.* = try tokenizer.next();

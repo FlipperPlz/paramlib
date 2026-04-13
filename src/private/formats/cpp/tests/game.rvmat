@@ -1,6 +1,9 @@
-
-
-battleyeLicenceUrl=hi im a string with no quotes try lexing me correctly stupid;
+battleyeLicenceUrl="h"
+"e"
+"l"
+"l"
+"o"
+;
 class CfgMods
 {
     defaultAction="http://www.arma2.com/mods";
@@ -272,6 +275,7 @@ class Mode_Double : Mode_SemiAuto
 };
 class Mode_FullAuto : Mode_SemiAuto
 {
+
     displayName="#STR_FullAuto";
     autoFire=1;
     soundContinuous=1;

@@ -67,6 +67,28 @@ pub fn build(b: *std.Build) void {
     const lsp_run_step = b.step("lsp", "Run the LSP server");
     lsp_run_step.dependOn(&lsp_run.step);
 
+    const vscode_dir = "src/private/formats/cpp/lsp/vscode-wrapper";
+
+    const vscode_install = b.addSystemCommand(&.{ "bun", "install" });
+    vscode_install.setCwd(b.path(vscode_dir));
+
+    const vscode_compile = b.addSystemCommand(&.{ "bun", "run", "compile" });
+    vscode_compile.setCwd(b.path(vscode_dir));
+    vscode_compile.step.dependOn(&vscode_install.step);
+    vscode_compile.step.dependOn(&lsp_exe.step);
+
+    const vscode_mkdir = b.addSystemCommand(&.{ "mkdir", "-p", "zig-out/bin", "zig-out/vscode" });
+    vscode_mkdir.setCwd(b.path("."));
+
+    const vscode_package = b.addSystemCommand(&.{ "bun", "run", "package" });
+    vscode_package.setCwd(b.path(vscode_dir));
+    vscode_package.step.dependOn(&vscode_mkdir.step);
+    vscode_package.step.dependOn(&vscode_compile.step);
+    b.getInstallStep().dependOn(&vscode_package.step);
+
+    const vscode_step = b.step("vscode", "Build and package the VSCode extension (.vsix)");
+    vscode_step.dependOn(&vscode_package.step);
+
     const run_step = b.step("run", "Run the app");
 
     const run_cmd = b.addRunArtifact(exe);

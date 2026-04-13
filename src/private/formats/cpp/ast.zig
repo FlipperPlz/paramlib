@@ -17,6 +17,7 @@ pub const ClassAst = struct {
     name:         ?[]const u8,
     namePos:      u32,
     base:         ?*ClassAst,
+    baseRefPos:   u32 = 0,
     members:      ?std.ArrayList(MemberAst),
     bodyEndPos:   u32 = 0,
 
