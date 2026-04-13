@@ -1,0 +1,56 @@
+{
+  "name": "paramlib-lsp",
+  "displayName": "Paramlib LSP",
+  "description": "Language support for Paramlib parameter files (.param)",
+  "version": "0.1.0",
+  "publisher": "FlipperPlz",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "license": "UNLICENSED",
+  "repository": "https://github.com/FlipperPlz/paramlib",
+  "categories": ["Programming Languages"],
+  "activationEvents": [],
+  "main": "out/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "paramlib",
+        "aliases": ["Paramlib", "param"],
+        "extensions": [".rvmat", ".cpp", ".hpp"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "configuration": {
+      "title": "Paramlib LSP",
+      "properties": {
+        "paramlibLsp.serverPath": {
+          "type": "string",
+          "default": "",
+          "description": "Absolute path to the paramlib-lsp binary. Leave empty to auto-detect from zig-out/bin/."
+        },
+        "paramlibLsp.trace.server": {
+          "type": "string",
+          "enum": ["off", "messages", "verbose"],
+          "default": "off",
+          "description": "Trace LSP communication for debugging."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "bun build ./src/extension.ts --outdir ./out --target node --external vscode",
+    "watch": "bun build ./src/extension.ts --outdir ./out --target node --external vscode --watch",
+    "package": "bunx @vscode/vsce package --no-dependencies --out ../../../../../../zig-out/vscode"
+  },
+  "dependencies": {
+    "@types/node": "^25.6.0",
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^2.24.0",
+    "vscode": "^1.1.37",
+    "typescript": "^5.3.3"
+  }
+}
