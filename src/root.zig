@@ -1,8 +1,8 @@
 pub const cpp = struct {
-    pub const parser = @import("private/formats/cpp/parser.zig");
-    pub const lexer = @import("private/formats/cpp/lexer.zig");
-    pub const logger = @import("private/formats/cpp/utils/log.zig");
-    pub const ast = @import("private/formats/cpp/ast.zig");
+    pub const parser = @import("private/cpp/parser.zig");
+    pub const lexer = @import("private/cpp/lexer.zig");
+    pub const logger = @import("private/cpp/utils/log.zig");
+    pub const ast = @import("private/cpp/ast.zig");
 };
 
 pub const slabs = struct {

@@ -17,7 +17,7 @@ const ParseError = error{
     Overflow,
 };
 
-const database = @import("../../../api/database.zig");
+const database = @import("../../api/database.zig");
 
 fn z(comptime s: []const u8) [:0]const u8 {
     return s ++ [_:0]u8{};

@@ -1,5 +1,5 @@
 const std = @import("std");
-const source = @import("../../slabs/source.zig");
+const source = @import("../slabs/source.zig");
 
 const CF_WHITESPACE:          u8 = 1 << 0;
 const CF_STRING_WHITESPACE:   u8 = 1 << 1;

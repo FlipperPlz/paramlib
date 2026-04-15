@@ -1,11 +1,11 @@
 const std = @import("std");
-const cpp_lexer = @import("private/formats/cpp/lexer.zig");
-const cpp_parser = @import("private/formats/cpp/parser.zig");
+const cpp_lexer = @import("private/cpp/lexer.zig");
+const cpp_parser = @import("private/cpp/parser.zig");
 
 pub fn main(init: std.process.Init) !void {
     const BENCH_ITERS: u64 = 100;
 
-    const src = @embedFile("private/formats/cpp/tests/game.cpp") ++ [_:0]u8{};
+    const src = @embedFile("private/cpp/tests/game.cpp") ++ [_:0]u8{};
 
     const start = std.Io.Timestamp.now(init.io, .real).nanoseconds;
     var iter: u64 = 0;

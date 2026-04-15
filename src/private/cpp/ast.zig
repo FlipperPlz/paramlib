@@ -1,5 +1,5 @@
 const std = @import("std");
-const clazz = @import("../../slabs/class.zig");
+const clazz = @import("../slabs/class.zig");
 
 pub const MemberAst = union(enum) {
     class: ClassAst,

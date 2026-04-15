@@ -4,7 +4,7 @@ const Allocator = std.mem.Allocator;
 
 const identifiers = @import("private/utils/identifiers.zig");
 const handles     = @import("private/utils/handles.zig");
-const cpp_lexer   = @import("private/formats/cpp/lexer.zig");
+const cpp_lexer   = @import("private/cpp/lexer.zig");
 const hasher      = @import("private/utils/hasher.zig");
 const value       = @import("private/data/value.zig");
 const strings     = @import("private/utils/strings.zig");
@@ -14,7 +14,7 @@ const storage     = @import("private/data/storage.zig");
 const source      = @import("private/slabs/source.zig");
 const query       = @import("private/tree/query.zig");
 const factory     = @import("private/tree/factory.zig");
-const parser      = @import("private/formats/cpp/parser.zig");
+const parser      = @import("private/cpp/parser.zig");
 
 test "query tests" {
     std.testing.refAllDecls(query);

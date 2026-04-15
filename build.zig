@@ -51,7 +51,7 @@ pub fn build(b: *std.Build) void {
     const lsp_exe = b.addExecutable(.{
         .name = "paramlib-lsp",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/private/formats/cpp/lsp/main.zig"),
+            .root_source_file = b.path("src/private/lsp/main.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
@@ -72,13 +72,30 @@ pub fn build(b: *std.Build) void {
         .root_module = b.createModule(.{
             .target = wasm_target,
             .optimize = optimize,
-            .root_source_file = b.path("src/private/formats/cpp/lsp/main.zig"),
+            .root_source_file = b.path("src/private/lsp/main.zig"),
             .imports = &.{
                 .{ .name = "paramlib", .module = mod },
                 .{ .name = "lsp", .module = lsp_mod }
             },
         }),
     });
+
+    const unit_tests = b.addTest(.{
+        .name = "paramlib-tests",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/tests.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "paramlib", .module = mod },
+            },
+        }),
+    });
+    unit_tests.root_module.addOptions("config", options);
+
+    const run_unit_tests = b.addRunArtifact(unit_tests);
+    const test_step = b.step("test", "Run unit tests");
+    test_step.dependOn(&run_unit_tests.step);
 
     const lsp_run = b.addRunArtifact(lsp_exe);
     const lsp_run_step = b.step("lsp", "Run the LSP server");
@@ -92,7 +109,7 @@ pub fn build(b: *std.Build) void {
     const default_step = b.getInstallStep();
 
     if (build_vscode) {
-        const vscode_dir = "src/private/formats/cpp/lsp/vscode-wrapper";
+        const vscode_dir = "src/private/vscode";
 
         if (!check_bun) {
             _ = b.step("vscode", "Build VS Code extension (skipped: bun not found)");

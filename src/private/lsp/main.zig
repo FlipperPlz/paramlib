@@ -308,6 +308,23 @@ fn semanticTokensFull(
     return .{ .data = data.items };
 }
 
+fn findParamInBase(
+    base:       *const paramlib.cpp.ast.ClassAst,
+    param_name: []const u8,
+) ?*const paramlib.cpp.ast.ParameterAst {
+    var current: ?*const paramlib.cpp.ast.ClassAst = base;
+    while (current) |cls| {
+        if (cls.members) |members| {
+            for (members.items) |*m| {
+                if (m.* == .param and std.mem.eql(u8, m.param.name, param_name))
+                    return &m.param;
+            }
+        }
+        current = cls.base;
+    }
+    return null;
+}
+
 fn definition(
     io:        std.Io,
     documents: *const std.StringArrayHashMapUnmanaged([]const u8),
@@ -331,17 +348,30 @@ fn definition(
     ) catch return null;
     defer root.deinit(arena);
 
-    const base_class = findBaseRefAtOffset(&root, offset) orelse return null;
-    const baseNamePos = base_class.namePos;
-    const base_name     = base_class.name orelse return null;
+    if (findBaseRefAtOffset(&root, offset)) |base_class| {
+        const base_name = base_class.name orelse return null;
+        const start = lspPos(&line_table, base_class.namePos);
+        const end   = lsp.types.Position{
+            .line      = start.line,
+            .character = start.character + @as(u32, @intCast(base_name.len)),
+        };
+        return lsp.types.Definition.Result{ .definition = .{ .location = .{
+            .uri   = params.textDocument.uri,
+            .range = .{ .start = start, .end = end },
+        }}};
+    }
 
-    const start = lspPos(&line_table, baseNamePos);
+    const node = findNodeAtOffset(&root, offset) orelse return null;
+    if (node != .param) return null;
+
+    const enclosing = findClassAtOffset(&root, offset) orelse return null;
+    const base_param = findParamInBase(enclosing.base orelse return null, node.param.name) orelse return null;
+
+    const start = lspPos(&line_table, base_param.namePos);
     const end   = lsp.types.Position{
         .line      = start.line,
-        .character = start.character + @as(u32, @intCast(base_name.len)),
+        .character = start.character + @as(u32, @intCast(base_param.name.len)),
     };
-    std.debug.print("{} -> {}", .{start.line, end.line});
-
     return lsp.types.Definition.Result{ .definition = .{ .location = .{
         .uri   = params.textDocument.uri,
         .range = .{ .start = start, .end = end },
