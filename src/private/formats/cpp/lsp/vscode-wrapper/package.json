@@ -2,14 +2,16 @@
   "name": "paramlib-lsp",
   "displayName": "Paramlib LSP",
   "description": "Language support for Paramlib parameter files (.param)",
-  "version": "0.1.0",
+  "version": "0.0.0",
   "publisher": "FlipperPlz",
   "engines": {
     "vscode": "^1.85.0"
   },
   "license": "UNLICENSED",
   "repository": "https://github.com/FlipperPlz/paramlib",
-  "categories": ["Programming Languages"],
+  "categories": [
+    "Programming Languages"
+  ],
   "activationEvents": [
     "onLanguage:paramlib",
     "onLanguage:cpp",
@@ -21,7 +23,14 @@
       {
         "language": "paramlib",
         "legend": {
-          "tokenTypes": ["keyword", "comment", "variable", "string", "operator", "number"],
+          "tokenTypes": [
+            "keyword",
+            "comment",
+            "variable",
+            "string",
+            "operator",
+            "number"
+          ],
           "tokenModifiers": []
         },
         "full": true
@@ -30,8 +39,15 @@
     "languages": [
       {
         "id": "paramlib",
-        "aliases": ["Paramlib", "param"],
-        "extensions": [".rvmat", ".cpp", ".hpp"],
+        "aliases": [
+          "Paramlib",
+          "param"
+        ],
+        "extensions": [
+          ".rvmat",
+          ".cpp",
+          ".hpp"
+        ],
         "configuration": "./language-configuration.json"
       }
     ],
@@ -45,7 +61,11 @@
         },
         "paramlibLsp.trace.server": {
           "type": "string",
-          "enum": ["off", "messages", "verbose"],
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
           "default": "off",
           "description": "Trace LSP communication for debugging."
         }
@@ -55,7 +75,7 @@
   "scripts": {
     "compile": "bun build ./src/extension.ts --outdir ./out --target node --external vscode",
     "watch": "bun build ./src/extension.ts --outdir ./out --target node --external vscode --watch",
-    "package": "bunx @vscode/vsce package --no-dependencies --out ../../../../../../zig-out/vscode"
+    "package": "bunx @vscode/vsce package --no-dependencies --out ./out/"
   },
   "dependencies": {
     "@types/node": "^25.6.0",

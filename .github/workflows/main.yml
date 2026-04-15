@@ -12,7 +12,7 @@ jobs:
         with:
           version: master
       - uses: oven-sh/setup-bun@v1
-      - run: zig build install -Doptimize=ReleaseFast
+      - run: zig build install -Doptimize=ReleaseFast -Dvscode=true
       - uses: actions/upload-artifact@v4
         with:
           name: paramlib-${{ matrix.os }}
@@ -23,8 +23,8 @@ jobs:
           path: zig-out/bin/paramlib-lsp${{ runner.os == 'Windows' && '.exe' || '' }}
       - uses: actions/upload-artifact@v4
         with:
-          name: paramlib-lsp-0.1.0.vsix
-          path: zig-out/vscode/paramlib-lsp-0.1.0.vsix
+          name: paramlib-lsp-0.0.0.vsix
+          path: zig-out/vscode/paramlib-lsp-0.0.0.vsix
       - uses: actions/upload-artifact@v4
         with:
           name: paramlib-lsp.wasm

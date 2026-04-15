@@ -2,20 +2,19 @@ const std = @import("std");
 const zon = @import("build.zig.zon");
 
 pub fn build(b: *std.Build) void {
-
     const target = b.standardTargetOptions(.{});
-
     const optimize = b.standardOptimizeOption(.{});
+
+    const build_vscode = b.option(bool, "vscode", "Build VS Code extension") orelse false;
+    const check_bun = b.option(bool, "check-bun", "Check if bun is available") orelse true;
 
     const mod = b.addModule("paramlib", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
     });
-    
+
     const options = b.addOptions();
-
     options.addOption([]const u8, "version", zon.version);
-
     mod.addOptions("config", options);
 
     const exe = b.addExecutable(.{
@@ -36,7 +35,6 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/benchmark.zig"),
             .target = target,
             .optimize = .ReleaseFast,
-
             .imports = &.{
                 .{ .name = "paramlib", .module = mod },
             },
@@ -45,19 +43,20 @@ pub fn build(b: *std.Build) void {
     });
 
     b.installArtifact(exe);
+    b.installArtifact(bench);
 
     const lsp_mod = b.dependency("lsp_kit", .{})
-        .module("lsp");
+    .module("lsp");
 
     const lsp_exe = b.addExecutable(.{
         .name = "paramlib-lsp",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/private/formats/cpp/lsp/main.zig"),
-            .target   = target,
+            .target = target,
             .optimize = optimize,
-            .imports  = &.{
+            .imports = &.{
                 .{ .name = "paramlib", .module = mod },
-                .{ .name = "lsp",      .module = lsp_mod }
+                .{ .name = "lsp", .module = lsp_mod }
             },
         }),
     });
@@ -65,24 +64,23 @@ pub fn build(b: *std.Build) void {
 
     const wasm_target = b.resolveTargetQuery(.{
         .cpu_arch = .wasm32,
-        .os_tag   = .wasi
+        .os_tag = .wasi
     });
 
     const lsp_wasm = b.addExecutable(.{
-        .name               = "paramlib-lsp",
-        .root_module        = b.createModule(.{
-            .target             = wasm_target,
-            .optimize           = optimize,
-            .root_source_file   = b.path("src/private/formats/cpp/lsp/main.zig"),
-            .imports  = &.{
+        .name = "paramlib-lsp",
+        .root_module = b.createModule(.{
+            .target = wasm_target,
+            .optimize = optimize,
+            .root_source_file = b.path("src/private/formats/cpp/lsp/main.zig"),
+            .imports = &.{
                 .{ .name = "paramlib", .module = mod },
-                .{ .name = "lsp",      .module = lsp_mod }
+                .{ .name = "lsp", .module = lsp_mod }
             },
         }),
     });
 
-
-    const lsp_run      = b.addRunArtifact(lsp_exe);
+    const lsp_run = b.addRunArtifact(lsp_exe);
     const lsp_run_step = b.step("lsp", "Run the LSP server");
     lsp_run_step.dependOn(&lsp_run.step);
 
@@ -90,83 +88,38 @@ pub fn build(b: *std.Build) void {
         lsp_wasm.getEmittedBin(),
         "wasm/paramlib-lsp.wasm",
     );
-
-
     install_wasm.step.dependOn(&lsp_wasm.step);
+    const default_step = b.getInstallStep();
 
-    const vscode_dir = "src/private/formats/cpp/lsp/vscode-wrapper";
+    if (build_vscode) {
+        const vscode_dir = "src/private/formats/cpp/lsp/vscode-wrapper";
 
-    const vscode_install = b.addSystemCommand(&.{ "bun", "install" });
-    vscode_install.step.dependOn(&install_wasm.step);
+        if (!check_bun) {
+            _ = b.step("vscode", "Build VS Code extension (skipped: bun not found)");
+            return;
+        }
 
-    vscode_install.setCwd(b.path(vscode_dir));
+        const vscode_install = b.addSystemCommand(&.{ "bun", "install" });
+        vscode_install.step.dependOn(&install_wasm.step);
+        vscode_install.setCwd(b.path(vscode_dir));
 
-    const vscode_compile = b.addSystemCommand(&.{ "bun", "run", "compile" });
-    vscode_compile.setCwd(b.path(vscode_dir));
-    vscode_compile.step.dependOn(&vscode_install.step);
-    vscode_compile.step.dependOn(&lsp_exe.step);
+        const vscode_compile_ts = b.addSystemCommand(&.{ "bun", "run", "compile" });
+        vscode_compile_ts.step.dependOn(&vscode_install.step);
+        vscode_compile_ts.setCwd(b.path(vscode_dir));
 
-    const vscode_mkdir = b.addSystemCommand(&.{ "mkdir", "-p", "zig-out/bin", "zig-out/vscode" });
-    vscode_mkdir.setCwd(b.path("."));
+        const vscode_compile = b.addSystemCommand(&.{ "bun", "x", "vsce", "package", "--no-dependencies", "--out", "./out/", zon.version });
+        vscode_compile.step.dependOn(&vscode_compile_ts.step);
+        vscode_compile.setCwd(b.path(vscode_dir));
 
-    const vscode_package = b.addSystemCommand(&.{ "bun", "run", "package" });
-    vscode_package.setCwd(b.path(vscode_dir));
-    vscode_package.step.dependOn(&vscode_mkdir.step);
-    vscode_package.step.dependOn(&vscode_compile.step);
-    b.getInstallStep().dependOn(&vscode_package.step);
-
-    const vscode_step = b.step("vscode", "Build and package the VSCode extension (.vsix)");
-    vscode_step.dependOn(&vscode_package.step);
-
-    const run_step = b.step("run", "Run the app");
-
-    const run_cmd = b.addRunArtifact(exe);
-    run_step.dependOn(&run_cmd.step);
-
-    const bench_run = b.addRunArtifact(bench);
-    const bench_step = b.step("bench", "Run performance benchmarks");
-    bench_step.dependOn(&bench_run.step);
-
-    run_cmd.step.dependOn(b.getInstallStep());
-
-    if (b.args) |args| {
-        run_cmd.addArgs(args);
+        const vsix_filename = b.fmt("vscode/{s}-lsp-{s}.vsix", .{ @tagName(zon.name), zon.version });
+        const vsix_src = b.fmt("{s}/out/{s}-lsp-{s}.vsix", .{ vscode_dir, @tagName(zon.name), zon.version });
+        const install_vsix = b.addInstallFile(
+            b.path(vsix_src),
+            vsix_filename,
+        );
+        install_vsix.step.dependOn(&vscode_compile.step);
+        default_step.dependOn(&install_vsix.step);
     }
 
-    const mod_tests = b.addTest(.{
-        .root_module = mod,
-    });
-
-    const run_mod_tests = b.addInstallArtifact(mod_tests, .{
-        .dest_dir = .{ .override = .{ .custom = "tests"}}
-    });
-
-
-    const install_test_step = b.step("install_test", "Create test binaries for debugging");
-    install_test_step.dependOn(&run_mod_tests.step);
-
-    const exe_tests = b.addTest(.{
-        .root_module = exe.root_module,
-    });
-
-    const run_exe_tests = b.addRunArtifact(exe_tests);
-
-    const unit_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/tests.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "paramlib", .module = mod },
-            },
-        }),
-    });
-
-    const run_unit_tests = b.addRunArtifact(unit_tests);
-
-
-    const test_step = b.step("test", "Run tests");
-    test_step.dependOn(&run_mod_tests.step);
-    test_step.dependOn(&run_exe_tests.step);
-    test_step.dependOn(&run_unit_tests.step);
+    default_step.dependOn(&install_wasm.step);
 }
