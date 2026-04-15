@@ -24,6 +24,67 @@ pub const DiagSink = struct {
     alloc: std.mem.Allocator,
 };
 
+pub const DiagType = union(enum) {
+    None: void,
+    Sink: DiagSink,
+    StdErr: ParseLog,
+
+    pub fn stdErr(
+        io:         std.Io,
+        line_table: *const lexer.LineTable,
+        contents:   [:0]const u8,
+        filename:   []const u8,
+        use_color:  bool,
+    ) DiagType {
+        return .{.StdErr = stderrLog(io, line_table, contents, filename, use_color)};
+    }
+    pub fn none() DiagType {
+        return . { .None = undefined };
+    }
+
+    pub fn both(
+        io:         std.Io,
+        line_table: *const lexer.LineTable,
+        contents:   [:0]const u8,
+        filename:   []const u8,
+        use_color:  bool,
+        diag_sink:  DiagSink
+    ) DiagType {
+        var log = stderrLog(io, line_table, contents, filename, use_color);
+        log.diag_sink = diag_sink;
+        return .{ .StdErr = log };
+    }
+
+    pub fn emit(
+        self:       *const DiagType,
+        level:      Level,
+        err_code:   ?[]const u8,
+        token:      *const lexer.Token,
+        message:    []const u8,
+        label_text: ?[]const u8,
+    ) void {
+        switch (self.*) {
+            .Sink => |sink| {
+                const span2: u32 = switch (token.data) {
+                    .text  => |t| @intCast(t.len),
+                    else   => 1,
+                };
+                sink.list.append(sink.alloc, .{
+                    .level     = level,
+                    .token_pos = token.pos,
+                    .span      = @max(span2, 1),
+                    .message   = message,
+                }) catch {};
+            },
+            .StdErr => |*log| {
+                log.emit(level, err_code, token, message, label_text);
+            },
+            .None => {},
+        }
+    }
+
+};
+
 pub const Level = enum {
     err,
     warning,
@@ -90,7 +151,6 @@ pub const ParseLog = struct {
         var wr = std.Io.File.stderr().writer(self.io, &buffer);
         const w = &wr.interface;
         const pos = self.line_table.resolve(token.pos);
-        std.debug.print("[emit] token.pos={d} → line={d} col={d}\n", .{ token.pos, pos.line, pos.column });
 
         if (err_code) |c| {
             w.print("{s}{s}[{s}]{s}: {s}{s}{s}\n", .{

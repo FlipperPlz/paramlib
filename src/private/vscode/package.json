@@ -1,91 +1,60 @@
 {
-  "name": "paramlib-lsp",
-  "displayName": "Paramlib LSP",
-  "description": "Language support for Paramlib parameter files (.param)",
-  "version": "0.0.0",
+  "name": "paramlib",
+  "displayName": "ParamLib",
+  "description": "Syntax highlighting, code completion for config.cpp files and rvmats.",
+  "author": "FlipperPlz",
   "publisher": "FlipperPlz",
-  "engines": {
-    "vscode": "^1.85.0"
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/FlipperPlz/paramlib"
   },
   "license": "UNLICENSED",
-  "repository": "https://github.com/FlipperPlz/paramlib",
-  "categories": [
-    "Programming Languages"
-  ],
-  "activationEvents": [
-    "onLanguage:paramlib",
-    "onLanguage:cpp",
-    "workspaceContains:**/*.rvmat"
-  ],
-  "main": "out/extension.js",
-  "contributes": {
-    "semanticTokensProvider": [
-      {
-        "language": "paramlib",
-        "legend": {
-          "tokenTypes": [
-            "keyword",
-            "comment",
-            "variable",
-            "string",
-            "operator",
-            "number"
-          ],
-          "tokenModifiers": []
-        },
-        "full": true
-      }
-    ],
-    "languages": [
-      {
-        "id": "paramlib",
-        "aliases": [
-          "Paramlib",
-          "param"
-        ],
-        "extensions": [
-          ".rvmat",
-          ".cpp",
-          ".hpp"
-        ],
-        "configuration": "./language-configuration.json"
-      }
-    ],
-    "configuration": {
-      "title": "Paramlib LSP",
-      "properties": {
-        "paramlibLsp.serverPath": {
-          "type": "string",
-          "default": "",
-          "description": "Absolute path to the paramlib-lsp binary. Leave empty to auto-detect from zig-out/bin/."
-        },
-        "paramlibLsp.trace.server": {
-          "type": "string",
-          "enum": [
-            "off",
-            "messages",
-            "verbose"
-          ],
-          "default": "off",
-          "description": "Trace LSP communication for debugging."
-        }
-      }
-    }
-  },
+  "version": "0.0.0",
+  "private": true,
   "scripts": {
-    "compile": "bun build ./src/extension.ts --outdir ./out --target node --external vscode",
-    "watch": "bun build ./src/extension.ts --outdir ./out --target node --external vscode --watch",
-    "package": "bunx @vscode/vsce package --no-dependencies --out ./out/"
+    "package": "vsce package",
+    "vsce:publish": "vsce publish",
+    "vsce:prerelease": "vsce publish --pre-release"
   },
-  "dependencies": {
-    "@types/node": "^25.6.0",
-    "@vscode/wasm-wasi-lsp": "^0.1.0-pre.1",
-    "vscode-languageclient": "^9.0.1"
+  "categories": [
+    "Programming Languages",
+    "Linters",
+    "Formatters"
+  ],
+  "engines": {
+    "bun": ">=1.3.12",
+    "vscode": "^1.64.0"
   },
+  "activationEvents": [
+    "workspaceContains:config.cpp",
+    "workspaceContains:*.rvmat",
+    "onLanguage:paramlib"
+  ],
+  "main": "./client/dist/clientNode.js",
+  "browser": "./client/dist/clientBrowser.js",
+  "languages": [
+    {
+      "id": "paramlib",
+      "aliases": [
+        "ParamLib",
+        "BiConfig"
+      ],
+      "extensions": [
+        ".cpp",
+        ".rvmat"
+      ],
+      "configuration": "./language-configuration.json"
+    }
+  ],
   "devDependencies": {
-    "@types/vscode": "^1.85.0",
-    "@vscode/vsce": "^2.24.0",
-    "vscode": "^1.1.37",
-    "typescript": "^5.3.3"
+    "@types/bun": "latest",
+    "@vscode/vsce": "3.8.0",
+    "@wasm-tool/wasm-pack-plugin": "1.7.0",
+    "typescript": "5.9.3",
+    "webpack": "5.105.4",
+    "webpack-cli": "7.0.2",
+    "copy-webpack-plugin": "14.0.0",
+    "path-browserify": "1.0.1",
+    "swc-loader": "0.2.7"
   }
 }

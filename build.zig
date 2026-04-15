@@ -35,9 +35,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/benchmark.zig"),
             .target = target,
             .optimize = .ReleaseFast,
-            .imports = &.{
-                .{ .name = "paramlib", .module = mod },
-            },
+            .imports = &.{},
             .link_libc = true,
         })
     });
@@ -51,7 +49,7 @@ pub fn build(b: *std.Build) void {
     const lsp_exe = b.addExecutable(.{
         .name = "paramlib-lsp",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/private/lsp/main.zig"),
+            .root_source_file = b.path("lsp/native.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
@@ -64,7 +62,7 @@ pub fn build(b: *std.Build) void {
 
     const wasm_target = b.resolveTargetQuery(.{
         .cpu_arch = .wasm32,
-        .os_tag = .wasi
+        .os_tag = .freestanding,
     });
 
     const lsp_wasm = b.addExecutable(.{
@@ -72,13 +70,14 @@ pub fn build(b: *std.Build) void {
         .root_module = b.createModule(.{
             .target = wasm_target,
             .optimize = optimize,
-            .root_source_file = b.path("src/private/lsp/main.zig"),
+            .root_source_file = b.path("lsp/web.zig"),
             .imports = &.{
                 .{ .name = "paramlib", .module = mod },
                 .{ .name = "lsp", .module = lsp_mod }
             },
         }),
     });
+    lsp_wasm.entry = .disabled;
 
     const unit_tests = b.addTest(.{
         .name = "paramlib-tests",

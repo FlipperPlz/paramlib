@@ -1,12 +1,27 @@
 class Parent {
-    class Oldest {
+    class Youngest {
         class InnerLeast {
             value = 0;
         };
     };
-    class Youngest : Oldest {
-        class InnerLeast : InnerLeast {};
+    class Oldest : Youngest {
+        class InnerLeast : InnerLeast {
+            value = 1;
+        };
     };
 };
 
-class child;
+
+class Parent2 : Parent {
+    class Youngest : Youngest {
+	    class InnerLeast : InnerLeast {
+            value = 2;
+        };
+    };
+
+    class Oldest : Oldest {
+	    class InnerLeast : InnerLeast {
+            value = 2;
+        };
+    };
+};

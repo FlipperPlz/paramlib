@@ -25,9 +25,7 @@ const NotificationMethods = union(enum) {
 
 const Message = lsp.Message(RequestMethods, NotificationMethods, .{});
 
-pub fn main(init: std.process.Init) !void {
-    const io  = init.io;
-    const gpa = init.gpa;
+pub fn startServer(io: std.Io, allocator: std.mem.Allocator) !void {
 
     var read_buffer: [64 * 1024]u8 = undefined;
     var stdio: lsp.Transport.Stdio = .init(&read_buffer, .stdin(), .stdout());
@@ -35,17 +33,17 @@ pub fn main(init: std.process.Init) !void {
 
     var documents: std.StringArrayHashMapUnmanaged([]const u8) = .empty;
     defer {
-        for (documents.keys())   |k| gpa.free(k);
-        for (documents.values()) |v| gpa.free(v);
-        documents.deinit(gpa);
+        for (documents.keys())   |k| allocator.free(k);
+        for (documents.values()) |v| allocator.free(v);
+        documents.deinit(allocator);
     }
 
     while (true) {
-        const json_message = try transport.readJsonMessage(io, gpa);
-        defer gpa.free(json_message);
+        const json_message = try transport.readJsonMessage(io, allocator);
+        defer allocator.free(json_message);
 
         const msg = try Message.parseFromSlice(
-            gpa, json_message, .{ .ignore_unknown_fields = true },
+            allocator, json_message, .{ .ignore_unknown_fields = true },
         );
         defer msg.deinit();
 
@@ -53,7 +51,7 @@ pub fn main(init: std.process.Init) !void {
             .request => |req| switch (req.params) {
 
                 .initialize => {
-                    try transport.writeResponse(io, gpa, req.id,
+                    try transport.writeResponse(io, allocator, req.id,
                         lsp.types.InitializeResult,
                         .{
                             .serverInfo  = .{ .name = "paramlib-lsp" },
@@ -86,64 +84,64 @@ pub fn main(init: std.process.Init) !void {
                 },
 
                 .shutdown => {
-                    try transport.writeResponse(io, gpa, req.id, void, {}, .{});
+                    try transport.writeResponse(io, allocator, req.id, void, {}, .{});
                 },
 
                 .@"textDocument/hover" => |params| {
-                    var arena = std.heap.ArenaAllocator.init(gpa);
+                    var arena = std.heap.ArenaAllocator.init(allocator);
                     defer arena.deinit();
-                    const result = hover(io, &documents, arena.allocator(), params);
-                    try transport.writeResponse(io, gpa, req.id,
+                    const result = hover(&documents, arena.allocator(), params);
+                    try transport.writeResponse(io, allocator, req.id,
                         ?lsp.types.Hover, result,
                         .{ .emit_null_optional_fields = false },
                     );
                 },
 
                 .@"textDocument/definition" => |params| {
-                    var arena = std.heap.ArenaAllocator.init(gpa);
+                    var arena = std.heap.ArenaAllocator.init(allocator);
                     defer arena.deinit();
-                    const result = definition(io, &documents, arena.allocator(), params);
+                    const result = definition(&documents, arena.allocator(), params);
 
-                    try transport.writeResponse(io, gpa, req.id,
+                    try transport.writeResponse(io, allocator, req.id,
                         ?lsp.types.Definition.Result, result,
                         .{ .emit_null_optional_fields = false },
                     );
                 },
 
                 .@"textDocument/documentSymbol" => |params| {
-                    const result = documentSymbols(io, &documents, gpa, params);
+                    const result = documentSymbols(&documents, allocator, params);
                     defer if (result) |syms| {
-                        for (syms) |sym| gpa.free(sym.name);
-                        gpa.free(syms);
+                        for (syms) |sym| allocator.free(sym.name);
+                        allocator.free(syms);
                     };
-                    try transport.writeResponse(io, gpa, req.id,
+                    try transport.writeResponse(io, allocator, req.id,
                         ?[]const lsp.types.SymbolInformation, result,
                         .{ .emit_null_optional_fields = false },
                     );
                 },
 
                 .@"textDocument/semanticTokens/full" => |params| {
-                    var arena = std.heap.ArenaAllocator.init(gpa);
+                    var arena = std.heap.ArenaAllocator.init(allocator);
                     defer arena.deinit();
                     const result = semanticTokensFull(io, &documents, arena.allocator(), params);
-                    try transport.writeResponse(io, gpa, req.id,
+                    try transport.writeResponse(io, allocator, req.id,
                         ?lsp.types.semantic_tokens.Result, result,
                         .{ .emit_null_optional_fields = false },
                     );
                 },
 
                 .@"textDocument/completion" => |params| {
-                    var arena = std.heap.ArenaAllocator.init(gpa);
+                    var arena = std.heap.ArenaAllocator.init(allocator);
                     defer arena.deinit();
-                    const result = completion(io, &documents, arena.allocator(), params);
-                    try transport.writeResponse(io, gpa, req.id,
+                    const result = completion(&documents, arena.allocator(), params);
+                    try transport.writeResponse(io, allocator, req.id,
                         ?lsp.types.completion.Result, result,
                         .{ .emit_null_optional_fields = false },
                     );
                 },
 
                 .other => {
-                    try transport.writeResponse(io, gpa, req.id, void, {}, .{});
+                    try transport.writeResponse(io, allocator, req.id, void, {}, .{});
                 },
             },
 
@@ -153,10 +151,10 @@ pub fn main(init: std.process.Init) !void {
                 .exit        => return,
 
                 .@"textDocument/didOpen" => |params| {
-                    const uri  = try gpa.dupe(u8, params.textDocument.uri);
-                    const text = try gpa.dupe(u8, params.textDocument.text);
-                    try documents.put(gpa, uri, text);
-                    try publishDiagnostics(transport, io, gpa, &documents, params.textDocument.uri);
+                    const uri  = try allocator.dupe(u8, params.textDocument.uri);
+                    const text = try allocator.dupe(u8, params.textDocument.text);
+                    try documents.put(allocator, uri, text);
+                    try publishDiagnostics(transport, io, allocator, &documents, params.textDocument.uri);
                 },
 
                 .@"textDocument/didChange" => |params| {
@@ -167,27 +165,27 @@ pub fn main(init: std.process.Init) !void {
                             .text_document_content_change_partial        => |c| c.text,
                         };
                         if (documents.getPtr(params.textDocument.uri)) |slot| {
-                            gpa.free(slot.*);
-                            slot.* = try gpa.dupe(u8, new_text);
+                            allocator.free(slot.*);
+                            slot.* = try allocator.dupe(u8, new_text);
                         }
                     }
-                    try publishDiagnostics(transport, io, gpa, &documents, params.textDocument.uri);
+                    try publishDiagnostics(transport, io, allocator, &documents, params.textDocument.uri);
                 },
 
                 .@"textDocument/didSave" => |params| {
                     if (params.text) |text| {
                         if (documents.getPtr(params.textDocument.uri)) |slot| {
-                            gpa.free(slot.*);
-                            slot.* = try gpa.dupe(u8, text);
+                            allocator.free(slot.*);
+                            slot.* = try allocator.dupe(u8, text);
                         }
                     }
-                    try publishDiagnostics(transport, io, gpa, &documents, params.textDocument.uri);
+                    try publishDiagnostics(transport, io, allocator, &documents, params.textDocument.uri);
                 },
 
                 .@"textDocument/didClose" => |params| {
                     if (documents.fetchOrderedRemove(params.textDocument.uri)) |kv| {
-                        gpa.free(kv.key);
-                        gpa.free(kv.value);
+                        allocator.free(kv.key);
+                        allocator.free(kv.value);
                     }
                 },
 
@@ -326,7 +324,6 @@ fn findParamInBase(
 }
 
 fn definition(
-    io:        std.Io,
     documents: *const std.StringArrayHashMapUnmanaged([]const u8),
     arena:     std.mem.Allocator,
     params:    lsp.types.Definition.Params,
@@ -343,9 +340,7 @@ fn definition(
     );
 
     var errored = false;
-    var root = paramlib.cpp.parser.parseSourceFull(
-        io, arena, src, params.textDocument.uri, false, &errored, null,
-    ) catch return null;
+    var root = paramlib.cpp.parser.parseSource(arena, src, &errored, .none()) catch return null;
     defer root.deinit(arena);
 
     if (findBaseRefAtOffset(&root, offset)) |base_class| {
@@ -402,7 +397,6 @@ fn findBaseRefAtOffset(
 }
 
 fn hover(
-    io:        std.Io,
     documents: *const std.StringArrayHashMapUnmanaged([]const u8),
     arena:     std.mem.Allocator,
     params:    lsp.types.Hover.Params,
@@ -420,9 +414,7 @@ fn hover(
     );
 
     var errored = false;
-    var root = paramlib.cpp.parser.parseSourceFull(
-        io, arena, src, params.textDocument.uri, false, &errored, null,
-    ) catch return null;
+    var root = paramlib.cpp.parser.parseSource(arena, src, &errored, .none()) catch return null;
     defer root.deinit(arena);
 
     const node = findNodeAtOffset(&root, offset) orelse return null;
@@ -516,7 +508,6 @@ fn collectSymbols(
 }
 
 fn documentSymbols(
-    io:        std.Io,
     documents: *const std.StringArrayHashMapUnmanaged([]const u8),
     gpa:       std.mem.Allocator,
     params:    lsp.types.DocumentSymbol.Params,
@@ -530,9 +521,8 @@ fn documentSymbols(
     defer line_table.deinit(gpa);
 
     var errored = false;
-    var root = paramlib.cpp.parser.parseSourceFull(
-        io, gpa, src, params.textDocument.uri, false, &errored, null,
-    ) catch return null;
+    var root = paramlib.cpp.parser.parseSource(gpa, src, &errored, .none()) catch return null;
+
     defer root.deinit(gpa);
 
     var list = std.ArrayList(lsp.types.SymbolInformation).empty;
@@ -568,9 +558,8 @@ fn publishDiagnostics(
     var raw_diags: std.ArrayListUnmanaged(paramlib.cpp.logger.DiagEntry) = .empty;
     defer raw_diags.deinit(gpa);
 
-    const sink = paramlib.cpp.logger.DiagSink{ .list = &raw_diags, .alloc = gpa };
     var errored = false;
-    var root = paramlib.cpp.parser.parseSourceFull(io, gpa, src, uri, false, &errored, sink) catch |err| {
+    var root = paramlib.cpp.parser.parseSource(gpa, src, &errored, .{ .Sink = .{ .list = &raw_diags, .alloc = gpa } }) catch |err| {
         try transport.writeNotification(io, gpa,
             "textDocument/publishDiagnostics",
             lsp.types.publish_diagnostics.Params,
@@ -656,8 +645,72 @@ fn fmtValue(arena: std.mem.Allocator, value: paramlib.cpp.ast.ValueAst) []const 
     };
 }
 
+fn buildPathToClass(
+    allocator: std.mem.Allocator,
+    class:     *const paramlib.cpp.ast.ClassAst,
+    target:    *const paramlib.cpp.ast.ClassAst,
+    path:      *std.ArrayList([]const u8),
+) bool {
+    if (class == target) return true;
+    const members = class.members orelse return false;
+    for (members.items) |*m| {
+        if (m.* != .class) continue;
+        const name = m.class.name orelse continue;
+        path.append(allocator, name) catch return false;
+        if (buildPathToClass(allocator, &m.class, target, path)) return true;
+        _ = path.pop();
+    }
+    return false;
+}
+
+fn navigateClassPath(
+    class: *const paramlib.cpp.ast.ClassAst,
+    path:  []const []const u8,
+) ?*const paramlib.cpp.ast.ClassAst {
+    if (path.len == 0) return class;
+    const members = class.members orelse return null;
+    for (members.items) |*m| {
+        if (m.* != .class) continue;
+        if (m.class.name) |name| {
+            if (std.mem.eql(u8, name, path[0]))
+                return navigateClassPath(&m.class, path[1..]);
+        }
+    }
+    return null;
+}
+
+fn resolveImplicitBase(
+    root:      *const paramlib.cpp.ast.ClassAst,
+    enclosing: *const paramlib.cpp.ast.ClassAst,
+    arena:     std.mem.Allocator,
+) ?*const paramlib.cpp.ast.ClassAst {
+    var path = std.ArrayList([]const u8).empty;
+    if (!buildPathToClass(arena, root, enclosing, &path)) return null;
+
+    if (path.items.len < 2) return null;
+
+    const top_name = path.items[0];
+    const sub_path = path.items[1..];
+
+    const top: *const paramlib.cpp.ast.ClassAst = blk: {
+        const members = root.members orelse return null;
+        for (members.items) |*m| {
+            if (m.* != .class) continue;
+            if (m.class.name) |n|
+                if (std.mem.eql(u8, n, top_name)) break :blk &m.class;
+        }
+        return null;
+    };
+
+    var cur = top.base;
+    while (cur) |base| {
+        if (navigateClassPath(base, sub_path)) |found| return found;
+        cur = base.base;
+    }
+    return null;
+}
+
 fn completion(
-    io:        std.Io,
     documents: *const std.StringArrayHashMapUnmanaged([]const u8),
     arena:     std.mem.Allocator,
     params:    lsp.types.completion.Params,
@@ -674,25 +727,29 @@ fn completion(
     );
 
     var errored = false;
-    var root = paramlib.cpp.parser.parseSourceFull(
-        io, arena, src, params.textDocument.uri, false, &errored, null,
-    ) catch return null;
+    var root = paramlib.cpp.parser.parseSource(arena, src, &errored, .none()) catch return null;
     defer root.deinit(arena);
 
     const enclosing = findClassAtOffset(&root, offset) orelse return null;
 
-    if (enclosing.base == null) return null;
+    const effective_base = enclosing.base orelse resolveImplicitBase(&root, enclosing, arena);
+    if (effective_base == null) return null;
 
     var items = std.ArrayList(lsp.types.completion.Item).empty;
     var seen = std.StringHashMapUnmanaged(void){};
     defer seen.deinit(arena);
+
     if (enclosing.members) |em| {
         for (em.items) |*m| {
-            if (m.* == .param) seen.put(arena, m.param.name, {}) catch {};
+            switch (m.*) {
+                .param => seen.put(arena, m.param.name, {}) catch {},
+                .class => if (m.class.name) |n| seen.put(arena, n, {}) catch {},
+                else   => {},
+            }
         }
     }
 
-    var current_base: ?*const paramlib.cpp.ast.ClassAst = enclosing.base;
+    var current_base: ?*const paramlib.cpp.ast.ClassAst = effective_base;
     while (current_base) |base| {
         const baseName    = base.name orelse "?";
         const baseMembers = base.members orelse {
@@ -701,33 +758,58 @@ fn completion(
         };
 
         for (baseMembers.items) |*m| {
-            if (m.* != .param) continue;
-            const p = &m.param;
+            switch (m.*) {
 
-            if (seen.contains(p.name)) continue;
-            seen.put(arena, p.name, {}) catch {};
+                .param => |*p| {
+                    if (seen.contains(p.name)) continue;
+                    seen.put(arena, p.name, {}) catch {};
 
-            const value_str = fmtValue(arena, p.value);
-            const op_str: []const u8 = switch (p.operator) {
-                .assign    => "=",
-                .addAssign => "+=",
-                .subAssign => "-=",
-            };
+                    const value_str = fmtValue(arena, p.value);
+                    const op_str: []const u8 = switch (p.operator) {
+                        .assign    => "=",
+                        .addAssign => "+=",
+                        .subAssign => "-=",
+                    };
 
-            const insert = std.fmt.allocPrint(
-                arena, "{s} {s} {s};", .{ p.name, op_str, value_str },
-            ) catch continue;
+                    const insert = std.fmt.allocPrint(
+                        arena, "{s} {s} {s};", .{ p.name, op_str, value_str },
+                    ) catch continue;
 
-            const detail = std.fmt.allocPrint(
-                arena, "{s} {s} {s}  (from {s})", .{ p.name, op_str, value_str, baseName },
-            ) catch continue;
+                    const detail = std.fmt.allocPrint(
+                        arena, "{s} {s} {s}  (from {s})", .{ p.name, op_str, value_str, baseName },
+                    ) catch continue;
 
-            items.append(arena, lsp.types.completion.Item{
-                .label      = p.name,
-                .kind       = .Field,
-                .detail     = detail,
-                .insertText = insert,
-            }) catch continue;
+                    items.append(arena, lsp.types.completion.Item{
+                        .label      = p.name,
+                        .kind       = .Field,
+                        .detail     = detail,
+                        .insertText = insert,
+                    }) catch continue;
+                },
+
+               .class => |*c| {
+                    const name = c.name orelse continue;
+                    if (seen.contains(name)) continue;
+                    seen.put(arena, name, {}) catch {};
+
+                    const insert = std.fmt.allocPrint(
+                        arena, "class {s} : {s} {{\n\t\n}};", .{ name, name },
+                    ) catch continue;
+
+                    const detail = std.fmt.allocPrint(
+                        arena, "class {s}  (from {s})", .{ name, baseName },
+                    ) catch continue;
+
+                    items.append(arena, lsp.types.completion.Item{
+                        .label      = name,
+                        .kind       = .Class,
+                        .detail     = detail,
+                        .insertText = insert,
+                    }) catch continue;
+                },
+
+                else => {},
+            }
         }
 
         current_base = base.base;

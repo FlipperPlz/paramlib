@@ -26,7 +26,9 @@ fn z(comptime s: []const u8) [:0]const u8 {
 test "parse: integer parameter" {
     const src = z("value = 42;");
     var errored: bool = false;
-    var result = try parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true, &errored);
+    const lineTable = try lexer.LineTable.build(std.testing.allocator, src);
+    const log = logger.DiagType.stdErr(std.testing.io, &lineTable, src, "test.cpp", true);
+    var result = try parseSource(std.testing.allocator, src, &errored, log);
     defer result.deinit(std.testing.allocator);
 
     const members = result.members.?.items;
@@ -41,8 +43,9 @@ test "parse: integer parameter" {
 test "parse: float parameter" {
     const src = z("ratio = 3.14;");
     var errored: bool = false;
-
-    var result = try parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true, &errored);
+    const lineTable = try lexer.LineTable.build(std.testing.allocator, src);
+    const log = logger.DiagType.stdErr(std.testing.io, &lineTable, src, "test.cpp", true);
+    var result = try parseSource(std.testing.allocator, src, &errored, log);
     defer result.deinit(std.testing.allocator);
 
     const param = result.members.?.items[0].param;
@@ -57,8 +60,9 @@ test "parse: string parameter" {
         \\name = "hello";
     );
     var errored: bool = false;
-
-    var result = try parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true, &errored);
+    const lineTable = try lexer.LineTable.build(std.testing.allocator, src);
+    const log = logger.DiagType.stdErr(std.testing.io, &lineTable, src, "test.cpp", true);
+    var result = try parseSource(std.testing.allocator, src, &errored, log);
     defer result.deinit(std.testing.allocator);
 
     const param = result.members.?.items[0].param;
@@ -73,8 +77,9 @@ test "parse: string without escapes (literal content preserved)" {
         \\msg = "hello world";
     );
     var errored: bool = false;
-
-    var result = try parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true, &errored);
+    const lineTable = try lexer.LineTable.build(std.testing.allocator, src);
+    const log = logger.DiagType.stdErr(std.testing.io, &lineTable, src, "test.cpp", true);
+    var result = try parseSource(std.testing.allocator, src, &errored, log);
     defer result.deinit(std.testing.allocator);
 
     const param = result.members.?.items[0].param;
@@ -86,7 +91,9 @@ test "parse: string without escapes (literal content preserved)" {
 test "parse: class forward declaration" {
     const src = z("class MyClass;");
     var errored: bool = false;
-    var result = try parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true, &errored);
+    const lineTable = try lexer.LineTable.build(std.testing.allocator, src);
+    const log = logger.DiagType.stdErr(std.testing.io, &lineTable, src, "test.cpp", true);
+    var result = try parseSource(std.testing.allocator, src, &errored, log);
     defer result.deinit(std.testing.allocator);
 
     const members = result.members.?.items;
@@ -105,8 +112,10 @@ test "parse: class with body and parameters" {
         \\};
     );
     var errored: bool = false;
-
-    var result = try parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true, &errored);
+    const lineTable = try lexer.LineTable.build(std.testing.allocator, src);
+    defer lineTable.deinit(std.testing.allocator);
+    const log = logger.DiagType.stdErr(std.testing.io, &lineTable, src, "test.cpp", true);
+    var result = try parseSource(std.testing.allocator, src, &errored, log);
     defer result.deinit(std.testing.allocator);
 
     const class = result.members.?.items[0].class;
@@ -128,8 +137,9 @@ test "parse: class with body and parameters" {
 test "parse: delete declaration" {
     const src = z("delete someField;");
     var errored: bool = false;
-
-    var result = try parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true, &errored);
+    const lineTable = try lexer.LineTable.build(std.testing.allocator, src);
+    const log = logger.DiagType.stdErr(std.testing.io, &lineTable, src, "test.cpp", true);
+    var result = try parseSource(std.testing.allocator, src, &errored, log);
     defer result.deinit(std.testing.allocator);
 
     const members = result.members.?.items;
@@ -142,8 +152,9 @@ test "parse: delete declaration" {
 test "parse: array value" {
     const src = z("items = {1, 2, 3};");
     var errored: bool = false;
-
-    var result = try parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true, &errored);
+    const lineTable = try lexer.LineTable.build(std.testing.allocator, src);
+    const log = logger.DiagType.stdErr(std.testing.io, &lineTable, src, "test.cpp", true);
+    var result = try parseSource(std.testing.allocator, src, &errored, log);
     const arr = result.members.?.items[0].param.value.array;
     defer std.testing.allocator.free(arr);
     defer result.deinit(std.testing.allocator);
@@ -159,8 +170,9 @@ test "parse: array value" {
 test "parse: empty array" {
     const src = z("items[] = {};");
     var errored: bool = false;
-
-    var result = try parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true, &errored);
+    const lineTable = try lexer.LineTable.build(std.testing.allocator, src);
+    const log = logger.DiagType.stdErr(std.testing.io, &lineTable, src, "test.cpp", true);
+    var result = try parseSource(std.testing.allocator, src, &errored, log);
     defer result.deinit(std.testing.allocator);
 
     const arr = result.members.?.items[0].param.value.array;
@@ -173,7 +185,9 @@ test "parse: array += operator" {
     const src = z("items[] += {10, 20};");
     var errored: bool = false;
 
-    var result = try parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true, &errored);
+    const lineTable = try lexer.LineTable.build(std.testing.allocator, src);
+    const log = logger.DiagType.stdErr(std.testing.io, &lineTable, src, "test.cpp", true);
+    var result = try parseSource(std.testing.allocator, src, &errored, log);
     const arr = result.members.?.items[0].param.value.array;
     defer std.testing.allocator.free(arr);
     defer result.deinit(std.testing.allocator);
@@ -187,7 +201,9 @@ test "parse: array += operator" {
 test "parse: array -= operator" {
     const src = z("items[] -= {10, 20};");
     var errored: bool = false;
-    var result = try parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true, &errored);
+    const lineTable = try lexer.LineTable.build(std.testing.allocator, src);
+    const log = logger.DiagType.stdErr(std.testing.io, &lineTable, src, "test.cpp", true);
+    var result = try parseSource(std.testing.allocator, src, &errored, log);
     const arr = result.members.?.items[0].param.value.array;
     defer std.testing.allocator.free(arr);
     defer result.deinit(std.testing.allocator);
@@ -204,7 +220,10 @@ test "parse: multiple top-level members" {
     );
     var errored: bool = false;
 
-    var result = try parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true, &errored);
+    const lineTable = try lexer.LineTable.build(std.testing.allocator, src);
+    defer lineTable.deinit(std.testing.allocator);
+    const log = logger.DiagType.stdErr(std.testing.io, &lineTable, src, "test.cpp", true);
+    var result = try parseSource(std.testing.allocator, src, &errored, log);
     defer result.deinit(std.testing.allocator);
 
     const members = result.members.?.items;
@@ -219,7 +238,9 @@ test "parse: multiple top-level members" {
 test "parse error: unexpected token at top level" {
     const src = z("= oops;");
     var errored: bool = false;
-    var result = try parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true, &errored);
+    const lineTable = try lexer.LineTable.build(std.testing.allocator, src);
+    const log = logger.DiagType.stdErr(std.testing.io, &lineTable, src, "test.cpp", true);
+    var result = try parseSource(std.testing.allocator, src, &errored, log);
     defer result.deinit(std.testing.allocator);
     try std.testing.expect(errored);
     try std.testing.expectEqual(@as(usize, 0), result.members.?.items.len);
@@ -228,7 +249,9 @@ test "parse error: unexpected token at top level" {
 test "parse error: missing semicolon after parameter" {
     const src = z("value = 42");
     var errored: bool = false;
-    var result = try parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true, &errored);
+    const lineTable = try lexer.LineTable.build(std.testing.allocator, src);
+    const log = logger.DiagType.stdErr(std.testing.io, &lineTable, src, "test.cpp", true);
+    var result = try parseSource(std.testing.allocator, src, &errored, log);
     defer result.deinit(std.testing.allocator);
     try std.testing.expect(errored);
     try std.testing.expectEqual(@as(usize, 0), result.members.?.items.len);
@@ -237,7 +260,9 @@ test "parse error: missing semicolon after parameter" {
 test "parse error: unmatched right brace" {
     const src = z("};");
     var errored: bool = false;
-    var result = try parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true, &errored);
+    const lineTable = try lexer.LineTable.build(std.testing.allocator, src);
+    const log = logger.DiagType.stdErr(std.testing.io, &lineTable, src, "test.cpp", true);
+    var result = try parseSource(std.testing.allocator, src, &errored, log);
     defer result.deinit(std.testing.allocator);
     try std.testing.expect(errored);
     try std.testing.expectEqual(@as(usize, 0), result.members.?.items.len);
@@ -246,7 +271,9 @@ test "parse error: unmatched right brace" {
 test "parse error: += on non-array parameter" {
     const src = z("value += 42;");
     var errored: bool = false;
-    var result = try parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true, &errored);
+    const lineTable = try lexer.LineTable.build(std.testing.allocator, src);
+    const log = logger.DiagType.stdErr(std.testing.io, &lineTable, src, "test.cpp", true);
+    var result = try parseSource(std.testing.allocator, src, &errored, log);
     defer result.deinit(std.testing.allocator);
     try std.testing.expect(errored);
     try std.testing.expectEqual(@as(usize, 0), result.members.?.items.len);
@@ -255,7 +282,9 @@ test "parse error: += on non-array parameter" {
 test "parse error: missing identifier after delete" {
     const src = z("delete ;");
     var errored: bool = false;
-    var result = try parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true, &errored);
+    const lineTable = try lexer.LineTable.build(std.testing.allocator, src);
+    const log = logger.DiagType.stdErr(std.testing.io, &lineTable, src, "test.cpp", true);
+    var result = try parseSource(std.testing.allocator, src, &errored, log);
     defer result.deinit(std.testing.allocator);
     try std.testing.expect(errored);
     try std.testing.expectEqual(@as(usize, 0), result.members.?.items.len);
@@ -264,7 +293,9 @@ test "parse error: missing identifier after delete" {
 test "parse error: missing identifier after class" {
     const src = z("class {");
     var errored: bool = false;
-    var result = try parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true, &errored);
+    const lineTable = try lexer.LineTable.build(std.testing.allocator, src);
+    const log = logger.DiagType.stdErr(std.testing.io, &lineTable, src, "test.cpp", true);
+    var result = try parseSource(std.testing.allocator, src, &errored, log);
     defer result.deinit(std.testing.allocator);
     try std.testing.expect(errored);
     try std.testing.expectEqual(@as(usize, 0), result.members.?.items.len);
@@ -273,7 +304,9 @@ test "parse error: missing identifier after class" {
 test "parse error: class with undefined base class" {
     const src = z("class Foo : UndefinedBase { };");
     var errored: bool = false;
-    var result = try parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true, &errored);
+    const lineTable = try lexer.LineTable.build(std.testing.allocator, src);
+    const log = logger.DiagType.stdErr(std.testing.io, &lineTable, src, "test.cpp", true);
+    var result = try parseSource(std.testing.allocator, src, &errored, log);
     defer result.deinit(std.testing.allocator);
     try std.testing.expect(errored);
     try std.testing.expectEqual(@as(usize, 0), result.members.?.items.len);
@@ -286,7 +319,10 @@ test "parse recovery: valid declarations after bad one are collected" {
         \\delete z;
     );
     var errored: bool = false;
-    var result = try parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true, &errored);
+    const lineTable = try lexer.LineTable.build(std.testing.allocator, src);
+    defer lineTable.deinit(std.testing.allocator);
+    const log = logger.DiagType.stdErr(std.testing.io, &lineTable, src, "test.cpp", true);
+    var result = try parseSource(std.testing.allocator, src, &errored, log);
     defer result.deinit(std.testing.allocator);
     try std.testing.expect(errored);
     const members = result.members.?.items;
@@ -302,7 +338,10 @@ test "parse recovery: multiple missing semicolons" {
         \\delete z
     );
     var errored: bool = false;
-    var result = try parseSource(std.testing.io, std.testing.allocator, src, "test.cpp", true, &errored);
+    const lineTable = try lexer.LineTable.build(std.testing.allocator, src);
+    defer lineTable.deinit(std.testing.allocator);
+    const log = logger.DiagType.stdErr(std.testing.io, &lineTable, src, "test.cpp", true);
+    var result = try parseSource(std.testing.allocator, src, &errored, log);
     defer result.deinit(std.testing.allocator);
     try std.testing.expect(errored);
     try std.testing.expectEqual(@as(usize, 0), result.members.?.items.len);
@@ -348,23 +387,16 @@ fn synchronize(tokenizer: *lexer.Tokenizer, next: *lexer.Token) ParseError!void 
     }
 }
 
-pub fn parseSource(io: std.Io, allocator: Allocator, data: [:0]const u8, debugName: []const u8, useColor: bool, errored: *bool) ParseError!ast.ClassAst {
-    return parseSourceFull(io, allocator, data, debugName, useColor, errored, null);
-}
-
-pub fn parseSourceFull(io: std.Io, allocator: Allocator, data: [:0]const u8, debugName: []const u8, useColor: bool, errored: *bool, diag_sink: ?logger.DiagSink) ParseError!ast.ClassAst {
+pub fn parseSource(allocator: Allocator, data: [:0]const u8, errored: *bool, log: logger.DiagType) ParseError!ast.ClassAst {
     var l = lexer.Tokenizer.init(data);
 
     const lines = try lexer.LineTable.build(allocator, l.source);
     defer lines.deinit(allocator);
 
-    var log = logger.stderrLog(io, &lines, l.source, debugName, useColor);
-    log.diag_sink = diag_sink;
-
     var root = ast.ClassAst {
         .base     = null,
         .members  = .empty,
-        .name     = debugName,
+        .name     = "",
         .namePos = 0,
         .parent   = null,
     };
@@ -430,7 +462,7 @@ pub fn parseSourceFull(io: std.Io, allocator: Allocator, data: [:0]const u8, deb
     return root;
 }
 
-fn parseDelete(allocator: Allocator, tokenizer: *lexer.Tokenizer, next: *lexer.Token, log: *logger.ParseLog, topAst: *ast.ClassAst) ParseError!void {
+fn parseDelete(allocator: Allocator, tokenizer: *lexer.Tokenizer, next: *lexer.Token, log: *const logger.DiagType, topAst: *ast.ClassAst) ParseError!void {
     next.* = try tokenizer.next();
 
     if(next.kind != TokenKind.identifier) {
@@ -453,7 +485,7 @@ fn parseDelete(allocator: Allocator, tokenizer: *lexer.Tokenizer, next: *lexer.T
     };
 }
 
-fn parseClass(allocator: Allocator, tokenizer: *lexer.Tokenizer, next: *lexer.Token, log: *logger.ParseLog, top: *ast.ClassAst) !*ast.ClassAst {
+fn parseClass(allocator: Allocator, tokenizer: *lexer.Tokenizer, next: *lexer.Token, log: *const logger.DiagType, top: *ast.ClassAst) !*ast.ClassAst {
     next.* = try tokenizer.next();
 
     const heapClass = try allocator.create(ast.ClassAst);
@@ -521,7 +553,7 @@ fn parseClass(allocator: Allocator, tokenizer: *lexer.Tokenizer, next: *lexer.To
     return heapClass;
 }
 
-fn parseParameter(allocator: Allocator, tokenizer: *lexer.Tokenizer, next: *lexer.Token, log: *logger.ParseLog, top: *ast.ClassAst) !void{
+fn parseParameter(allocator: Allocator, tokenizer: *lexer.Tokenizer, next: *lexer.Token, log: *const logger.DiagType, top: *ast.ClassAst) !void{
     var astParam = ast.ParameterAst {
         .name     = next.data.text,
         .namePos = next.pos,
@@ -596,7 +628,7 @@ fn parseParameter(allocator: Allocator, tokenizer: *lexer.Tokenizer, next: *lexe
 }
 
 
-fn parseValue(allocator: Allocator, tokenizer: *lexer.Tokenizer, log: *const logger.ParseLog, token: *lexer.Token) !?ast.ValueAst {
+fn parseValue(allocator: Allocator, tokenizer: *lexer.Tokenizer, log: *const logger.DiagType, token: *lexer.Token) !?ast.ValueAst {
     if (token.kind == .rightBrace) return null;
     return switch (token.kind) {
         TokenKind.leftBrace => try parseArray(allocator, tokenizer, log, token),
@@ -636,7 +668,7 @@ fn freeValue(allocator: Allocator, value: ast.ValueAst) void {
     }
 }
 
-fn parseArray(allocator: Allocator, tokenizer: *lexer.Tokenizer, log: *const logger.ParseLog, start: *lexer.Token) ParseError!ast.ValueAst {
+fn parseArray(allocator: Allocator, tokenizer: *lexer.Tokenizer, log: *const logger.DiagType, start: *lexer.Token) ParseError!ast.ValueAst {
     var values = std.ArrayList(ast.ValueAst).empty;
     errdefer {
         for (values.items) |item| freeValue(allocator, item);

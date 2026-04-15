@@ -1,0 +1,19 @@
+{
+  "name": "@bitools/paramlib-lsp-server",
+  "description": "",
+  "version": "0.0.0",
+  "author": "Stacks Labs",
+  "private": true,
+  "license": "UNLICENSED",
+  "engines": {
+    "node": "*"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/FlipperPlz/paramlib"
+  },
+  "dependencies": {
+    "node-fetch": "^3.3.2",
+    "vscode-languageserver": "9.0.1"
+  }
+}

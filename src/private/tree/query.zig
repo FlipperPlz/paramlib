@@ -438,8 +438,8 @@ test "query: findParametersByPattern wildcard returns all parameters" {
         .name = "audio", .parent = null, .source = source.SourceHandle.invalid,
     });
     const parentHandle = class.ClassHandle{
-        .id         = @enumFromInt(root.index.toIndex().?),
-        .generation = (@as(*const class.ClassData, @ptrCast(@alignCast(root.ptr)))).generation,
+        .id         = root.index,
+        .generation = root.ptr.generation,
     };
     _ = try db.store.alloc(std.testing.allocator, std.testing.io, params.ParameterInit{
         .name = "master",  .parent = parentHandle, .source = source.SourceHandle.invalid, .value = values.Value.initF32(1.0),
@@ -451,7 +451,7 @@ test "query: findParametersByPattern wildcard returns all parameters" {
         .name = "effects", .parent = parentHandle, .source = source.SourceHandle.invalid, .value = values.Value.initF32(0.9),
     });
 
-    const clazz: *const class.ClassData = @ptrCast(@alignCast(root.ptr));
+    const clazz: *const class.ClassData = root.ptr;
     const results = try findParametersByPattern(std.testing.allocator, &db.store, clazz, "*");
     defer std.testing.allocator.free(results);
     try std.testing.expectEqual(@as(usize, 3), results.len);
