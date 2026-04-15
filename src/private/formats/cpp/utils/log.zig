@@ -12,14 +12,10 @@ const Color = struct {
     const green  = ESC ++ "1;32m";
 };
 
-// ---------------------------------------------------------------------------
-// Diagnostic sink  (optional collector for LSP / tooling consumers)
-// ---------------------------------------------------------------------------
-
 pub const DiagEntry = struct {
     level:     Level,
-    token_pos: u32,    // byte offset of the token in the source
-    span:      u32,    // byte length of the highlighted region
+    token_pos: u32,
+    span:      u32,
     message:   []const u8,
 };
 

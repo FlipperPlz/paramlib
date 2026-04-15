@@ -14,7 +14,7 @@ const RequestMethods = union(enum) {
 };
 
 const NotificationMethods = union(enum) {
-    initialized:               lsp.types.InitializedParams,
+    initialized:                lsp.types.InitializedParams,
     exit,
     @"textDocument/didOpen":   lsp.types.TextDocument.DidOpenParams,
     @"textDocument/didChange": lsp.types.TextDocument.DidChangeParams,
@@ -103,11 +103,6 @@ pub fn main(init: std.process.Init) !void {
                     var arena = std.heap.ArenaAllocator.init(gpa);
                     defer arena.deinit();
                     const result = definition(io, &documents, arena.allocator(), params);
-                    std.debug.print("def req line={} char={} => {any}\n", .{
-                        params.position.line,
-                        params.position.character,
-                        result != null,
-                    });
 
                     try transport.writeResponse(io, gpa, req.id,
                         ?lsp.types.Definition.Result, result,
@@ -345,6 +340,7 @@ fn definition(
         .line      = start.line,
         .character = start.character + @as(u32, @intCast(base_name.len)),
     };
+    std.debug.print("{} -> {}", .{start.line, end.line});
 
     return lsp.types.Definition.Result{ .definition = .{ .location = .{
         .uri   = params.textDocument.uri,

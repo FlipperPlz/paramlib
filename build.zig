@@ -46,7 +46,7 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(bench);
 
     const lsp_mod = b.dependency("lsp_kit", .{})
-    .module("lsp");
+        .module("lsp");
 
     const lsp_exe = b.addExecutable(.{
         .name = "paramlib-lsp",
