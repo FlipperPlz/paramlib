@@ -109,7 +109,7 @@ pub fn build(b: *std.Build) void {
     const default_step = b.getInstallStep();
 
     if (build_vscode) {
-        const vscode_dir = "src/private/vscode";
+        const vscode_dir = "vscode";
 
         if (!check_bun) {
             _ = b.step("vscode", "Build VS Code extension (skipped: bun not found)");
@@ -124,8 +124,12 @@ pub fn build(b: *std.Build) void {
         vscode_compile_ts.step.dependOn(&vscode_install.step);
         vscode_compile_ts.setCwd(b.path(vscode_dir));
 
+        const vscode_mkdir = b.addSystemCommand(&.{ "mkdir", "-p", "./out" });
+        vscode_mkdir.step.dependOn(&vscode_compile_ts.step);
+        vscode_mkdir.setCwd(b.path(vscode_dir));
+
         const vscode_compile = b.addSystemCommand(&.{ "bun", "x", "vsce", "package", "--no-dependencies", "--out", "./out/", zon.version });
-        vscode_compile.step.dependOn(&vscode_compile_ts.step);
+        vscode_compile.step.dependOn(&vscode_mkdir.step);
         vscode_compile.setCwd(b.path(vscode_dir));
 
         const vsix_filename = b.fmt("vscode/{s}-lsp-{s}.vsix", .{ @tagName(zon.name), zon.version });

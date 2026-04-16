@@ -1,5 +1,5 @@
 {
-  "name": "paramlib",
+  "name": "paramlib-lsp",
   "displayName": "ParamLib",
   "description": "Syntax highlighting, code completion for config.cpp files and rvmats.",
   "author": "FlipperPlz",
@@ -11,10 +11,16 @@
   "license": "UNLICENSED",
   "version": "0.0.0",
   "private": true,
+  "workspaces": [
+    "client",
+    "server"
+  ],
   "scripts": {
-    "package": "vsce package",
-    "vsce:publish": "vsce publish",
-    "vsce:prerelease": "vsce publish --pre-release"
+    "compile": "webpack --config webpack.config.js",
+    "compile:watch": "webpack --config webpack.config.js --watch",
+    "package": "bunx vsce package --no-dependencies",
+    "vsce:publish": "bunx vsce publish",
+    "typecheck": "bun run typecheck --filter='*'"
   },
   "categories": [
     "Programming Languages",
@@ -47,14 +53,15 @@
     }
   ],
   "devDependencies": {
-    "@types/bun": "latest",
+    "@swc/core": "latest",
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.64.0",
     "@vscode/vsce": "3.8.0",
-    "@wasm-tool/wasm-pack-plugin": "1.7.0",
-    "typescript": "5.9.3",
-    "webpack": "5.105.4",
-    "webpack-cli": "7.0.2",
     "copy-webpack-plugin": "14.0.0",
     "path-browserify": "1.0.1",
-    "swc-loader": "0.2.7"
+    "swc-loader": "0.2.7",
+    "typescript": "5.9.3",
+    "webpack": "5.105.4",
+    "webpack-cli": "7.0.2"
   }
 }

@@ -23,172 +23,160 @@ const NotificationMethods = union(enum) {
     other:                     lsp.MethodWithParams,
 };
 
-const Message = lsp.Message(RequestMethods, NotificationMethods, .{});
+pub const Message = lsp.Message(RequestMethods, NotificationMethods, .{});
 
-pub fn startServer(io: std.Io, allocator: std.mem.Allocator, transport: *lsp.Transport) !void {
-    var documents: std.StringArrayHashMapUnmanaged([]const u8) = .empty;
-    defer {
-        for (documents.keys())   |k| allocator.free(k);
-        for (documents.values()) |v| allocator.free(v);
-        documents.deinit(allocator);
-    }
-
-    while (true) {
-        const json_message = try transport.readJsonMessage(io, allocator);
-        defer allocator.free(json_message);
-
-        const msg = try Message.parseFromSlice(
-            allocator, json_message, .{ .ignore_unknown_fields = true },
-        );
-        defer msg.deinit();
-
-        switch (msg.value) {
-            .request => |req| switch (req.params) {
-
-                .initialize => {
-                    try transport.writeResponse(io, allocator, req.id,
-                        lsp.types.InitializeResult,
-                        .{
-                            .serverInfo  = .{ .name = "paramlib-lsp" },
-                            .capabilities = .{
-                                .textDocumentSync = .{ .text_document_sync_options = .{
-                                    .openClose = true,
-                                    .change    = .Full,
-                                    .save      = .{ .bool = true },
-                                }},
-                                .hoverProvider          = .{ .bool = true },
-                                .documentSymbolProvider = .{ .bool = true },
-                                .definitionProvider     = .{ .bool = true },
-                                .completionProvider     = .{
-                                    .triggerCharacters  = &.{" ", "\t"},
-                                },
-                                .semanticTokensProvider = .{ .semantic_tokens_options = .{
-                                    .legend = .{
-                                        .tokenTypes     = &.{
-                                            "keyword", "comment", "variable",
-                                            "string", "operator", "number"
-                                        },
-                                        .tokenModifiers = &.{}
-                                    },
-                                    .full   = .{ .bool = true }
-                                }}
+pub fn handleMessage(
+    documents: *std.StringArrayHashMapUnmanaged([]const u8),
+    allocator: std.mem.Allocator,
+    io:        std.Io,
+    message:   std.json.Parsed(Message),
+    transport: *lsp.Transport
+) !void {
+    switch (message.value) {
+        .request => |req| switch (req.params) {
+            .initialize => {
+                try transport.writeResponse(io, allocator, req.id,
+                    lsp.types.InitializeResult,
+                    .{
+                        .serverInfo  = .{ .name = "paramlib-lsp" },
+                        .capabilities = .{
+                            .textDocumentSync = .{ .text_document_sync_options = .{
+                                .openClose = true,
+                                .change    = .Full,
+                                .save      = .{ .bool = true },
+                            }},
+                            .hoverProvider          = .{ .bool = true },
+                            .documentSymbolProvider = .{ .bool = true },
+                            .definitionProvider     = .{ .bool = true },
+                            .completionProvider     = .{
+                                .triggerCharacters  = &.{" ", "\t"},
                             },
+                            .semanticTokensProvider = .{ .semantic_tokens_options = .{
+                                .legend = .{
+                                    .tokenTypes     = &.{
+                                        "keyword", "comment", "variable",
+                                        "string", "operator", "number"
+                                    },
+                                    .tokenModifiers = &.{}
+                                },
+                                .full   = .{ .bool = true }
+                            }}
                         },
-                        .{ .emit_null_optional_fields = false },
-                    );
-                },
+                    },
+                    .{ .emit_null_optional_fields = false },
+                );
+            },
 
-                .shutdown => {
-                    try transport.writeResponse(io, allocator, req.id, void, {}, .{});
-                },
+            .shutdown => {
+                try transport.writeResponse(io, allocator, req.id, void, {}, .{});
+            },
 
-                .@"textDocument/hover" => |params| {
-                    var arena = std.heap.ArenaAllocator.init(allocator);
-                    defer arena.deinit();
-                    const result = hover(&documents, arena.allocator(), params);
-                    try transport.writeResponse(io, allocator, req.id,
-                        ?lsp.types.Hover, result,
-                        .{ .emit_null_optional_fields = false },
-                    );
-                },
+            .@"textDocument/hover" => |params| {
+                var arena = std.heap.ArenaAllocator.init(allocator);
+                defer arena.deinit();
+                const result = hover(documents, arena.allocator(), params);
+                try transport.writeResponse(io, allocator, req.id,
+                    ?lsp.types.Hover, result,
+                    .{ .emit_null_optional_fields = false },
+                );
+            },
 
-                .@"textDocument/definition" => |params| {
-                    var arena = std.heap.ArenaAllocator.init(allocator);
-                    defer arena.deinit();
-                    const result = definition(&documents, arena.allocator(), params);
+            .@"textDocument/definition" => |params| {
+                var arena = std.heap.ArenaAllocator.init(allocator);
+                defer arena.deinit();
+                const result = definition(documents, arena.allocator(), params);
 
-                    try transport.writeResponse(io, allocator, req.id,
-                        ?lsp.types.Definition.Result, result,
-                        .{ .emit_null_optional_fields = false },
-                    );
-                },
+                try transport.writeResponse(io, allocator, req.id,
+                    ?lsp.types.Definition.Result, result,
+                    .{ .emit_null_optional_fields = false },
+                );
+            },
 
-                .@"textDocument/documentSymbol" => |params| {
-                    const result = documentSymbols(&documents, allocator, params);
-                    defer if (result) |syms| {
-                        for (syms) |sym| allocator.free(sym.name);
-                        allocator.free(syms);
+            .@"textDocument/documentSymbol" => |params| {
+                const result = documentSymbols(documents, allocator, params);
+                defer if (result) |syms| {
+                    for (syms) |sym| allocator.free(sym.name);
+                    allocator.free(syms);
+                };
+                try transport.writeResponse(io, allocator, req.id,
+                    ?[]const lsp.types.SymbolInformation, result,
+                    .{ .emit_null_optional_fields = false },
+                );
+            },
+
+            .@"textDocument/semanticTokens/full" => |params| {
+                var arena = std.heap.ArenaAllocator.init(allocator);
+                defer arena.deinit();
+                const result = semanticTokensFull(io, documents, arena.allocator(), params);
+                try transport.writeResponse(io, allocator, req.id,
+                    ?lsp.types.semantic_tokens.Result, result,
+                    .{ .emit_null_optional_fields = false },
+                );
+            },
+
+            .@"textDocument/completion" => |params| {
+                var arena = std.heap.ArenaAllocator.init(allocator);
+                defer arena.deinit();
+                const result = completion(documents, arena.allocator(), params);
+                try transport.writeResponse(io, allocator, req.id,
+                    ?lsp.types.completion.Result, result,
+                    .{ .emit_null_optional_fields = false },
+                );
+            },
+
+            .other => {
+                try transport.writeResponse(io, allocator, req.id, void, {}, .{});
+            },
+        },
+
+        .notification => |note| switch (note.params) {
+
+            .initialized => {},
+            .exit        => return,
+
+            .@"textDocument/didOpen" => |params| {
+                const uri  = try allocator.dupe(u8, params.textDocument.uri);
+                const text = try allocator.dupe(u8, params.textDocument.text);
+                try documents.put(allocator, uri, text);
+                try publishDiagnostics(transport, io, allocator, documents, params.textDocument.uri);
+            },
+
+            .@"textDocument/didChange" => |params| {
+                if (params.contentChanges.len > 0) {
+                    const change = params.contentChanges[params.contentChanges.len - 1];
+                    const new_text = switch (change) {
+                        .text_document_content_change_whole_document => |c| c.text,
+                        .text_document_content_change_partial        => |c| c.text,
                     };
-                    try transport.writeResponse(io, allocator, req.id,
-                        ?[]const lsp.types.SymbolInformation, result,
-                        .{ .emit_null_optional_fields = false },
-                    );
-                },
-
-                .@"textDocument/semanticTokens/full" => |params| {
-                    var arena = std.heap.ArenaAllocator.init(allocator);
-                    defer arena.deinit();
-                    const result = semanticTokensFull(io, &documents, arena.allocator(), params);
-                    try transport.writeResponse(io, allocator, req.id,
-                        ?lsp.types.semantic_tokens.Result, result,
-                        .{ .emit_null_optional_fields = false },
-                    );
-                },
-
-                .@"textDocument/completion" => |params| {
-                    var arena = std.heap.ArenaAllocator.init(allocator);
-                    defer arena.deinit();
-                    const result = completion(&documents, arena.allocator(), params);
-                    try transport.writeResponse(io, allocator, req.id,
-                        ?lsp.types.completion.Result, result,
-                        .{ .emit_null_optional_fields = false },
-                    );
-                },
-
-                .other => {
-                    try transport.writeResponse(io, allocator, req.id, void, {}, .{});
-                },
+                    if (documents.getPtr(params.textDocument.uri)) |slot| {
+                        allocator.free(slot.*);
+                        slot.* = try allocator.dupe(u8, new_text);
+                    }
+                }
+                try publishDiagnostics(transport, io, allocator, documents, params.textDocument.uri);
             },
 
-              .notification => |note| switch (note.params) {
-
-                .initialized => {},
-                .exit        => return,
-
-                .@"textDocument/didOpen" => |params| {
-                    const uri  = try allocator.dupe(u8, params.textDocument.uri);
-                    const text = try allocator.dupe(u8, params.textDocument.text);
-                    try documents.put(allocator, uri, text);
-                    try publishDiagnostics(transport, io, allocator, &documents, params.textDocument.uri);
-                },
-
-                .@"textDocument/didChange" => |params| {
-                    if (params.contentChanges.len > 0) {
-                        const change = params.contentChanges[params.contentChanges.len - 1];
-                        const new_text = switch (change) {
-                            .text_document_content_change_whole_document => |c| c.text,
-                            .text_document_content_change_partial        => |c| c.text,
-                        };
-                        if (documents.getPtr(params.textDocument.uri)) |slot| {
-                            allocator.free(slot.*);
-                            slot.* = try allocator.dupe(u8, new_text);
-                        }
+            .@"textDocument/didSave" => |params| {
+                if (params.text) |text| {
+                    if (documents.getPtr(params.textDocument.uri)) |slot| {
+                        allocator.free(slot.*);
+                        slot.* = try allocator.dupe(u8, text);
                     }
-                    try publishDiagnostics(transport, io, allocator, &documents, params.textDocument.uri);
-                },
-
-                .@"textDocument/didSave" => |params| {
-                    if (params.text) |text| {
-                        if (documents.getPtr(params.textDocument.uri)) |slot| {
-                            allocator.free(slot.*);
-                            slot.* = try allocator.dupe(u8, text);
-                        }
-                    }
-                    try publishDiagnostics(transport, io, allocator, &documents, params.textDocument.uri);
-                },
-
-                .@"textDocument/didClose" => |params| {
-                    if (documents.fetchOrderedRemove(params.textDocument.uri)) |kv| {
-                        allocator.free(kv.key);
-                        allocator.free(kv.value);
-                    }
-                },
-
-                .other => {},
+                }
+                try publishDiagnostics(transport, io, allocator, documents, params.textDocument.uri);
             },
 
-            .response => {},
-        }
+            .@"textDocument/didClose" => |params| {
+                if (documents.fetchOrderedRemove(params.textDocument.uri)) |kv| {
+                    allocator.free(kv.key);
+                    allocator.free(kv.value);
+                }
+            },
+
+            .other => {},
+        },
+
+        .response => {},
     }
 }
 

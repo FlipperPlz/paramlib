@@ -78,7 +78,7 @@ const serverBrowserConfig = {
         }),
         new CopyPlugin({
             patterns: [{
-                from: path.resolve(__dirname, "../../../zig-out/wasm/paramlib-lsp.wasm"),
+                from: path.resolve(__dirname, "../zig-out/wasm/paramlib-lsp.wasm"),
                 to: path.join(__dirname, "server", "dist", "paramlib-lsp.wasm"),
             }],
         }),
@@ -100,7 +100,7 @@ const serverNodeConfig = {
     plugins: [
         new CopyPlugin({
             patterns: [{
-                from: path.resolve(__dirname, "../../../zig-out/wasm/paramlib-lsp.wasm"),
+                from: path.resolve(__dirname, "../zig-out/wasm/paramlib-lsp.wasm"),
                 to: path.join(__dirname, "server", "dist"),
             }],
         }),
@@ -127,25 +127,24 @@ const clientNodeConfig = {
     externals: { vscode: "commonjs vscode" },
 };
 
-/** @type WebpackConfig */
-const dapNodeConfig = {
-    context: path.join(__dirname, "debug"),
-    mode,
-    devtool,
-    target: "node",
-    entry: { debug: "./debug.ts" },
-    output: {
-        filename: "[name].js",
-        path: path.join(__dirname, "debug", "dist"),
-        libraryTarget: "var",
-        library: "serverExportVar",
-    },
-    module: { rules: [swcLoader] },
-};
+// const dapNodeConfig = {
+//     context: path.join(__dirname, "debug"),
+//     mode,
+//     devtool,
+//     target: "node",
+//     entry: { debug: "./debug.ts" },
+//     output: {
+//         filename: "[name].js",
+//         path: path.join(__dirname, "debug", "dist"),
+//         libraryTarget: "var",
+//         library: "serverExportVar",
+//     },
+//     module: { rules: [swcLoader] },
+// };
 module.exports = [
-    //clientBrowserConfig,
-    //clientNodeConfig,
+    clientBrowserConfig,
+    clientNodeConfig,
     serverBrowserConfig,
     serverNodeConfig,
-    dapNodeConfig,
+    // dapNodeConfig,
 ];

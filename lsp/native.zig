@@ -7,5 +7,27 @@ pub fn main(init: std.process.Init) !void {
     var stdio: lsp.Transport.Stdio = .init(&read_buffer, .stdin(), .stdout());
     const transport: *lsp.Transport  = &stdio.transport;
 
-    return parLsp.startServer(init.io, init.gpa, transport);
+    return startServer(init.io, init.gpa, transport);
+}
+
+
+pub fn startServer(io: std.Io, allocator: std.mem.Allocator, transport: *lsp.Transport) !void {
+    var documents: std.StringArrayHashMapUnmanaged([]const u8) = .empty;
+    defer {
+        for (documents.keys())   |k| allocator.free(k);
+        for (documents.values()) |v| allocator.free(v);
+        documents.deinit(allocator);
+    }
+
+    while (true) {
+        const json_message = try transport.readJsonMessage(io, allocator);
+        defer allocator.free(json_message);
+
+        const msg = try parLsp.Message.parseFromSlice(
+            allocator, json_message, .{ .ignore_unknown_fields = true },
+        );
+        defer msg.deinit();
+
+        try parLsp.handleMessage(&documents, allocator, io, msg, transport);
+    }
 }

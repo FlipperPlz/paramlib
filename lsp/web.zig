@@ -8,30 +8,11 @@ const RX_SIZE = 8 * 1024 * 1024;
 const TX_SIZE = 8 * 1024 * 1024;
 var tx_buf: [TX_SIZE]u8 = undefined;
 var rx_buf: [RX_SIZE]u8 = undefined;
-var rx_head: usize = 0;
-var tx_head: usize = 0;
-var rx_tail: usize = 0;
-var tx_tail: usize = 0;
+var tx_len: usize = 0;
 
 var reader: std.Io.Reader = undefined;
 var writer: std.Io.Writer = undefined;
-
-extern fn clientSend(ptr: [*]const u8, len: u32) void;
-
-export fn serverSend(ptr: [*]const u8, len: u32) void {
-    const data = ptr[0..len];
-    for (data) |b| {
-        rx_buf[rx_tail % RX_SIZE] = b;
-        rx_tail += 1;
-    }
-}
-
-export fn wasmInit() void {
-    reader = std.Io.Reader.fixed(&rx_buf);
-    writer = std.Io.Writer.fixed(&tx_buf);
-
-    parLsp.startServer(undefined, allocator, &wasm_transport) catch unreachable;
-}
+var documents: std.StringArrayHashMapUnmanaged([]const u8) = .empty;
 
 fn readJsonMessage(
     _: *lsp.Transport,
@@ -49,14 +30,12 @@ fn writeJsonMessage(
     _: std.Io,
     json_message: []const u8,
 ) lsp.Transport.WriteError!void {
+    writer = std.Io.Writer.fixed(tx_buf[tx_len..]);
     lsp.writeJsonMessage(&writer, json_message) catch |err| switch (err) {
         error.WriteFailed => return error.Unexpected,
     };
-    if (tx_head == tx_tail) return;
-    serverSend(tx_buf[tx_head..tx_tail].ptr, @intCast(tx_tail - tx_head));
-    tx_head = tx_tail;
+    tx_len += writer.end;
 }
-
 
 const vtable = lsp.Transport.VTable{
     .readJsonMessage  = readJsonMessage,
@@ -66,3 +45,42 @@ const vtable = lsp.Transport.VTable{
 var wasm_transport = lsp.Transport{
     .vtable = &vtable,
 };
+
+
+extern fn clientSend(ptr: [*]const u8, len: u32) void;
+
+export fn alloc(len: u32) u32 {
+    const buf = allocator.alloc(u8, len) catch return 0;
+    return @intCast(@intFromPtr(buf.ptr));
+}
+
+export fn free(ptr: u32, len: u32) void {
+    const p: [*]u8 = @ptrFromInt(ptr);
+    allocator.free(p[0..len]);
+}
+
+export fn serverSend(ptr: [*]const u8, len: u32) u32 {
+    @memcpy(rx_buf[0..len], ptr[0..len]);
+    reader = std.Io.Reader.fixed(rx_buf[0..len]);
+    tx_len = 0;
+
+    const json_message = wasm_transport.readJsonMessage(undefined, allocator) catch return 1;
+    defer allocator.free(json_message);
+
+    const msg = parLsp.Message.parseFromSlice(
+        allocator, json_message, .{ .ignore_unknown_fields = true },
+    ) catch return 2;
+    defer msg.deinit();
+
+    parLsp.handleMessage(&documents, allocator, undefined, msg, &wasm_transport) catch return 3;
+
+    if (tx_len > 0) clientSend(tx_buf[0..tx_len].ptr, @intCast(tx_len));
+
+    return 0;
+}
+
+export fn deinit() void {
+    for (documents.keys())   |k| allocator.free(k);
+    for (documents.values()) |v| allocator.free(v);
+    documents.deinit(allocator);
+}
