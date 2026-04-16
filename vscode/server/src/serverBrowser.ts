@@ -25,7 +25,6 @@ async function loadWasm(): Promise<void> {
         env: { clientSend },
     });
     wasm = instance.exports as unknown as ParamlibWasm;
-    wasm.wasmInit();
 }
 
 function sendToWasm(message: unknown): void {

@@ -15,10 +15,10 @@ export function activate(context: vscode.ExtensionContext): void {
     );
 
     const serverOptions: ServerOptions = {
-        run:   { module: serverModule, transport: TransportKind.ipc },
+        run:   { module: serverModule, transport: TransportKind.stdio },
         debug: {
             module: serverModule,
-            transport: TransportKind.ipc,
+            transport: TransportKind.stdio,
             options: { execArgv: ['--nolazy', '--inspect=6009'] },
         },
     };

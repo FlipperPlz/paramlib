@@ -19,6 +19,7 @@
     "compile": "webpack --config webpack.config.js",
     "compile:watch": "webpack --config webpack.config.js --watch",
     "package": "bunx vsce package --no-dependencies",
+    "dev:browser": "vscode-test-web --extensionDevelopmentPath=. ./test-data --open-devtools",
     "vsce:publish": "bunx vsce publish",
     "typecheck": "bun run typecheck --filter='*'"
   },
@@ -57,6 +58,7 @@
     "@types/node": "^20.0.0",
     "@types/vscode": "^1.64.0",
     "@vscode/vsce": "3.8.0",
+    "@vscode/test-web": "^0.0.80",
     "copy-webpack-plugin": "14.0.0",
     "path-browserify": "1.0.1",
     "swc-loader": "0.2.7",
