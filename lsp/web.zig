@@ -1,44 +1,68 @@
 const std = @import("std");
-const lsp      = @import("lsp");
+const lsp    = @import("lsp");
 const parLsp = @import("lsp.zig");
 
 var allocator = std.heap.wasm_allocator;
 
-extern fn host_send(ptr: [*]const u8, len: u32) void;
+const RX_SIZE = 8 * 1024 * 1024;
+const TX_SIZE = 8 * 1024 * 1024;
+var tx_buf: [TX_SIZE]u8 = undefined;
+var rx_buf: [RX_SIZE]u8 = undefined;
+var rx_head: usize = 0;
+var tx_head: usize = 0;
+var rx_tail: usize = 0;
+var tx_tail: usize = 0;
 
-const HostWriter = struct {
-    buf: std.ArrayList(u8) = .empty,
-    buffered: std.Io.Writer,
+var reader: std.Io.Reader = undefined;
+var writer: std.Io.Writer = undefined;
 
-    pub fn init() HostWriter {
-        var writer = .{
-            .buffered = undefined
-        };
-        writer.buffered = std.Io.Writer.fromArrayList(&writer.buf);
-        return writer;
+extern fn clientSend(ptr: [*]const u8, len: u32) void;
+
+export fn serverSend(ptr: [*]const u8, len: u32) void {
+    const data = ptr[0..len];
+    for (data) |b| {
+        rx_buf[rx_tail % RX_SIZE] = b;
+        rx_tail += 1;
     }
+}
 
-    pub fn deinit(self: *HostWriter) void {
-        self.buf.deinit();
-    }
+export fn wasmInit() void {
+    reader = std.Io.Reader.fixed(&rx_buf);
+    writer = std.Io.Writer.fixed(&tx_buf);
 
-    pub fn flush(self: *HostWriter) void {
-        self.buffered.flush() catch {};
+    parLsp.startServer(undefined, allocator, &wasm_transport) catch unreachable;
+}
 
-        if (self.buf.items.len == 0) return;
-        host_send(self.buf.items.ptr, @intCast(self.buf.items.len));
-        self.buf.clearRetainingCapacity();
-    }
+fn readJsonMessage(
+    _: *lsp.Transport,
+    _: std.Io,
+    _: std.mem.Allocator,
+) lsp.Transport.ReadError![]u8 {
+    return lsp.readJsonMessage(&reader, allocator) catch |err| switch (err) {
+        error.ReadFailed => error.Unexpected,
+        else => |e| e,
+    };
+}
+
+fn writeJsonMessage(
+    _: *lsp.Transport,
+    _: std.Io,
+    json_message: []const u8,
+) lsp.Transport.WriteError!void {
+    lsp.writeJsonMessage(&writer, json_message) catch |err| switch (err) {
+        error.WriteFailed => return error.Unexpected,
+    };
+    if (tx_head == tx_tail) return;
+    serverSend(tx_buf[tx_head..tx_tail].ptr, @intCast(tx_tail - tx_head));
+    tx_head = tx_tail;
+}
+
+
+const vtable = lsp.Transport.VTable{
+    .readJsonMessage  = readJsonMessage,
+    .writeJsonMessage = writeJsonMessage,
 };
 
-var host_writer: HostWriter = undefined;
-
-
-export fn wasm_write(ptr: [*]u8, len: u32) void {
-    const msg = ptr[0..len];
-    defer allocator.free(msg);
-
-    //recieve
-
-    host_writer.flush();
-}
+var wasm_transport = lsp.Transport{
+    .vtable = &vtable,
+};

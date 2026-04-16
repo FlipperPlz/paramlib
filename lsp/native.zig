@@ -1,6 +1,11 @@
 const std = @import("std");
-const lsp = @import("lsp.zig");
+const parLsp = @import("lsp.zig");
+const lsp = @import("lsp");
 
 pub fn main(init: std.process.Init) !void {
-    return lsp.startServer(init.io, init.gpa);
+    var read_buffer: [64 * 1024]u8 = undefined;
+    var stdio: lsp.Transport.Stdio = .init(&read_buffer, .stdin(), .stdout());
+    const transport: *lsp.Transport  = &stdio.transport;
+
+    return parLsp.startServer(init.io, init.gpa, transport);
 }

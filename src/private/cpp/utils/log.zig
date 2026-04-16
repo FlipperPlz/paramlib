@@ -147,58 +147,62 @@ pub const ParseLog = struct {
         message:    []const u8,
         label_text: ?[]const u8,
     ) void {
-        var buffer: [4096]u8 = undefined;
-        var wr = std.Io.File.stderr().writer(self.io, &buffer);
-        const w = &wr.interface;
-        const pos = self.line_table.resolve(token.pos);
+        const is_freestanding = @import("builtin").os.tag == .freestanding;
 
-        if (err_code) |c| {
-            w.print("{s}{s}[{s}]{s}: {s}{s}{s}\n", .{
-                self.ansi(level.color()), level.label(), c,
-                self.ansi(Color.reset),
-                self.ansi(Color.bold), message, self.ansi(Color.reset),
-            }) catch return;
-        } else {
-            w.print("{s}{s}{s}: {s}{s}{s}\n", .{
-                self.ansi(level.color()), level.label(),
-                self.ansi(Color.reset),
-                self.ansi(Color.bold), message, self.ansi(Color.reset),
-            }) catch return;
+        if (!is_freestanding) {
+            var buffer: [4096]u8 = undefined;
+            var wr = std.Io.File.stderr().writer(self.io, &buffer);
+            const w = &wr.interface;
+            const pos = self.line_table.resolve(token.pos);
+
+            if (err_code) |c| {
+                w.print("{s}{s}[{s}]{s}: {s}{s}{s}\n", .{
+                    self.ansi(level.color()), level.label(), c,
+                    self.ansi(Color.reset),
+                    self.ansi(Color.bold), message, self.ansi(Color.reset),
+                }) catch {};
+            } else {
+                w.print("{s}{s}{s}: {s}{s}{s}\n", .{
+                    self.ansi(level.color()), level.label(),
+                    self.ansi(Color.reset),
+                    self.ansi(Color.bold), message, self.ansi(Color.reset),
+                }) catch {};
+            }
+
+            const margin = digitWidth(pos.line);
+            w.print("{s} {s}-->{s} {s}:{d}:{d}\n", .{
+                spaces(margin),
+                self.ansi(Color.blue), self.ansi(Color.reset),
+                self.filename, pos.line, pos.column,
+            }) catch {};
+
+            const line_text = lineSlice(self.contents, self.line_table, pos.line);
+
+            w.print("{s} {s}|{s}\n", .{
+                spaces(margin),
+                self.ansi(Color.blue), self.ansi(Color.reset),
+            }) catch {};
+            w.print("{s}{d}{s} {s}|{s} {s}\n", .{
+                self.ansi(Color.blue), pos.line, self.ansi(Color.reset),
+                self.ansi(Color.blue), self.ansi(Color.reset),
+                line_text,
+            }) catch {};
+            w.print("{s} {s}|{s} ", .{
+                spaces(margin),
+                self.ansi(Color.blue), self.ansi(Color.reset),
+            }) catch {};
+
+            const col0: usize = pos.column - 1;
+            const span        = tokenSpan(token, line_text, col0);
+
+            writeRepeat(w, ' ', col0) catch {};
+            w.print("{s}", .{ self.ansi(level.color()) }) catch {};
+            writeRepeat(w, '^', @max(1, span)) catch {};
+
+            const lbl = label_text orelse message;
+            w.print(" {s}{s}\n\n", .{ lbl, self.ansi(Color.reset) }) catch {};
+            w.flush() catch {};
         }
-
-        const margin = digitWidth(pos.line);
-        w.print("{s} {s}-->{s} {s}:{d}:{d}\n", .{
-            spaces(margin),
-            self.ansi(Color.blue), self.ansi(Color.reset),
-            self.filename, pos.line, pos.column,
-        }) catch return;
-
-        const line_text = lineSlice(self.contents, self.line_table, pos.line);
-
-        w.print("{s} {s}|{s}\n", .{
-            spaces(margin),
-            self.ansi(Color.blue), self.ansi(Color.reset),
-        }) catch return;
-        w.print("{s}{d}{s} {s}|{s} {s}\n", .{
-            self.ansi(Color.blue), pos.line, self.ansi(Color.reset),
-            self.ansi(Color.blue), self.ansi(Color.reset),
-            line_text,
-        }) catch return;
-        w.print("{s} {s}|{s} ", .{
-            spaces(margin),
-            self.ansi(Color.blue), self.ansi(Color.reset),
-        }) catch return;
-
-        const col0: usize = pos.column - 1;
-        const span        = tokenSpan(token, line_text, col0);
-
-        writeRepeat(w, ' ', col0) catch return;
-        w.print("{s}", .{ self.ansi(level.color()) }) catch return;
-        writeRepeat(w, '^', @max(1, span)) catch return;
-
-        const lbl = label_text orelse message;
-        w.print(" {s}{s}\n\n", .{ lbl, self.ansi(Color.reset) }) catch return;
-        w.flush() catch return;
 
         if (self.diag_sink) |sink| {
             const span2: u32 = switch (token.data) {

@@ -78,6 +78,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     lsp_wasm.entry = .disabled;
+    lsp_wasm.rdynamic = true;
 
     const unit_tests = b.addTest(.{
         .name = "paramlib-tests",

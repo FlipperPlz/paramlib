@@ -25,12 +25,7 @@ const NotificationMethods = union(enum) {
 
 const Message = lsp.Message(RequestMethods, NotificationMethods, .{});
 
-pub fn startServer(io: std.Io, allocator: std.mem.Allocator) !void {
-
-    var read_buffer: [64 * 1024]u8 = undefined;
-    var stdio: lsp.Transport.Stdio = .init(&read_buffer, .stdin(), .stdout());
-    const transport: *lsp.Transport  = &stdio.transport;
-
+pub fn startServer(io: std.Io, allocator: std.mem.Allocator, transport: *lsp.Transport) !void {
     var documents: std.StringArrayHashMapUnmanaged([]const u8) = .empty;
     defer {
         for (documents.keys())   |k| allocator.free(k);
