@@ -17,8 +17,7 @@ const mode = PRODUCTION ? "production" : "none";
 /** @type WebpackConfig["devtool"] */
 const devtool = PRODUCTION ? false : "source-map";
 
-let extensionURL = `https://${publisher}.vscode-unpkg.net/${publisher}/${name}/${version}/extension/`;
-if (TEST) extensionURL = "http://localhost:3001/static/devextensions/";
+let extensionURL = `https://${publisher}.vscode-unpkg.net/${publisher}/${name}/${version}/extension/server/dist/`;
 
 const swcLoader = {
     test: /\.ts$/,

@@ -22,15 +22,11 @@ async function main(): Promise<void> {
     });
     wasm = instance.exports as unknown as ParamlibWasm;
 
-    // Read raw LSP frames from stdin and forward directly to WASM.
-    // We intentionally bypass vscode-languageserver's connection here because
-    // the WASM module speaks LSP natively — it handles framing itself.
     let buf = Buffer.alloc(0);
 
     process.stdin.on('data', (chunk: Buffer) => {
         buf = Buffer.concat([buf, chunk]);
 
-        // Consume all complete LSP frames in the buffer
         while (true) {
             const headerEnd = buf.indexOf('\r\n\r\n');
             if (headerEnd === -1) break;
@@ -41,7 +37,7 @@ async function main(): Promise<void> {
 
             const bodyLen = parseInt(match[1], 10);
             const frameEnd = headerEnd + 4 + bodyLen;
-            if (buf.length < frameEnd) break; // wait for more data
+            if (buf.length < frameEnd) break; 
 
             const frame = buf.slice(0, frameEnd);
             sendToWasm(frame);

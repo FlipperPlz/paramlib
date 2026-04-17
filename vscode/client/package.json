@@ -1,6 +1,6 @@
 {
-  "name": "@bitools/paramlib-lsp-client",
-  "version": "0.0.0",
+  "name": "@flipperplz/paramkit-client",
+  "version": "0.0.2",
   "private": true,
   "license": "UNLICENSED",
   "scripts": {
