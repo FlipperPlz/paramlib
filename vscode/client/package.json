@@ -1,6 +1,6 @@
 {
   "name": "@flipperplz/paramkit-client",
-  "version": "0.0.21",
+  "version": "0.0.3",
   "private": true,
   "license": "UNLICENSED",
   "scripts": {

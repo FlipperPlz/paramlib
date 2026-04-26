@@ -1,7 +1,7 @@
 import * as fs   from 'fs';
 import * as path from 'path';
 
-import { ParamlibWasm, wasmSendFrame } from './common';
+import { ParamlibWasm, wasmSendFrame, wasmSendSchema } from './common';
 
 let wasm: ParamlibWasm;
 
@@ -22,6 +22,32 @@ async function main(): Promise<void> {
     });
     wasm = instance.exports as unknown as ParamlibWasm;
 
+    const schemaFile = process.env['PARAMLIB_SCHEMA_FILE'];
+    console.error('[paramlib] PARAMLIB_SCHEMA_FILE:', schemaFile ?? '(not set)');
+    if (schemaFile) {
+        const sendSchema = (): void => {
+            try {
+                console.error('[paramlib] loading schema from:', schemaFile);
+                const bytes = fs.readFileSync(schemaFile);
+                console.error('[paramlib] schema loaded, bytes:', bytes.length);
+                wasmSendSchema(wasm, bytes);
+                console.error('[paramlib] schema sent to wasm');
+            } catch (e) {
+                console.error('[paramlib] Failed to load schema file:', e);
+            }
+        };
+        sendSchema();
+        try {
+            fs.watch(schemaFile, () => {
+                console.error('[paramlib] schema file changed, reloading:', schemaFile);
+                sendSchema();
+            });
+            console.error('[paramlib] watching schema file for changes:', schemaFile);
+        } catch (e) {
+            console.error('[paramlib] fs.watch failed for schema file:', e);
+        }
+    }
+
     let buf = Buffer.alloc(0);
 
     process.stdin.on('data', (chunk: Buffer) => {
@@ -37,7 +63,7 @@ async function main(): Promise<void> {
 
             const bodyLen = parseInt(match[1], 10);
             const frameEnd = headerEnd + 4 + bodyLen;
-            if (buf.length < frameEnd) break; 
+            if (buf.length < frameEnd) break;
 
             const frame = buf.slice(0, frameEnd);
             sendToWasm(frame);

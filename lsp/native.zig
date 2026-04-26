@@ -13,10 +13,12 @@ pub fn main(init: std.process.Init) !void {
 
 pub fn startServer(io: std.Io, allocator: std.mem.Allocator, transport: *lsp.Transport) !void {
     var documents: std.StringArrayHashMapUnmanaged([]const u8) = .empty;
+    var schema: parLsp.SchemaState = .empty;
     defer {
         for (documents.keys())   |k| allocator.free(k);
         for (documents.values()) |v| allocator.free(v);
         documents.deinit(allocator);
+        schema.deinit(allocator);
     }
 
     while (true) {
@@ -28,6 +30,6 @@ pub fn startServer(io: std.Io, allocator: std.mem.Allocator, transport: *lsp.Tra
         );
         defer msg.deinit();
 
-        try parLsp.handleMessage(&documents, allocator, io, msg, transport);
+        try parLsp.handleMessage(&documents, &schema, allocator, io, msg, transport);
     }
 }

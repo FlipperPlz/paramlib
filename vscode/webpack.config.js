@@ -18,6 +18,7 @@ const mode = PRODUCTION ? "production" : "none";
 const devtool = PRODUCTION ? false : "source-map";
 
 let extensionURL = `https://${publisher}.vscode-unpkg.net/${publisher}/${name}/${version}/extension/server/dist/`;
+let schemasURL   = `https://${publisher}.vscode-unpkg.net/${publisher}/${name}/${version}/extension/schemas/`;
 
 const swcLoader = {
     test: /\.ts$/,
@@ -49,7 +50,8 @@ const clientBrowserConfig = {
     resolve: browserResolve,
     plugins: [
         new webpack.DefinePlugin({
-            __DEV_MODE__: JSON.stringify(false),
+            __DEV_MODE__:   JSON.stringify(!PRODUCTION),
+            __SCHEMAS_URL__: JSON.stringify(schemasURL),
         }),
     ],
     module: { rules: [swcLoader] },
@@ -119,7 +121,7 @@ const clientNodeConfig = {
     resolve: browserResolve,
     plugins: [
         new webpack.DefinePlugin({
-            __DEV_MODE__: JSON.stringify(false),
+            __DEV_MODE__: JSON.stringify(!PRODUCTION),
         }),
     ],
     module: { rules: [swcLoader] },

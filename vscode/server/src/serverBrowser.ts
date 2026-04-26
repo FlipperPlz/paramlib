@@ -4,7 +4,7 @@ import {
     createConnection,
     ProposedFeatures,
 } from 'vscode-languageserver/browser';
-import { ParamlibWasm, wasmSendFrame } from './common';
+import { ParamlibWasm, wasmSendFrame, wasmSendSchema } from './common';
 
 declare const __EXTENSION_URL__: string;
 
@@ -72,6 +72,13 @@ dispatchToClient = (data: Uint8Array): void => {
 const pendingMessages: unknown[] = [];
 
 reader.listen((message) => {
+    const m = message as { method?: string; params?: { content?: string } };
+    if (m.method === '$/paramlib/schemaUpdate' && m.params?.content != null) {
+        if (wasm) {
+            wasmSendSchema(wasm, new TextEncoder().encode(m.params.content));
+        }
+        return;
+    }
     if (!wasm) {
         pendingMessages.push(message);
     } else {

@@ -66,10 +66,11 @@ pub const OperatorAst = enum {
 };
 
 pub const ParameterAst = struct {
-    name:     []const u8,
-    namePos:  u32,
-    operator: OperatorAst,
-    value:    ValueAst,
+    name:          []const u8,
+    namePos:       u32,
+    operator:      OperatorAst,
+    value:         ValueAst,
+    elemPositions: ?[]const u32 = null,
 };
 
 pub const ValueAst = union(enum) {

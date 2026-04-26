@@ -561,6 +561,8 @@ fn parseParameter(allocator: Allocator, tokenizer: *lexer.Tokenizer, next: *lexe
         .value    = undefined,
     };
 
+    var elem_pos_list = std.ArrayList(u32).empty;
+
     next.* = try tokenizer.next();
 
     const isArray: bool = blk: {
@@ -601,7 +603,7 @@ fn parseParameter(allocator: Allocator, tokenizer: *lexer.Tokenizer, next: *lexe
     };
 
     next.* = try tokenizer.next();
-    astParam.value = parseValue(allocator, tokenizer, log, next) catch {
+    astParam.value = parseValue(allocator, tokenizer, log, next, &elem_pos_list) catch {
         log.emit(.err, "P01", next, "Expected value after operator in parameter declaration.", null);
         return error.ParseError;
     } orelse {
@@ -621,6 +623,10 @@ fn parseParameter(allocator: Allocator, tokenizer: *lexer.Tokenizer, next: *lexe
         return error.UnexpectedToken;
     }
 
+    if (elem_pos_list.items.len > 0) {
+        astParam.elemPositions = elem_pos_list.toOwnedSlice(allocator) catch null;
+    }
+
     top.members.?.append(allocator, .{ .param = astParam }) catch {
         log.emit(.err, "P05", next, "Failed to add parameter declaration to AST stack", null);
         return error.ParseError;
@@ -628,10 +634,10 @@ fn parseParameter(allocator: Allocator, tokenizer: *lexer.Tokenizer, next: *lexe
 }
 
 
-fn parseValue(allocator: Allocator, tokenizer: *lexer.Tokenizer, log: *const logger.DiagType, token: *lexer.Token) !?ast.ValueAst {
+fn parseValue(allocator: Allocator, tokenizer: *lexer.Tokenizer, log: *const logger.DiagType, token: *lexer.Token, elem_positions: ?*std.ArrayList(u32)) !?ast.ValueAst {
     if (token.kind == .rightBrace) return null;
     return switch (token.kind) {
-        TokenKind.leftBrace => try parseArray(allocator, tokenizer, log, token),
+        TokenKind.leftBrace => try parseArray(allocator, tokenizer, log, token, elem_positions),
         TokenKind.floatLiteral => ast.ValueAst { .float = token.data.float },
         TokenKind.int64Literal => ast.ValueAst { .i64 = token.data.int64 },
         TokenKind.intLiteral => ast.ValueAst { .integer = token.data.int },
@@ -668,7 +674,7 @@ fn freeValue(allocator: Allocator, value: ast.ValueAst) void {
     }
 }
 
-fn parseArray(allocator: Allocator, tokenizer: *lexer.Tokenizer, log: *const logger.DiagType, start: *lexer.Token) ParseError!ast.ValueAst {
+fn parseArray(allocator: Allocator, tokenizer: *lexer.Tokenizer, log: *const logger.DiagType, start: *lexer.Token, elem_positions: ?*std.ArrayList(u32)) ParseError!ast.ValueAst {
     var values = std.ArrayList(ast.ValueAst).empty;
     errdefer {
         for (values.items) |item| freeValue(allocator, item);
@@ -692,8 +698,10 @@ fn parseArray(allocator: Allocator, tokenizer: *lexer.Tokenizer, log: *const log
                 }
             }
         } else {
-            const val = try parseValue(allocator, tokenizer, log, start);
+            const elem_pos = start.pos;
+            const val = try parseValue(allocator, tokenizer, log, start, null);
             if (val) |value| {
+                if (elem_positions) |ep| ep.append(allocator, elem_pos) catch {};
                 values.append(allocator, value) catch {
                     log.emit(.err, "A01", start, "Failed to add value to array literal.", null);
                     return error.ParseError;
@@ -708,5 +716,4 @@ fn parseArray(allocator: Allocator, tokenizer: *lexer.Tokenizer, log: *const log
 
     }
     return ast.ValueAst{ .array = try values.toOwnedSlice(allocator) };
-
 }

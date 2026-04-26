@@ -13,6 +13,7 @@ var tx_len: usize = 0;
 var reader: std.Io.Reader = undefined;
 var writer: std.Io.Writer = undefined;
 var documents: std.StringArrayHashMapUnmanaged([]const u8) = .empty;
+var schema: parLsp.SchemaState = .empty;
 
 fn readJsonMessage(
     _: *lsp.Transport,
@@ -72,15 +73,20 @@ export fn serverSend(ptr: [*]const u8, len: u32) u32 {
     ) catch return 2;
     defer msg.deinit();
 
-    parLsp.handleMessage(&documents, allocator, undefined, msg, &wasm_transport) catch return 3;
+    parLsp.handleMessage(&documents, &schema, allocator, undefined, msg, &wasm_transport) catch return 3;
 
     if (tx_len > 0) clientSend(tx_buf[0..tx_len].ptr, @intCast(tx_len));
 
     return 0;
 }
 
+export fn schemaUpdate(ptr: [*]const u8, len: u32) void {
+    schema.updateFromContent(allocator, ptr[0..len]);
+}
+
 export fn deinit() void {
     for (documents.keys())   |k| allocator.free(k);
     for (documents.values()) |v| allocator.free(v);
     documents.deinit(allocator);
+    schema.deinit(allocator);
 }

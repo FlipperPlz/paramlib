@@ -1,0 +1,36 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "compile",
+      "type": "shell",
+      "command": "bun run compile",
+      "options": {
+        "cwd": "${workspaceFolder}/vscode"
+      },
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "presentation": {
+        "reveal": "silent",
+        "panel": "shared"
+      },
+      "problemMatcher": "$tsc"
+    },
+    {
+      "label": "compile:watch",
+      "type": "shell",
+      "command": "bun run compile:watch",
+      "options": {
+        "cwd": "${workspaceFolder}/vscode"
+      },
+      "isBackground": true,
+      "presentation": {
+        "reveal": "never",
+        "panel": "dedicated"
+      },
+      "problemMatcher": "$tsc-watch"
+    }
+  ]
+}

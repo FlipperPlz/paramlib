@@ -132,8 +132,8 @@ pub fn build(b: *std.Build) void {
         vscode_compile.step.dependOn(&vscode_mkdir.step);
         vscode_compile.setCwd(b.path(vscode_dir));
 
-        const vsix_filename = b.fmt("vscode/{s}-lsp-{s}.vsix", .{ @tagName(zon.name), zon.version });
-        const vsix_src = b.fmt("{s}/out/{s}-lsp-{s}.vsix", .{ vscode_dir, @tagName(zon.name), zon.version });
+        const vsix_filename = b.fmt("vscode/paramkit-{s}.vsix", .{ zon.version });
+        const vsix_src = b.fmt("{s}/out/paramkit-{s}.vsix", .{ vscode_dir, zon.version });
         const install_vsix = b.addInstallFile(
             b.path(vsix_src),
             vsix_filename,
