@@ -4,6 +4,8 @@ import {
 } from 'vscode-languageserver/browser';
 import { ParamlibWasm, wasmSendFrame, wasmSendSchema } from './common';
 import { ParserManager } from './parser';
+import { mergeLspResults } from './lsp-merge';
+import { buildCapabilitiesPatch } from './lsp-capabilities';
 
 declare const __EXTENSION_URL__: string | undefined;
 
@@ -23,11 +25,11 @@ if (typeof __EXTENSION_URL__ === 'string' && __EXTENSION_URL__) {
 const parserManager = new ParserManager(
     (msg) => sendToWasm(msg),
     (name) => `${serverDistBase}parsers/${name}.wasm`,
-    (_uri) => {
-        // @ts-ignore
-        writer.write({jsonrpc: "2.0", method: 'workspace/semanticTokens/refresh', params: null });
-        // @ts-ignore
-        writer.write({jsonrpc: "2.0", method: 'workspace/inlayHint/refresh', params: null });
+    (_uri, methods) => {
+        for (const method of methods) {
+            // @ts-ignore
+            writer.write({ jsonrpc: "2.0", method, params: null });
+        }
     },
     undefined,
     (source) => {
@@ -88,31 +90,6 @@ workerSelf.addEventListener('message', (e: MessageEvent) => {
 const documentTexts = new Map<string, string>();
 const pendingRequests = new Map<number | string, { method: string, params: any, uri?: string, wasmResults: string[] }>();
 
-function mergeLspResults(method: string, base: any, additions: string[]): any {
-    let result = base;
-    for (const json of additions) {
-        try {
-            const extra = JSON.parse(json);
-            if (extra === null) continue;
-            if (result === null) { result = extra; continue; }
-            if (Array.isArray(result) && Array.isArray(extra)) {
-                result = result.concat(extra);
-            } else if (typeof result === 'object' && typeof extra === 'object') {
-                if (method === 'textDocument/hover') {
-                    const bVal = result.contents?.value || result.contents || "";
-                    const eVal = extra.contents?.value  || extra.contents  || "";
-                    result = { contents: { kind: 'markdown', value: (bVal + "\n\n---\n\n" + eVal).trim() } };
-                } else {
-                    result = { ...result, ...extra };
-                }
-            }
-        } catch (e) {
-            console.error(`[parser-wasm] merge error for ${method}:`, e);
-        }
-    }
-    return result;
-}
-
 dispatchToClient = (data: Uint8Array): void => {
     const text      = new TextDecoder().decode(data);
     const bodyStart = text.indexOf('\r\n\r\n');
@@ -121,7 +98,8 @@ dispatchToClient = (data: Uint8Array): void => {
         const msg = JSON.parse(text.slice(bodyStart + 4));
 
         if (msg.result?.capabilities) {
-            msg.result.capabilities.colorProvider = true;
+            const patch = buildCapabilitiesPatch(parserManager.getRegisteredMethods());
+            Object.assign(msg.result.capabilities, patch);
             writer.write(msg);
             return;
         }
@@ -142,6 +120,9 @@ dispatchToClient = (data: Uint8Array): void => {
             if (pending) {
                 pendingRequests.delete(msg.id);
                 msg.result = mergeLspResults(pending.method, msg.result, pending.wasmResults);
+                if (msg.result !== undefined && msg.result !== null) {
+                    delete msg.error;
+                }
             }
         }
         writer.write(msg);
@@ -156,11 +137,12 @@ reader.listen((message) => {
 
     const m = message as { method?: string; params?: any; id?: any };
 
-    if (!m.method && m.id === undefined) return; // not a JSON-RPC message
+    if (!m.method && m.id === undefined) return; 
 
     if (m.id !== undefined && m.method) {
         const uri        = m.params?.textDocument?.uri as string | undefined;
         const wasmResults = parserManager.handleLsp(m.method, m.params, uri);
+
         pendingRequests.set(m.id, { method: m.method, params: m.params, uri, wasmResults });
     }
 
@@ -180,12 +162,14 @@ reader.listen((message) => {
         const { uri, text } = m.params.textDocument;
         documentTexts.set(uri, text);
         parserManager.openDocument(uri, text);
+        void parserManager.processDocument(uri, [], text);
     } else if (m.method === 'textDocument/didChange') {
         const change = m.params.contentChanges?.at(-1);
         if (change?.text != null) {
             const uri = m.params.textDocument.uri;
             documentTexts.set(uri, change.text);
             parserManager.openDocument(uri, change.text);
+            void parserManager.processDocument(uri, [], change.text);
         }
     } else if (m.method === 'textDocument/didClose') {
         const uri = m.params.textDocument.uri;
@@ -201,7 +185,7 @@ reader.listen((message) => {
             const uri = m.params.textDocument.uri;
             setTimeout(() => {
                 sendToWasm({ jsonrpc: '2.0', id: `getParams:${uri}`, method: '$/paramlib/getDocumentParams', params: { textDocument: { uri } } });
-            }, 100);
+            }, 0);
         }
     }
 });

@@ -3,6 +3,8 @@ import * as path from 'path';
 
 import { ParamlibWasm, wasmSendFrame, wasmSendSchema } from './common';
 import { ParserManager } from './parser';
+import { mergeLspResults } from './lsp-merge';
+import { buildCapabilitiesPatch } from './lsp-capabilities';
 
 let wasm: ParamlibWasm;
 const documentTexts = new Map<string, string>();
@@ -11,9 +13,11 @@ const pendingRequests = new Map<number | string, { method: string, params: any, 
 const parserManager = new ParserManager(
     (msg) => sendRpcToWasm({ jsonrpc: '2.0', ...msg }),
     (name) => path.join(__dirname, 'parsers', `${name}.wasm`),
-    (uri) => {
-        const body = JSON.stringify({ method: 'workspace/semanticTokens/refresh', params: null });
-        process.stdout.write(`Content-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`);
+    (uri, methods) => {
+        for (const method of methods) {
+            const body = JSON.stringify({ jsonrpc: '2.0', method, params: null });
+            process.stdout.write(`Content-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`);
+        }
     },
     (p) => fs.readFileSync(p),
     (source) => {
@@ -21,40 +25,6 @@ const parserManager = new ParserManager(
         return path.resolve(source);
     },
 );
-
-function mergeLspResults(method: string, base: any, additions: string[]): any {
-    let result = base;
-    for (const json of additions) {
-        try {
-            const extra = JSON.parse(json);
-            if (extra === null) continue;
-            if (result === null) {
-                result = extra;
-                continue;
-            }
-
-            if (Array.isArray(result) && Array.isArray(extra)) {
-                result = result.concat(extra);
-            } else if (typeof result === 'object' && typeof extra === 'object') {
-                if (method === 'textDocument/hover') {
-                    const bVal = (result.contents?.value || result.contents || "");
-                    const eVal = (extra.contents?.value || extra.contents || "");
-                    result = {
-                        contents: {
-                            kind: 'markdown',
-                            value: (bVal + "\n\n---\n\n" + eVal).trim()
-                        }
-                    };
-                } else {
-                    result = { ...result, ...extra };
-                }
-            }
-        } catch (e) {
-            console.error(`[paramlib] Failed to merge result for ${method}:`, e);
-        }
-    }
-    return result;
-}
 
 function clientSend(ptr: number, len: number): void {
     const slice = new Uint8Array(wasm.memory.buffer, ptr, len);
@@ -66,7 +36,8 @@ function clientSend(ptr: number, len: number): void {
             const msg = JSON.parse(bodyText);
 
             if (msg.result && msg.result.capabilities) {
-                msg.result.capabilities.colorProvider = true;
+                const patch = buildCapabilitiesPatch(parserManager.getRegisteredMethods());
+                Object.assign(msg.result.capabilities, patch);
                 const newBody = JSON.stringify(msg);
                 const header = `Content-Length: ${Buffer.byteLength(newBody)}\r\n\r\n`;
                 process.stdout.write(header + newBody);
@@ -88,6 +59,9 @@ function clientSend(ptr: number, len: number): void {
                 if (pending) {
                     pendingRequests.delete(msg.id);
                     msg.result = mergeLspResults(pending.method, msg.result, pending.wasmResults);
+                    if (msg.result !== undefined && msg.result !== null) {
+                        delete msg.error;
+                    }
                     const newBody = JSON.stringify(msg);
                     const header = `Content-Length: ${Buffer.byteLength(newBody)}\r\n\r\n`;
                     process.stdout.write(header + newBody);
@@ -161,6 +135,7 @@ async function main(): Promise<void> {
                 if (body.id !== undefined && body.method) {
                     const uri = body.params?.textDocument?.uri as string | undefined;
                     const wasmResults = parserManager.handleLsp(body.method, body.params, uri);
+
                     pendingRequests.set(body.id, {
                         method: body.method,
                         params: body.params,
@@ -174,6 +149,7 @@ async function main(): Promise<void> {
                     const text = body.params.textDocument.text as string;
                     documentTexts.set(uri, text);
                     parserManager.openDocument(uri, text);
+                    void parserManager.processDocument(uri, [], text);
                 } else if (body.method === 'textDocument/didChange') {
                     if (body.params.contentChanges.length > 0) {
                         const change = body.params.contentChanges[body.params.contentChanges.length - 1];
@@ -182,6 +158,7 @@ async function main(): Promise<void> {
                             const text = change.text as string;
                             documentTexts.set(uri, text);
                             parserManager.openDocument(uri, text);
+                            void parserManager.processDocument(uri, [], text);
                         }
                     }
                 } else if (body.method === 'textDocument/didClose') {
@@ -196,7 +173,7 @@ async function main(): Promise<void> {
                     const uri = body.params.textDocument.uri as string;
                     setTimeout(() => {
                         sendRpcToWasm({ jsonrpc: '2.0', id: `getParams:${uri}`, method: '$/paramlib/getDocumentParams', params: { textDocument: { uri } } });
-                    }, 100);
+                    }, 0);
                 }
             } catch (e) {
                 sendToWasm(frame);

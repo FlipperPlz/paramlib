@@ -1,5 +1,26 @@
 const WASM_RESERVED = new Set(['parse', 'wasm_alloc', 'wasm_free', 'memory']);
 
+const HINT_DRIVEN_REFRESH: Record<string, string> = {
+    'textDocument/semanticTokens/full':   'workspace/semanticTokens/refresh',
+    'textDocument_semanticTokens_full':   'workspace/semanticTokens/refresh',
+    'semanticTokensFull':                 'workspace/semanticTokens/refresh',
+    'textDocument/semanticTokens/range':  'workspace/semanticTokens/refresh',
+    'textDocument_semanticTokens_range':  'workspace/semanticTokens/refresh',
+    'semanticTokensRange':                'workspace/semanticTokens/refresh',
+    'textDocument/inlayHint':             'workspace/inlayHint/refresh',
+    'textDocument_inlayHint':             'workspace/inlayHint/refresh',
+    'inlayHint':                          'workspace/inlayHint/refresh',
+    'textDocument/codeLens':              'workspace/codeLens/refresh',
+    'textDocument_codeLens':              'workspace/codeLens/refresh',
+    'codeLens':                           'workspace/codeLens/refresh',
+    'textDocument/inlineValue':           'workspace/inlineValue/refresh',
+    'textDocument_inlineValue':           'workspace/inlineValue/refresh',
+    'inlineValue':                        'workspace/inlineValue/refresh',
+    'textDocument/diagnostic':            'workspace/diagnostic/refresh',
+    'textDocument_diagnostic':            'workspace/diagnostic/refresh',
+    'diagnostic':                         'workspace/diagnostic/refresh',
+};
+
 export interface ParserRule {
     pattern: string;
     wasm_source: string;
@@ -45,7 +66,7 @@ export class ParserManager {
     constructor(
         private sendToWasm:           (message: any) => void,
         private resolveInternalWasm:  (name: string) => string,
-        private sendColorRefresh:     (uri: string)  => void,
+        private sendRefreshNotifications: (uri: string, methods: string[]) => void,
         private readFile?:            (path: string) => Uint8Array,
         private resolveExternalWasm?: (source: string) => string,
     ) {}
@@ -62,10 +83,11 @@ export class ParserManager {
 
     public async updateRules(rules: ParserRule[]): Promise<void> {
         this.rules = rules;
-        this.lspIndex.clear();
         await this.loadWasmModules();
+        
+        
         for (const [uri, doc] of this.openDocuments) {
-            await this.processDocument(uri, doc.params, doc.text);
+            this.processDocument(uri, doc.params, doc.text);
         }
     }
 
@@ -82,100 +104,112 @@ export class ParserManager {
     }
 
     private async loadWasmModules(): Promise<void> {
+        const newLspIndex = new Map<string, string[]>();
+
         for (const rule of this.rules) {
-            if (this.instances.has(rule.wasm_source)) continue;
-            try {
-                const wasmPath = this.resolveWasmPath(rule.wasm_source);
-                let bytes: ArrayBuffer;
+            if (!this.instances.has(rule.wasm_source)) {
+                try {
+                    const wasmPath = this.resolveWasmPath(rule.wasm_source);
+                    console.error(`[parser-wasm] loading ${rule.wasm_source} from ${wasmPath}`);
+                    let bytes: ArrayBuffer;
 
-                if (this.readFile && !wasmPath.startsWith('http')) {
-                    bytes = this.readFile(wasmPath).buffer as ArrayBuffer;
-                } else {
-                    const response = await fetch(wasmPath);
-                    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-                    bytes = await response.arrayBuffer();
+                    if (this.readFile && !wasmPath.startsWith('http')) {
+                        bytes = this.readFile(wasmPath).buffer as ArrayBuffer;
+                    } else {
+                        const response = await fetch(wasmPath);
+                        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                        bytes = await response.arrayBuffer();
+                    }
+
+                    const { instance } = await WebAssembly.instantiate(bytes, { 
+                        env: {
+                            wasm_log: (ptr: number, len: number) => {
+                                const mem = instance.exports.memory as WebAssembly.Memory;
+                                const msg = new TextDecoder().decode(new Uint8Array(mem.buffer, ptr, len));
+                                console.error(`[parser-wasm:${rule.wasm_source}] ${msg}`);
+                            }
+                        } 
+                    });
+                    
+                    const exp = instance.exports;
+                    const parseFn = exp.parse      as CallableFunction | undefined;
+                    const allocFn = exp.wasm_alloc as CallableFunction | undefined;
+                    const freeFn  = exp.wasm_free  as CallableFunction | undefined;
+                    const memory  = exp.memory     as WebAssembly.Memory;
+
+                    if (typeof parseFn !== 'function') {
+                        console.error(`[parser-wasm] ${rule.wasm_source}: missing parse export`);
+                        continue;
+                    }
+
+                    const callWasm = (fn: CallableFunction, input: string): string | null => {
+                        const enc     = new TextEncoder();
+                        const inBytes = enc.encode(input);
+                        const inPtr: number = allocFn ? allocFn(inBytes.length) : 0;
+                        if (!inPtr) return null;
+                        new Uint8Array(memory.buffer, inPtr, inBytes.length).set(inBytes);
+
+                        const outMax           = 65536;
+                        const outPtr: number   = allocFn ? allocFn(outMax) : 0;
+                        if (!outPtr) { freeFn?.(inPtr, inBytes.length); return null; }
+
+                        const outLen: number = fn(inPtr, inBytes.length, outPtr, outMax);
+                        const result = outLen >= 0
+                            ? new TextDecoder().decode(new Uint8Array(memory.buffer, outPtr, outLen))
+                            : null;
+
+                        freeFn?.(inPtr, inBytes.length);
+                        freeFn?.(outPtr, outMax);
+                        return result;
+                    };
+
+                    const lsp = new Map<string, (json: string) => string | null>();
+                    const exportedNames: string[] = [];
+                    for (const [name, val] of Object.entries(exp)) {
+                        if (WASM_RESERVED.has(name) || typeof val !== 'function') continue;
+                        lsp.set(name, (json) => callWasm(val as CallableFunction, json));
+                        exportedNames.push(name);
+                    }
+                    console.error(`[parser-wasm] ${rule.wasm_source} exports: ${exportedNames.join(', ')}`);
+
+                    this.instances.set(rule.wasm_source, {
+                        parse: (input) => callWasm(parseFn, input),
+                        lsp,
+                    });
+                } catch (e) {
                 }
+            }
 
-                const { instance } = await WebAssembly.instantiate(bytes, { 
-                    env: {
-                        wasm_log: (_ptr: number, _len: number) => {}
-                    } 
-                });
-                const exp = instance.exports;
-
-                const parseFn = exp.parse      as CallableFunction | undefined;
-                const allocFn = exp.wasm_alloc as CallableFunction | undefined;
-                const freeFn  = exp.wasm_free  as CallableFunction | undefined;
-                const memory  = exp.memory     as WebAssembly.Memory;
-
-                if (typeof parseFn !== 'function') {
-                    console.error(`[parser-wasm] ${rule.wasm_source}: missing parse export`);
-                    continue;
-                }
-
-                const callWasm = (fn: CallableFunction, input: string): string | null => {
-                    const enc     = new TextEncoder();
-                    const inBytes = enc.encode(input);
-                    const inPtr: number = allocFn ? allocFn(inBytes.length) : 0;
-                    if (!inPtr) return null;
-                    new Uint8Array(memory.buffer, inPtr, inBytes.length).set(inBytes);
-
-                    const outMax           = 65536;
-                    const outPtr: number   = allocFn ? allocFn(outMax) : 0;
-                    if (!outPtr) { freeFn?.(inPtr, inBytes.length); return null; }
-
-                    const outLen: number = fn(inPtr, inBytes.length, outPtr, outMax);
-                    const result = outLen >= 0
-                        ? new TextDecoder().decode(new Uint8Array(memory.buffer, outPtr, outLen))
-                        : null;
-
-                    freeFn?.(inPtr, inBytes.length);
-                    freeFn?.(outPtr, outMax);
-                    return result;
-                };
-
-                const lsp = new Map<string, (json: string) => string | null>();
-                for (const [name, val] of Object.entries(exp)) {
-                    if (WASM_RESERVED.has(name) || typeof val !== 'function') continue;
-                    lsp.set(name, (json) => callWasm(val as CallableFunction, json));
-                }
-
-                this.instances.set(rule.wasm_source, {
-                    parse: (input) => callWasm(parseFn, input),
-                    lsp,
-                });
-
-                for (const name of lsp.keys()) {
-                    let list = this.lspIndex.get(name);
+            const inst = this.instances.get(rule.wasm_source);
+            if (inst) {
+                for (const name of inst.lsp.keys()) {
+                    let list = newLspIndex.get(name);
                     if (!list) {
                         list = [];
-                        this.lspIndex.set(name, list);
+                        newLspIndex.set(name, list);
                     }
                     list.push(rule.wasm_source);
                 }
-
-            } catch (e) {
-                console.error(`[parser-wasm] failed to load ${rule.wasm_source}:`, e);
             }
         }
+        this.lspIndex = newLspIndex;
     }
 
     public handleLsp(method: string, params: unknown, uri?: string): string[] {
         const [mangled, short] = lspMethodToExport(method);
-        const sources = (this.lspIndex.get(mangled) || []).concat(this.lspIndex.get(short) || []);
-        const uniqueSources = Array.from(new Set(sources));
+        const sourcesMangled = this.lspIndex.get(mangled) || [];
+        const sourcesShort   = this.lspIndex.get(short) || [];
+        const uniqueSources  = Array.from(new Set([...sourcesMangled, ...sourcesShort]));
         
-        const doc = uri ? this.openDocuments.get(uri) : null;
         const hints = uri ? (this.documentHints.get(uri) ?? []) : [];
+        const doc = uri ? this.openDocuments.get(uri) : null;
         const docParams = doc?.params ?? [];
         const inputJson = JSON.stringify({ params, hints, docParams });
 
         const results: string[] = [];
         for (const source of uniqueSources) {
             const inst = this.instances.get(source);
-            if (!inst) continue;
-
-            const handler = inst.lsp.get(mangled) ?? inst.lsp.get(short);
+            const handler = inst?.lsp.get(mangled) ?? inst?.lsp.get(short);
             if (!handler) continue;
 
             const r = handler(inputJson);
@@ -188,7 +222,20 @@ export class ParserManager {
         return this.documentHints.get(uri) ?? [];
     }
 
-    public async processDocument(uri: string, params: DocumentParam[], rawText?: string): Promise<void> {
+    public getRegisteredMethods(): string[] {
+        return Array.from(this.lspIndex.keys());
+    }
+
+    public getHintDrivenRefreshNotifications(): string[] {
+        const notifications = new Set<string>();
+        for (const method of this.lspIndex.keys()) {
+            const notification = HINT_DRIVEN_REFRESH[method];
+            if (notification) notifications.add(notification);
+        }
+        return Array.from(notifications);
+    }
+
+    public processDocument(uri: string, params: DocumentParam[], rawText?: string): void {
         const existing = this.openDocuments.get(uri);
         this.openDocuments.set(uri, {
             params,
@@ -217,12 +264,15 @@ export class ParserManager {
                         const line      = (before.match(/\n/g) ?? []).length;
                         const lastNl    = before.lastIndexOf('\n');
                         const character = match.index - (lastNl + 1);
-                        hints.push({
-                            line,
-                            character,
-                            text:   result,
-                            length: match[0].length,
-                        });
+
+                        if (!isNaN(line) && !isNaN(character)) {
+                            hints.push({
+                                line,
+                                character,
+                                text:   result,
+                                length: match[0].length,
+                            });
+                        }
                     }
                     if (match[0].length === 0) re.lastIndex++;
                 }
@@ -231,12 +281,14 @@ export class ParserManager {
                     if (globMatch(rule.pattern, param.path)) {
                         const result = inst.parse(param.value);
                         if (result !== null) {
-                            hints.push({
-                                line:      param.value_line,
-                                character: param.value_character,
-                                text:      result,
-                                length:    param.value.length,
-                            });
+                            if (!isNaN(param.value_line) && !isNaN(param.value_character)) {
+                                hints.push({
+                                    line:      param.value_line,
+                                    character: param.value_character,
+                                    text:      result,
+                                    length:    param.value.length,
+                                });
+                            }
                         }
                     }
                 }
@@ -247,7 +299,7 @@ export class ParserManager {
 
         if (hints.length > 0) {
             this.sendToWasm({ jsonrpc: '2.0', method: '$/paramlib/parserHints', params: { uri, hints } });
-            this.sendColorRefresh(uri);
+            this.sendRefreshNotifications(uri, this.getHintDrivenRefreshNotifications());
         }
     }
 }
