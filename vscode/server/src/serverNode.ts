@@ -2,16 +2,111 @@ import * as fs   from 'fs';
 import * as path from 'path';
 
 import { ParamlibWasm, wasmSendFrame, wasmSendSchema } from './common';
+import { ParserManager } from './parser';
 
 let wasm: ParamlibWasm;
+const documentTexts = new Map<string, string>();
+const pendingRequests = new Map<number | string, { method: string, params: any, uri?: string, wasmResults: string[] }>();
+
+const parserManager = new ParserManager(
+    (msg) => sendRpcToWasm({ jsonrpc: '2.0', ...msg }),
+    (name) => path.join(__dirname, 'parsers', `${name}.wasm`),
+    (uri) => {
+        const body = JSON.stringify({ method: 'workspace/semanticTokens/refresh', params: null });
+        process.stdout.write(`Content-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`);
+    },
+    (p) => fs.readFileSync(p),
+    (source) => {
+        if (source.startsWith('http://') || source.startsWith('https://')) return source;
+        return path.resolve(source);
+    },
+);
+
+function mergeLspResults(method: string, base: any, additions: string[]): any {
+    let result = base;
+    for (const json of additions) {
+        try {
+            const extra = JSON.parse(json);
+            if (extra === null) continue;
+            if (result === null) {
+                result = extra;
+                continue;
+            }
+
+            if (Array.isArray(result) && Array.isArray(extra)) {
+                result = result.concat(extra);
+            } else if (typeof result === 'object' && typeof extra === 'object') {
+                if (method === 'textDocument/hover') {
+                    const bVal = (result.contents?.value || result.contents || "");
+                    const eVal = (extra.contents?.value || extra.contents || "");
+                    result = {
+                        contents: {
+                            kind: 'markdown',
+                            value: (bVal + "\n\n---\n\n" + eVal).trim()
+                        }
+                    };
+                } else {
+                    result = { ...result, ...extra };
+                }
+            }
+        } catch (e) {
+            console.error(`[paramlib] Failed to merge result for ${method}:`, e);
+        }
+    }
+    return result;
+}
 
 function clientSend(ptr: number, len: number): void {
     const slice = new Uint8Array(wasm.memory.buffer, ptr, len);
-    process.stdout.write(slice);
+    const text = new TextDecoder().decode(slice);
+    const bodyStart = text.indexOf('\r\n\r\n');
+    if (bodyStart !== -1) {
+        try {
+            const bodyText = text.slice(bodyStart + 4);
+            const msg = JSON.parse(bodyText);
+
+            if (msg.result && msg.result.capabilities) {
+                msg.result.capabilities.colorProvider = true;
+                const newBody = JSON.stringify(msg);
+                const header = `Content-Length: ${Buffer.byteLength(newBody)}\r\n\r\n`;
+                process.stdout.write(header + newBody);
+                return;
+            }
+
+            if (msg.id === 'getRules') {
+                parserManager.updateRules(msg.result || []);
+                return;
+            }
+            if (typeof msg.id === 'string' && msg.id.startsWith('getParams:')) {
+                const uri = msg.id.slice(10);
+                parserManager.processDocument(uri, msg.result.params);
+                return;
+            }
+
+            if (msg.id !== undefined && !msg.method) {
+                const pending = pendingRequests.get(msg.id);
+                if (pending) {
+                    pendingRequests.delete(msg.id);
+                    msg.result = mergeLspResults(pending.method, msg.result, pending.wasmResults);
+                    const newBody = JSON.stringify(msg);
+                    const header = `Content-Length: ${Buffer.byteLength(newBody)}\r\n\r\n`;
+                    process.stdout.write(header + newBody);
+                    return;
+                }
+            }
+        } catch (e) {}
+    }
+    process.stdout.write(Buffer.from(slice));
 }
 
 function sendToWasm(data: Buffer): void {
     wasmSendFrame(wasm, data);
+}
+
+function sendRpcToWasm(msg: object): void {
+    const body   = JSON.stringify(msg);
+    const header = `Content-Length: ${Buffer.byteLength(body)}\r\n\r\n`;
+    sendToWasm(Buffer.from(header + body));
 }
 
 async function main(): Promise<void> {
@@ -23,26 +118,19 @@ async function main(): Promise<void> {
     wasm = instance.exports as unknown as ParamlibWasm;
 
     const schemaFile = process.env['PARAMLIB_SCHEMA_FILE'];
-    console.error('[paramlib] PARAMLIB_SCHEMA_FILE:', schemaFile ?? '(not set)');
     if (schemaFile) {
         const sendSchema = (): void => {
             try {
-                console.error('[paramlib] loading schema from:', schemaFile);
                 const bytes = fs.readFileSync(schemaFile);
-                console.error('[paramlib] schema loaded, bytes:', bytes.length);
                 wasmSendSchema(wasm, bytes);
-                console.error('[paramlib] schema sent to wasm');
+                sendRpcToWasm({ jsonrpc: '2.0', id: 'getRules', method: '$/paramlib/getParserRules' });
             } catch (e) {
                 console.error('[paramlib] Failed to load schema file:', e);
             }
         };
         sendSchema();
         try {
-            fs.watch(schemaFile, () => {
-                console.error('[paramlib] schema file changed, reloading:', schemaFile);
-                sendSchema();
-            });
-            console.error('[paramlib] watching schema file for changes:', schemaFile);
+            fs.watch(schemaFile, () => { sendSchema(); });
         } catch (e) {
             console.error('[paramlib] fs.watch failed for schema file:', e);
         }
@@ -66,7 +154,54 @@ async function main(): Promise<void> {
             if (buf.length < frameEnd) break;
 
             const frame = buf.slice(0, frameEnd);
-            sendToWasm(frame);
+            
+            try {
+                const body = JSON.parse(buf.slice(headerEnd + 4, frameEnd).toString('utf8'));
+
+                if (body.id !== undefined && body.method) {
+                    const uri = body.params?.textDocument?.uri as string | undefined;
+                    const wasmResults = parserManager.handleLsp(body.method, body.params, uri);
+                    pendingRequests.set(body.id, {
+                        method: body.method,
+                        params: body.params,
+                        uri,
+                        wasmResults
+                    });
+                }
+
+                if (body.method === 'textDocument/didOpen') {
+                    const uri  = body.params.textDocument.uri as string;
+                    const text = body.params.textDocument.text as string;
+                    documentTexts.set(uri, text);
+                    parserManager.openDocument(uri, text);
+                } else if (body.method === 'textDocument/didChange') {
+                    if (body.params.contentChanges.length > 0) {
+                        const change = body.params.contentChanges[body.params.contentChanges.length - 1];
+                        if (change.text != null) {
+                            const uri  = body.params.textDocument.uri as string;
+                            const text = change.text as string;
+                            documentTexts.set(uri, text);
+                            parserManager.openDocument(uri, text);
+                        }
+                    }
+                } else if (body.method === 'textDocument/didClose') {
+                    const uri = body.params.textDocument.uri as string;
+                    documentTexts.delete(uri);
+                    parserManager.closeDocument(uri);
+                }
+
+                sendToWasm(frame);
+
+                if (body.method === 'textDocument/didOpen' || body.method === 'textDocument/didChange') {
+                    const uri = body.params.textDocument.uri as string;
+                    setTimeout(() => {
+                        sendRpcToWasm({ jsonrpc: '2.0', id: `getParams:${uri}`, method: '$/paramlib/getDocumentParams', params: { textDocument: { uri } } });
+                    }, 100);
+                }
+            } catch (e) {
+                sendToWasm(frame);
+            }
+
             buf = buf.slice(frameEnd);
         }
     });

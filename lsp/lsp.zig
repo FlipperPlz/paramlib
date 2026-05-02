@@ -12,20 +12,69 @@ pub const ArrayInlaysRule = struct {
     labels: []const []const u8,
 };
 
+pub const ParserRule = struct {
+    pattern: []const u8,
+    wasm_source: []const u8,
+};
+
+pub const PrecomputedParserHint = struct {
+    line: u32,
+    character: u32,
+    text: []const u8,
+};
+
+pub const ParserHintsParams = struct {
+    uri: []const u8,
+    hints: []const PrecomputedParserHint,
+};
+
+pub const GetDocumentParams = struct {
+    textDocument: lsp.types.TextDocument.Identifier,
+};
+
+pub const Position = struct {
+    line: u32,
+    character: u32,
+};
+
+pub const DocumentParam = struct {
+    path: []const u8,
+    value: []const u8,
+    line: u32,
+    character: u32,
+    value_line: u32,
+    value_character: u32,
+    elem_positions: []const Position = &.{},
+};
+
+pub const GetDocumentParamsResult = struct {
+    params: []const DocumentParam,
+};
+
 pub const SchemaState = struct {
     stringCompletions: []StringCompletionRule = &.{},
     arrayInlays: []ArrayInlaysRule = &.{},
+    parserRules: []ParserRule = &.{},
+    documentHints: std.StringArrayHashMapUnmanaged([]const PrecomputedParserHint) = .empty,
+    schemaClasses: []const []const u8 = &.{},
 
     pub const empty: SchemaState = .{};
 
-    pub fn updateFromContent(self: *SchemaState, alloc: std.mem.Allocator, content: []const u8) void {
+    pub fn updateFromContent(self: *SchemaState, alloc: std.mem.Allocator, content: []const u8, class_name: ?[]const u8) void {
         const src = alloc.dupeZ(u8, content) catch return;
         defer alloc.free(src);
         var errored = false;
         var root = paramlib.cpp.parser.parseSource(alloc, src, &errored, .none()) catch return;
         defer root.deinit(alloc);
-        const sc = findLastSchemaClass(&root, alloc) orelse return;
-        const new_state = buildFromSchemaClass(sc.root_ptr, sc.class_ptr, alloc);
+        const new_classes = collectSchemaClassNames(&root, alloc);
+        const sc = findSchemaClass(&root, alloc, class_name) orelse {
+            self.deinit(alloc);
+            self.schemaClasses = new_classes;
+            return;
+        };
+        const empty_named: std.StringArrayHashMapUnmanaged(SchemaState) = .empty;
+        var new_state = buildFromSchemaClass(sc.root_ptr, sc.class_ptr, alloc, &empty_named);
+        new_state.schemaClasses = new_classes;
         self.deinit(alloc);
         self.* = new_state;
     }
@@ -36,17 +85,91 @@ pub const SchemaState = struct {
         documents: *const std.StringArrayHashMapUnmanaged([]const u8),
     ) void {
         self.deinit(alloc);
+
+        var named = std.StringArrayHashMapUnmanaged(SchemaState).empty;
+        defer {
+            var it = named.iterator();
+            while (it.next()) |entry| {
+                alloc.free(entry.key_ptr.*);
+                entry.value_ptr.deinit(alloc);
+            }
+            named.deinit(alloc);
+        }
+
         for (documents.values()) |text| {
             const src = alloc.dupeZ(u8, text) catch continue;
             defer alloc.free(src);
             var errored = false;
             var root = paramlib.cpp.parser.parseSource(alloc, src, &errored, .none()) catch continue;
             defer root.deinit(alloc);
-            const sc = findLastSchemaClass(&root, alloc) orelse continue;
-            const new_state = buildFromSchemaClass(sc.root_ptr, sc.class_ptr, alloc);
-            self.deinit(alloc);
-            self.* = new_state;
+            const cfg = getCfgSchemasMembers(&root) orelse continue;
+            for (cfg.items) |*cm| {
+                if (cm.* != .class or cm.class.members == null) continue;
+                const name = cm.class.name orelse continue;
+                if (named.contains(name)) continue;
+                const state = buildFromSchemaClass(&root, &cm.class, alloc, &named);
+                const key = alloc.dupe(u8, name) catch { var s = state; s.deinit(alloc); continue; };
+                named.put(alloc, key, state) catch { alloc.free(key); var s = state; s.deinit(alloc); };
+            }
         }
+
+        var all_names = std.ArrayList([]const u8).empty;
+        defer {
+            for (all_names.items) |n| alloc.free(n);
+            all_names.deinit(alloc);
+        }
+        var active: SchemaState = .empty;
+
+        for (documents.values()) |text| {
+            const src = alloc.dupeZ(u8, text) catch continue;
+            defer alloc.free(src);
+            var errored = false;
+            var root = paramlib.cpp.parser.parseSource(alloc, src, &errored, .none()) catch continue;
+            defer root.deinit(alloc);
+            const cfg = getCfgSchemasMembers(&root) orelse continue;
+
+            for (cfg.items) |*cm| {
+                if (cm.* != .class) continue;
+                const name = cm.class.name orelse continue;
+                var already = false;
+                for (all_names.items) |n| {
+                    if (std.mem.eql(u8, n, name)) { already = true; break; }
+                }
+                if (!already) {
+                    const n = alloc.dupe(u8, name) catch continue;
+                    all_names.append(alloc, n) catch { alloc.free(n); };
+                }
+            }
+
+            for (cfg.items) |*cm| {
+                if (cm.* != .class or cm.class.members == null) continue;
+                const cls  = &cm.class;
+                const name = cls.name orelse continue;
+
+                const needs_rebuild: bool = blk: {
+                    const base = cls.base orelse break :blk false;
+                    if (base.members != null) break :blk false;
+                    const bname = base.name orelse break :blk false;
+                    break :blk named.contains(bname);
+                };
+                if (needs_rebuild) {
+                    const new_state = buildFromSchemaClass(&root, cls, alloc, &named);
+                    if (named.getPtr(name)) |slot| {
+                        slot.deinit(alloc);
+                        slot.* = new_state;
+                    }
+                }
+
+                if (named.get(name)) |state| {
+                    active.deinit(alloc);
+                    active = cloneSchemaState(state, alloc);
+                }
+            }
+        }
+
+        active.schemaClasses = all_names.toOwnedSlice(alloc) catch &.{};
+        all_names = .empty;
+        self.* = active;
     }
 
     const SchemaClass = struct {
@@ -54,9 +177,10 @@ pub const SchemaState = struct {
         class_ptr: *const paramlib.cpp.ast.ClassAst,
     };
 
-    fn findLastSchemaClass(
-        root:  *const paramlib.cpp.ast.ClassAst,
-        alloc: std.mem.Allocator,
+    fn findSchemaClass(
+        root:       *const paramlib.cpp.ast.ClassAst,
+        alloc:      std.mem.Allocator,
+        class_name: ?[]const u8,
     ) ?SchemaClass {
         _ = alloc;
         const members = root.members orelse return null;
@@ -67,32 +191,149 @@ pub const SchemaState = struct {
             const cfg_members = cfg.members orelse continue;
             var last: ?*const paramlib.cpp.ast.ClassAst = null;
             for (cfg_members.items) |*cm| {
-                if (cm.* == .class) last = &cm.class;
+                if (cm.* != .class) continue;
+                if (class_name) |name| {
+                    if (cm.class.name != null and std.mem.eql(u8, cm.class.name.?, name))
+                        return .{ .root_ptr = root, .class_ptr = &cm.class };
+                } else {
+                    last = &cm.class;
+                }
             }
-            if (last) |l| return .{ .root_ptr = root, .class_ptr = l };
+            if (class_name == null) {
+                if (last) |l| return .{ .root_ptr = root, .class_ptr = l };
+            }
+            return null;
         }
         return null;
+    }
+
+    fn collectSchemaClassNames(
+        root:  *const paramlib.cpp.ast.ClassAst,
+        alloc: std.mem.Allocator,
+    ) []const []const u8 {
+        const members = root.members orelse return &.{};
+        for (members.items) |*m| {
+            if (m.* != .class) continue;
+            const cfg = &m.class;
+            if (cfg.name == null or !std.mem.eql(u8, cfg.name.?, "CfgSchemas")) continue;
+            const cfg_members = cfg.members orelse return &.{};
+            var list = std.ArrayList([]const u8).empty;
+            for (cfg_members.items) |*cm| {
+                if (cm.* != .class) continue;
+                const name = cm.class.name orelse continue;
+                const duped = alloc.dupe(u8, name) catch continue;
+                list.append(alloc, duped) catch { alloc.free(duped); };
+            }
+            return list.toOwnedSlice(alloc) catch &.{};
+        }
+        return &.{};
+    }
+
+
+    fn getCfgSchemasMembers(root: *const paramlib.cpp.ast.ClassAst) ?*std.ArrayList(paramlib.cpp.ast.MemberAst) {
+        const top = root.members orelse return null;
+        for (top.items) |*m| {
+            if (m.* != .class) continue;
+            const cfg = &m.class;
+            if (cfg.name == null or !std.mem.eql(u8, cfg.name.?, "CfgSchemas")) continue;
+            if (cfg.members) |*members| return members;
+        }
+        return null;
+    }
+
+    fn cloneSchemaState(src: SchemaState, alloc: std.mem.Allocator) SchemaState {
+        var comps = std.ArrayList(StringCompletionRule).empty;
+        for (src.stringCompletions) |rule| {
+            const path = alloc.dupe(u8, rule.path) catch continue;
+            const vs   = alloc.alloc([]const u8, rule.values.len) catch { alloc.free(path); continue; };
+            for (rule.values, 0..) |v, i| vs[i] = alloc.dupe(u8, v) catch "";
+            comps.append(alloc, .{ .path = path, .values = vs }) catch {
+                alloc.free(path);
+                for (vs) |v| alloc.free(v);
+                alloc.free(vs);
+            };
+        }
+        var arrays = std.ArrayList(ArrayInlaysRule).empty;
+        for (src.arrayInlays) |rule| {
+            const path = alloc.dupe(u8, rule.path) catch continue;
+            const ls   = alloc.alloc([]const u8, rule.labels.len) catch { alloc.free(path); continue; };
+            for (rule.labels, 0..) |l, i| ls[i] = alloc.dupe(u8, l) catch "";
+            arrays.append(alloc, .{ .path = path, .labels = ls }) catch {
+                alloc.free(path);
+                for (ls) |l| alloc.free(l);
+                alloc.free(ls);
+            };
+        }
+        var parsers = std.ArrayList(ParserRule).empty;
+        for (src.parserRules) |rule| {
+            const pattern = alloc.dupe(u8, rule.pattern) catch continue;
+            const wasm    = alloc.dupe(u8, rule.wasm_source) catch { alloc.free(pattern); continue; };
+            parsers.append(alloc, .{ .pattern = pattern, .wasm_source = wasm }) catch {
+                alloc.free(pattern);
+                alloc.free(wasm);
+            };
+        }
+        var docHints = std.StringArrayHashMapUnmanaged([]const PrecomputedParserHint).empty;
+        var it = src.documentHints.iterator();
+        while (it.next()) |entry| {
+            const uri = alloc.dupe(u8, entry.key_ptr.*) catch continue;
+            const hints = alloc.alloc(PrecomputedParserHint, entry.value_ptr.*.len) catch { alloc.free(uri); continue; };
+            for (entry.value_ptr.*, 0..) |h, i| {
+                hints[i] = .{
+                    .line = h.line,
+                    .character = h.character,
+                    .text = alloc.dupe(u8, h.text) catch "",
+                };
+            }
+            docHints.put(alloc, uri, hints) catch {
+                alloc.free(uri);
+                for (hints) |h| alloc.free(h.text);
+                alloc.free(hints);
+            };
+        }
+        return .{
+            .stringCompletions = comps.toOwnedSlice(alloc)  catch &.{},
+            .arrayInlays       = arrays.toOwnedSlice(alloc) catch &.{},
+            .parserRules       = parsers.toOwnedSlice(alloc) catch &.{},
+            .documentHints     = docHints,
+            .schemaClasses     = &.{},
+        };
     }
 
     fn buildFromSchemaClass(
         root:   *const paramlib.cpp.ast.ClassAst,
         schema: *const paramlib.cpp.ast.ClassAst,
         alloc:  std.mem.Allocator,
+        named:  *const std.StringArrayHashMapUnmanaged(SchemaState),
     ) SchemaState {
         var base_state: SchemaState = if (schema.base) |base| blk: {
-            break :blk buildFromSchemaClass(root, base, alloc);
+            if (base.members != null) {
+                break :blk buildFromSchemaClass(root, base, alloc, named);
+            }
+            if (base.name) |bname| {
+                if (named.get(bname)) |existing| {
+                    break :blk cloneSchemaState(existing, alloc);
+                }
+            }
+            break :blk .empty;
         } else .empty;
 
         var completions = std.ArrayList(StringCompletionRule).fromOwnedSlice(base_state.stringCompletions);
         var arrays      = std.ArrayList(ArrayInlaysRule).fromOwnedSlice(base_state.arrayInlays);
+        var parsers     = std.ArrayList(ParserRule).fromOwnedSlice(base_state.parserRules);
+        const docHints  = base_state.documentHints;
         base_state.stringCompletions = &.{};
         base_state.arrayInlays       = &.{};
+        base_state.parserRules       = &.{};
+        base_state.documentHints     = .empty;
         base_state.deinit(alloc);
 
         const members = schema.members orelse {
             return .{
                 .stringCompletions = completions.toOwnedSlice(alloc) catch &.{},
                 .arrayInlays       = arrays.toOwnedSlice(alloc)      catch &.{},
+                .parserRules       = parsers.toOwnedSlice(alloc)     catch &.{},
+                .documentHints     = docHints,
             };
         };
 
@@ -105,7 +346,9 @@ pub const SchemaState = struct {
             };
             const is_completions  = std.mem.eql(u8, p.name, "stringCompletions");
             const is_array_inlays = std.mem.eql(u8, p.name, "arrayInlays");
-            if (!is_completions and !is_array_inlays) continue;
+            // Accept both "parsers" (documented schema format) and "parserRules" (internal name)
+            const is_parsers      = std.mem.eql(u8, p.name, "parsers") or std.mem.eql(u8, p.name, "parserRules");
+            if (!is_completions and !is_array_inlays and !is_parsers) continue;
 
             if (p.operator == .assign) {
                 if (is_completions) {
@@ -115,13 +358,19 @@ pub const SchemaState = struct {
                         alloc.free(r.values);
                     }
                     completions.clearRetainingCapacity();
-                } else {
+                } else if (is_array_inlays) {
                     for (arrays.items) |r| {
                         alloc.free(r.path);
                         for (r.labels) |l| alloc.free(l);
                         alloc.free(r.labels);
                     }
                     arrays.clearRetainingCapacity();
+                } else {
+                    for (parsers.items) |r| {
+                        alloc.free(r.pattern);
+                        alloc.free(r.wasm_source);
+                    }
+                    parsers.clearRetainingCapacity();
                 }
             }
 
@@ -131,6 +380,23 @@ pub const SchemaState = struct {
                     else   => continue,
                 };
                 if (pair.len < 2) continue;
+
+                if (is_parsers) {
+                    const pat = switch (pair[0]) {
+                        .string => |s| s,
+                        else    => continue,
+                    };
+                    const wasm = switch (pair[1]) {
+                        .string => |s| s,
+                        else    => continue,
+                    };
+                    parsers.append(alloc, .{
+                        .pattern = alloc.dupe(u8, pat) catch continue,
+                        .wasm_source = alloc.dupe(u8, wasm) catch continue,
+                    }) catch {};
+                    continue;
+                }
+
                 const path_str = switch (pair[0]) {
                     .string => |s| s,
                     else    => continue,
@@ -153,7 +419,7 @@ pub const SchemaState = struct {
                         for (vs) |v| alloc.free(v);
                         alloc.free(vs);
                     };
-                } else {
+                } else if (is_array_inlays) {
                     const ls = alloc.alloc([]const u8, inner.len) catch { alloc.free(path); continue; };
                     for (inner, 0..) |*el, i| {
                         ls[i] = switch (el.*) {
@@ -173,6 +439,8 @@ pub const SchemaState = struct {
         return .{
             .stringCompletions = completions.toOwnedSlice(alloc) catch &.{},
             .arrayInlays       = arrays.toOwnedSlice(alloc)      catch &.{},
+            .parserRules       = parsers.toOwnedSlice(alloc)     catch &.{},
+            .documentHints     = docHints,
         };
     }
 
@@ -192,6 +460,25 @@ pub const SchemaState = struct {
         }
         if (self.arrayInlays.len > 0) alloc.free(self.arrayInlays);
         self.arrayInlays = &.{};
+
+        for (self.parserRules) |rule| {
+            alloc.free(rule.pattern);
+            alloc.free(rule.wasm_source);
+        }
+        if (self.parserRules.len > 0) alloc.free(self.parserRules);
+        self.parserRules = &.{};
+
+        var it = self.documentHints.iterator();
+        while (it.next()) |entry| {
+            alloc.free(entry.key_ptr.*);
+            for (entry.value_ptr.*) |h| alloc.free(h.text);
+            alloc.free(entry.value_ptr.*);
+        }
+        self.documentHints.deinit(alloc);
+
+        for (self.schemaClasses) |name| alloc.free(name);
+        if (self.schemaClasses.len > 0) alloc.free(self.schemaClasses);
+        self.schemaClasses = &.{};
     }
 
     pub fn valuesFor(self: *const SchemaState, param_path: []const u8) ?[]const []const u8 {
@@ -209,6 +496,96 @@ pub const SchemaState = struct {
         return null;
     }
 };
+
+test "schema: forward decl base resolved from same document" {
+    const src =
+        \\class CfgSchemas {
+        \\    class DayZ {
+        \\        stringCompletions[] = {{"Foo.bar", {"a", "b"}}};
+        \\    };
+        \\    class DayZ;
+        \\    class MyProject : DayZ {
+        \\        stringCompletions[] += {{"Foo.baz", {"x"}}};
+        \\    };
+        \\};
+    ;
+    var docs: std.StringArrayHashMapUnmanaged([]const u8) = .{};
+    defer docs.deinit(std.testing.allocator);
+    try docs.put(std.testing.allocator, "file://a.cpp", src);
+
+    var state: SchemaState = .empty;
+    defer state.deinit(std.testing.allocator);
+    state.extractFromDocuments(std.testing.allocator, &docs);
+
+    try std.testing.expect(state.valuesFor("Foo.bar") != null);
+    try std.testing.expect(state.valuesFor("Foo.baz") != null);
+}
+
+test "schema: forward decl base resolved across two documents" {
+    const base_src =
+        \\class CfgSchemas {
+        \\    class DayZ {
+        \\        stringCompletions[] = {{"Weapon.type", {"Rifle", "Pistol"}}};
+        \\    };
+        \\};
+    ;
+    const proj_src =
+        \\class CfgSchemas {
+        \\    class DayZ;
+        \\    class MyProject : DayZ {
+        \\        stringCompletions[] += {{"Vehicle.type", {"Car", "Truck"}}};
+        \\    };
+        \\};
+    ;
+
+    var docs: std.StringArrayHashMapUnmanaged([]const u8) = .{};
+    defer docs.deinit(std.testing.allocator);
+    try docs.put(std.testing.allocator, "file://dayz.cpp",   base_src);
+    try docs.put(std.testing.allocator, "file://mymod.cpp",  proj_src);
+
+    var state: SchemaState = .empty;
+    defer state.deinit(std.testing.allocator);
+    state.extractFromDocuments(std.testing.allocator, &docs);
+
+    try std.testing.expect(state.valuesFor("Weapon.type") != null);
+    try std.testing.expect(state.valuesFor("Vehicle.type") != null);
+
+    var saw_dayz = false;
+    var saw_myproject = false;
+    for (state.schemaClasses) |name| {
+        if (std.mem.eql(u8, name, "DayZ"))      saw_dayz      = true;
+        if (std.mem.eql(u8, name, "MyProject")) saw_myproject = true;
+    }
+    try std.testing.expect(saw_dayz);
+    try std.testing.expect(saw_myproject);
+}
+
+test "schema: forward decl base resolved when base doc added after derived doc" {
+    const base_src =
+        \\class CfgSchemas {
+        \\    class DayZ {
+        \\        stringCompletions[] = {{"Item.slot", {"Primary", "Secondary"}}};
+        \\    };
+        \\};
+    ;
+    const proj_src =
+        \\class CfgSchemas {
+        \\    class DayZ;
+        \\    class MyMod : DayZ {};
+        \\};
+    ;
+
+    var docs: std.StringArrayHashMapUnmanaged([]const u8) = .{};
+    defer docs.deinit(std.testing.allocator);
+    try docs.put(std.testing.allocator, "file://mymod.cpp",  proj_src);
+    try docs.put(std.testing.allocator, "file://dayz.cpp",   base_src);
+
+    var state: SchemaState = .empty;
+    defer state.deinit(std.testing.allocator);
+    state.extractFromDocuments(std.testing.allocator, &docs);
+
+    try std.testing.expect(state.valuesFor("Item.slot") != null);
+}
 
 fn globMatch(pattern: []const u8, str: []const u8) bool {
     return globMatchAt(pattern, 0, str, 0);
@@ -231,7 +608,11 @@ fn globMatchAt(pat: []const u8, pi_start: usize, str: []const u8, si_start: usiz
         if (pi == pat.len and si == str.len) return true;
 
         if (si == str.len) {
-            return false;
+            var ri = pi;
+            while (ri < pat.len) : (ri += 1) {
+                if (pat[ri] != '*') return false;
+            }
+            return true;
         }
 
         if (pi == pat.len) return false;
@@ -421,8 +802,59 @@ pub fn handleMessage(
                 );
             },
 
-            .other => {
-                try transport.writeResponse(io, allocator, req.id, void, {}, .{});
+            .other => |method_params| {
+                if (std.mem.eql(u8, method_params.method, "$/paramlib/listSchemaClasses")) {
+                    try transport.writeResponse(io, allocator, req.id,
+                        []const []const u8, schema.schemaClasses,
+                        .{ .emit_null_optional_fields = false },
+                    );
+                } else if (std.mem.eql(u8, method_params.method, "$/paramlib/getParserRules")) {
+                    try transport.writeResponse(io, allocator, req.id,
+                        []const ParserRule, schema.parserRules,
+                        .{ .emit_null_optional_fields = false },
+                    );
+                } else if (std.mem.eql(u8, method_params.method, "$/paramlib/getDocumentParams")) {
+                    if(method_params.params) |pars| {
+                        const params = std.json.parseFromValue(GetDocumentParams, allocator, pars, .{}) catch {
+                            try transport.writeResponse(io, allocator, req.id, void, {}, .{});
+                            return;
+                        };
+                        defer params.deinit();
+
+                        const text = documents.get(params.value.textDocument.uri) orelse {
+                            try transport.writeResponse(io, allocator, req.id, void, {}, .{});
+                            return;
+                        };
+                        const src = allocator.dupeZ(u8, text) catch {
+                            try transport.writeResponse(io, allocator, req.id, void, {}, .{});
+                            return;
+                        };
+                        defer allocator.free(src);
+
+                        const line_table = paramlib.cpp.lexer.LineTable.build(allocator, src) catch {
+                            try transport.writeResponse(io, allocator, req.id, void, {}, .{});
+                            return;
+                        };
+                        defer line_table.deinit(allocator);
+
+                        var errored = false;
+                        var root = paramlib.cpp.parser.parseSource(allocator, src, &errored, .none()) catch {
+                            try transport.writeResponse(io, allocator, req.id, void, {}, .{});
+                            return;
+                        };
+                        defer root.deinit(allocator);
+
+                        var list = std.ArrayList(DocumentParam).empty;
+                        collectDocumentParams(&root, &root, &line_table, allocator, &list);
+
+                        try transport.writeResponse(io, allocator, req.id,
+                            GetDocumentParamsResult, .{ .params = list.items },
+                            .{ .emit_null_optional_fields = false },
+                        );
+                    }
+                } else {
+                    try transport.writeResponse(io, allocator, req.id, void, {}, .{});
+                }
             },
         },
 
@@ -470,7 +902,37 @@ pub fn handleMessage(
                 }
             },
 
-            .other => {},
+            .other => |method_params| {
+                if (std.mem.eql(u8, method_params.method, "$/paramlib/parserHints")) {
+                    if(method_params.params == null) return;
+                    const parsed = std.json.parseFromValue(ParserHintsParams, allocator, method_params.params.?, .{ .ignore_unknown_fields = true }) catch return;
+                    defer parsed.deinit();
+
+                    if (schema.documentHints.fetchOrderedRemove(parsed.value.uri)) |entry| {
+                        allocator.free(entry.key);
+                        for (entry.value) |h| allocator.free(h.text);
+                        allocator.free(entry.value);
+                    }
+
+                    const uri = allocator.dupe(u8, parsed.value.uri) catch return;
+                    const hints = allocator.alloc(PrecomputedParserHint, parsed.value.hints.len) catch {
+                        allocator.free(uri);
+                        return;
+                    };
+                    for (parsed.value.hints, 0..) |h, i| {
+                        hints[i] = .{
+                            .line = h.line,
+                            .character = h.character,
+                            .text = allocator.dupe(u8, h.text) catch "",
+                        };
+                    }
+                    schema.documentHints.put(allocator, uri, hints) catch {
+                        allocator.free(uri);
+                        for (hints) |hint| allocator.free(hint.text);
+                        allocator.free(hints);
+                    };
+                }
+            },
         },
 
         .response => {},
@@ -510,7 +972,6 @@ fn tokenLength(src: [:0]const u8, tok: paramlib.cpp.lexer.Token) u32 {
     return switch (tok.data) {
         .text   => |t| @intCast(t.len),
         .string => |s| @intCast(s.text.len + 2),
-        .none   => 1,
         else => blk: {
             var end = tok.pos;
             while (end < src.len) : (end += 1) {
@@ -519,7 +980,8 @@ fn tokenLength(src: [:0]const u8, tok: paramlib.cpp.lexer.Token) u32 {
                     else => {},
                 }
             }
-            break :blk end - tok.pos;
+            const len = end - tok.pos;
+            break :blk if (len > 0) @intCast(len) else 1;
         },
     };
 }
@@ -856,6 +1318,56 @@ fn hover(
     };
 }
 
+fn collectDocumentParams(
+    root:       *const paramlib.cpp.ast.ClassAst,
+    class:      *const paramlib.cpp.ast.ClassAst,
+    line_table: *const paramlib.cpp.lexer.LineTable,
+    arena:      std.mem.Allocator,
+    list:       *std.ArrayList(DocumentParam),
+) void {
+    var path_parts = std.ArrayList([]const u8).empty;
+    _ = buildPathToClass(arena, root, class, &path_parts);
+    const class_dot_path = std.mem.join(arena, ".", path_parts.items) catch "";
+
+    const members = class.members orelse return;
+    for (members.items) |*m| {
+        switch (m.*) {
+            .param => |*p| {
+                const dot_path = if (class_dot_path.len > 0)
+                    std.fmt.allocPrint(arena, "{s}.{s}", .{ class_dot_path, p.name }) catch p.name
+                else p.name;
+
+                const pos     = lspPos(line_table, p.namePos);
+                const val_pos = lspPos(line_table, p.valuePos);
+                const val_str = fmtValue(arena, p.value);
+
+                var elem_ps: []Position = &.{};
+                if (p.elemPositions) |eps| {
+                    elem_ps = arena.alloc(Position, eps.len) catch &.{};
+                    for (eps, 0..) |ep, i| {
+                        const lp = lspPos(line_table, ep);
+                        elem_ps[i] = .{ .line = lp.line, .character = lp.character };
+                    }
+                }
+
+                list.append(arena, .{
+                    .path            = dot_path,
+                    .value           = val_str,
+                    .line            = pos.line,
+                    .character       = pos.character,
+                    .value_line      = val_pos.line,
+                    .value_character = val_pos.character,
+                    .elem_positions  = elem_ps,
+                }) catch {};
+            },
+            .class => |*c| {
+                collectDocumentParams(root, c, line_table, arena, list);
+            },
+            else => {},
+        }
+    }
+}
+
 fn collectSymbols(
     gpa:        std.mem.Allocator,
     class:      *const paramlib.cpp.ast.ClassAst,
@@ -1028,13 +1540,24 @@ fn findClassAtOffset(class: *const paramlib.cpp.ast.ClassAst, offset: u32) ?*con
 
 fn fmtValue(arena: std.mem.Allocator, value: paramlib.cpp.ast.ValueAst) []const u8 {
     return switch (value) {
-        .integer    => |v| std.fmt.allocPrint(arena, "{d}",    .{v}) catch "?",
-        .i64        => |v| std.fmt.allocPrint(arena, "{d}",    .{v}) catch "?",
-        .float      => |v| std.fmt.allocPrint(arena, "{d}",    .{v}) catch "?",
+        .integer    => |v| std.fmt.allocPrint(arena, "{d}",     .{v}) catch "?",
+        .i64        => |v| std.fmt.allocPrint(arena, "{d}",     .{v}) catch "?",
+        .float      => |v| std.fmt.allocPrint(arena, "{d}",     .{v}) catch "?",
         .string     => |v| std.fmt.allocPrint(arena, "\"{s}\"", .{v}) catch "?",
-        .expression => |v| std.fmt.allocPrint(arena, "@{s}",   .{v}) catch "?",
-        .array      => |v| std.fmt.allocPrint(arena, "{{[{d}]}}",  .{v.len}) catch "?",
+        .expression => |v| std.fmt.allocPrint(arena, "@{s}",    .{v}) catch "?",
+        .array      => |v| fmtArray(arena, v),
     };
+}
+
+fn fmtArray(arena: std.mem.Allocator, elems: []const paramlib.cpp.ast.ValueAst) []const u8 {
+    var buf = std.ArrayList(u8).empty;
+    buf.append(arena, '{') catch return "?";
+    for (elems, 0..) |elem, i| {
+        if (i > 0) buf.appendSlice(arena, ", ") catch return "?";
+        buf.appendSlice(arena, fmtValue(arena, elem)) catch return "?";
+    }
+    buf.append(arena, '}') catch return "?";
+    return buf.toOwnedSlice(arena) catch "?";
 }
 
 fn buildPathToClass(
@@ -1102,6 +1625,26 @@ fn resolveImplicitBase(
     return null;
 }
 
+fn findElemPositionsAt(
+    class:  *const paramlib.cpp.ast.ClassAst,
+    offset: u32,
+) ?[]const u32 {
+    const members = class.members orelse return null;
+    for (members.items) |*m| {
+        switch (m.*) {
+            .param => |*p| {
+                if (p.value == .array and p.valuePos == offset)
+                    return p.elemPositions;
+            },
+            .class => |*c| {
+                if (findElemPositionsAt(c, offset)) |pos| return pos;
+            },
+            else => {},
+        }
+    }
+    return null;
+}
+
 fn inlayHints(
     documents: *const std.StringArrayHashMapUnmanaged([]const u8),
     schema:    *const SchemaState,
@@ -1120,6 +1663,17 @@ fn inlayHints(
     var hints = std.ArrayList(lsp.types.InlayHint).empty;
 
     collectArrayInlayHints(&root, &root, schema, &line_table, arena, &hints);
+
+    if (schema.documentHints.get(params.textDocument.uri)) |precomputed| {
+        for (precomputed) |ph| {
+            hints.append(arena, lsp.types.InlayHint{
+                .position     = .{ .line = ph.line, .character = ph.character },
+                .label        = .{ .string = ph.text },
+                .kind         = .Parameter,
+                .paddingRight = true,
+            }) catch {};
+        }
+    }
 
     if (hints.items.len == 0) return null;
     return hints.toOwnedSlice(arena) catch null;

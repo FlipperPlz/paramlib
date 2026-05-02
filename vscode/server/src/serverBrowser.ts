@@ -1,57 +1,71 @@
 import {
     BrowserMessageReader,
-    BrowserMessageWriter,
-    createConnection,
-    ProposedFeatures,
+    BrowserMessageWriter
 } from 'vscode-languageserver/browser';
 import { ParamlibWasm, wasmSendFrame, wasmSendSchema } from './common';
+import { ParserManager } from './parser';
 
-declare const __EXTENSION_URL__: string;
+declare const __EXTENSION_URL__: string | undefined;
 
 let wasm: ParamlibWasm | null = null;
 let dispatchToClient: ((data: Uint8Array) => void) | null = null;
+let resolveWasmUrl: (url: string) => void;
+const wasmUrlPromise = new Promise<string>(res => { resolveWasmUrl = res; });
+
+let serverDistBase: string = (typeof __EXTENSION_URL__ === 'string' && __EXTENSION_URL__)
+    ? (__EXTENSION_URL__.endsWith('/') ? __EXTENSION_URL__ : __EXTENSION_URL__ + '/')
+    : '';
+
+if (typeof __EXTENSION_URL__ === 'string' && __EXTENSION_URL__) {
+    resolveWasmUrl!(__EXTENSION_URL__ + 'paramlib-lsp.wasm');
+}
+
+const parserManager = new ParserManager(
+    (msg) => sendToWasm(msg),
+    (name) => `${serverDistBase}parsers/${name}.wasm`,
+    (_uri) => {
+        // @ts-ignore
+        writer.write({jsonrpc: "2.0", method: 'workspace/semanticTokens/refresh', params: null });
+        // @ts-ignore
+        writer.write({jsonrpc: "2.0", method: 'workspace/inlayHint/refresh', params: null });
+    },
+    undefined,
+    (source) => {
+        if (source.startsWith('http://') || source.startsWith('https://')) return source;
+        return `${serverDistBase}${source}`;
+    },
+);
 
 function clientSend(ptr: number, len: number): void {
-    if (!wasm || !dispatchToClient) {
-        return;
-    }
-    const slice = new Uint8Array(wasm.memory.buffer, ptr, len);
-    dispatchToClient(slice.slice());
+    if (!wasm || !dispatchToClient) return;
+    dispatchToClient(new Uint8Array(wasm.memory.buffer, ptr, len).slice());
 }
 
 function sendToWasm(message: unknown): void {
-    if (!wasm) { return; }
-    const body   = JSON.stringify(message);
-    const enc = new TextEncoder();
-    const bodyBytes = enc.encode(body);
-    const header = enc.encode(`Content-Length: ${bodyBytes.length}\r\n\r\n`);
-    const frame  = new Uint8Array(header.length + bodyBytes.length);
+    if (!wasm) return;
+    const enc       = new TextEncoder();
+    const bodyBytes = enc.encode(JSON.stringify(message));
+    const header    = enc.encode(`Content-Length: ${bodyBytes.length}\r\n\r\n`);
+    const frame     = new Uint8Array(header.length + bodyBytes.length);
     frame.set(header);
     frame.set(bodyBytes, header.length);
-
     wasmSendFrame(wasm, frame);
 }
 
 async function loadWasm(): Promise<void> {
-    const url = __EXTENSION_URL__ +  'paramlib-lsp.wasm';
-
+    const url = await wasmUrlPromise;
     let response: Response;
     try {
         response = await fetch(url);
     } catch (err) {
-        console.error('[paramlib] fetch() threw — network error or URL blocked:', url, err);
+        console.error('[parser-wasm] fetch failed:', url, err);
         throw err;
     }
-
-
     if (!response.ok) {
-        console.error('[paramlib] Bad HTTP response for WASM — check the URL above');
-        throw new Error(`Failed to fetch WASM: ${response.status} ${response.statusText}`);
+        console.error('[parser-wasm] bad HTTP response for WASM:', url, response.status);
+        throw new Error(`Failed to fetch WASM: ${response.status}`);
     }
-
-    const bytes = await response.arrayBuffer();
-
-    const { instance } = await WebAssembly.instantiate(bytes, {
+    const { instance } = await WebAssembly.instantiate(await response.arrayBuffer(), {
         env: { clientSend },
     });
     wasm = instance.exports as unknown as ParamlibWasm;
@@ -61,32 +75,143 @@ const workerSelf = self as unknown as Worker;
 const reader = new BrowserMessageReader(workerSelf);
 const writer = new BrowserMessageWriter(workerSelf);
 
+workerSelf.addEventListener('message', (e: MessageEvent) => {
+    if (e.data?.type === '__paramlib_init__' && typeof e.data.wasmUrl === 'string') {
+        const wasmUrl: string = e.data.wasmUrl;
+        resolveWasmUrl(wasmUrl);
+        if (!serverDistBase) {
+            serverDistBase = wasmUrl.substring(0, wasmUrl.lastIndexOf('/') + 1);
+        }
+    }
+}, { once: true });
+
+const documentTexts = new Map<string, string>();
+const pendingRequests = new Map<number | string, { method: string, params: any, uri?: string, wasmResults: string[] }>();
+
+function mergeLspResults(method: string, base: any, additions: string[]): any {
+    let result = base;
+    for (const json of additions) {
+        try {
+            const extra = JSON.parse(json);
+            if (extra === null) continue;
+            if (result === null) { result = extra; continue; }
+            if (Array.isArray(result) && Array.isArray(extra)) {
+                result = result.concat(extra);
+            } else if (typeof result === 'object' && typeof extra === 'object') {
+                if (method === 'textDocument/hover') {
+                    const bVal = result.contents?.value || result.contents || "";
+                    const eVal = extra.contents?.value  || extra.contents  || "";
+                    result = { contents: { kind: 'markdown', value: (bVal + "\n\n---\n\n" + eVal).trim() } };
+                } else {
+                    result = { ...result, ...extra };
+                }
+            }
+        } catch (e) {
+            console.error(`[parser-wasm] merge error for ${method}:`, e);
+        }
+    }
+    return result;
+}
+
 dispatchToClient = (data: Uint8Array): void => {
-    const text = new TextDecoder().decode(data);
+    const text      = new TextDecoder().decode(data);
     const bodyStart = text.indexOf('\r\n\r\n');
-    if (bodyStart === -1) { console.warn('[paramlib] dispatchToClient: no header separator'); return; }
+    if (bodyStart === -1) return;
     try {
-        writer.write(JSON.parse(text.slice(bodyStart + 4)));
-    } catch (e) { console.error('[paramlib] dispatchToClient parse error:', e, text.slice(0, 300)); }
+        const msg = JSON.parse(text.slice(bodyStart + 4));
+
+        if (msg.result?.capabilities) {
+            msg.result.capabilities.colorProvider = true;
+            writer.write(msg);
+            return;
+        }
+
+        if (msg.id === 'getRules') {
+            parserManager.updateRules(msg.result || []);
+            return;
+        }
+
+        if (typeof msg.id === 'string' && msg.id.startsWith('getParams:')) {
+            const uri = msg.id.slice('getParams:'.length);
+            parserManager.processDocument(uri, msg.result?.params ?? []);
+            return;
+        }
+
+        if (msg.id !== undefined && !msg.method) {
+            const pending = pendingRequests.get(msg.id);
+            if (pending) {
+                pendingRequests.delete(msg.id);
+                msg.result = mergeLspResults(pending.method, msg.result, pending.wasmResults);
+            }
+        }
+        writer.write(msg);
+    } catch (e) { console.error('[parser-wasm] dispatch error:', e); }
 };
+
+let pendingSchema: { content: Uint8Array, className?: string } | null = null;
 const pendingMessages: unknown[] = [];
 
 reader.listen((message) => {
-    const m = message as { method?: string; params?: { content?: string } };
+    if ((message as any).type === '__paramlib_init__') return;
+
+    const m = message as { method?: string; params?: any; id?: any };
+
+    if (!m.method && m.id === undefined) return; // not a JSON-RPC message
+
+    if (m.id !== undefined && m.method) {
+        const uri        = m.params?.textDocument?.uri as string | undefined;
+        const wasmResults = parserManager.handleLsp(m.method, m.params, uri);
+        pendingRequests.set(m.id, { method: m.method, params: m.params, uri, wasmResults });
+    }
+
     if (m.method === '$/paramlib/schemaUpdate' && m.params?.content != null) {
+        const className = (m.params as { content: string; className?: string }).className;
+        const encoded   = new TextEncoder().encode(m.params.content);
         if (wasm) {
-            wasmSendSchema(wasm, new TextEncoder().encode(m.params.content));
+            wasmSendSchema(wasm, encoded, className);
+            sendToWasm({ jsonrpc: '2.0', id: 'getRules', method: '$/paramlib/getParserRules' });
+        } else {
+            pendingSchema = { content: encoded, className };
         }
         return;
     }
+
+    if (m.method === 'textDocument/didOpen') {
+        const { uri, text } = m.params.textDocument;
+        documentTexts.set(uri, text);
+        parserManager.openDocument(uri, text);
+    } else if (m.method === 'textDocument/didChange') {
+        const change = m.params.contentChanges?.at(-1);
+        if (change?.text != null) {
+            const uri = m.params.textDocument.uri;
+            documentTexts.set(uri, change.text);
+            parserManager.openDocument(uri, change.text);
+        }
+    } else if (m.method === 'textDocument/didClose') {
+        const uri = m.params.textDocument.uri;
+        documentTexts.delete(uri);
+        parserManager.closeDocument(uri);
+    }
+
     if (!wasm) {
         pendingMessages.push(message);
     } else {
         sendToWasm(message);
+        if (m.method === 'textDocument/didOpen' || m.method === 'textDocument/didChange') {
+            const uri = m.params.textDocument.uri;
+            setTimeout(() => {
+                sendToWasm({ jsonrpc: '2.0', id: `getParams:${uri}`, method: '$/paramlib/getDocumentParams', params: { textDocument: { uri } } });
+            }, 100);
+        }
     }
 });
 
 loadWasm().then(() => {
     for (const msg of pendingMessages) sendToWasm(msg);
     pendingMessages.length = 0;
+    if (pendingSchema) {
+        wasmSendSchema(wasm!, pendingSchema.content, pendingSchema.className);
+        pendingSchema = null;
+    }
+    sendToWasm({ jsonrpc: '2.0', id: 'getRules', method: '$/paramlib/getParserRules' });
 }).catch(console.error);

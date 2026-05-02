@@ -80,8 +80,9 @@ export fn serverSend(ptr: [*]const u8, len: u32) u32 {
     return 0;
 }
 
-export fn schemaUpdate(ptr: [*]const u8, len: u32) void {
-    schema.updateFromContent(allocator, ptr[0..len]);
+export fn schemaUpdate(content_ptr: [*]const u8, content_len: u32, class_ptr: [*]const u8, class_len: u32) void {
+    const class_name: ?[]const u8 = if (class_len > 0) class_ptr[0..class_len] else null;
+    schema.updateFromContent(allocator, content_ptr[0..content_len], class_name);
 }
 
 export fn deinit() void {

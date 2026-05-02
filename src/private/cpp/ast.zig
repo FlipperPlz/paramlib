@@ -70,6 +70,7 @@ pub const ParameterAst = struct {
     namePos:       u32,
     operator:      OperatorAst,
     value:         ValueAst,
+    valuePos:      u32 = 0,
     elemPositions: ?[]const u32 = null,
 };
 

@@ -9,7 +9,7 @@
     "url": "git+https://github.com/FlipperPlz/paramlib"
   },
   "license": "UNLICENSED",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "private": true,
   "workspaces": [
     "client",
@@ -19,7 +19,7 @@
     "compile": "webpack --config webpack.config.js",
     "compile:watch": "webpack --config webpack.config.js --watch",
     "package": "bunx vsce package --no-dependencies",
-    "dev:browser": "vscode-test-web --extensionDevelopmentPath=. ./test-data --open-devtools",
+    "dev:browser": "vscode-test-web --extensionDevelopmentPath=. ./ --open-devtools",
     "vsce:publish": "bunx vsce publish",
     "typecheck": "bun run typecheck --filter='*'"
   },
@@ -34,11 +34,20 @@
             "builtin:dayz",
             "custom"
           ],
+          "enumItemLabels": [
+            "DayZ",
+            "Custom…"
+          ],
           "enumDescriptions": [
             "DayZ schema bundled with the extension",
             "Use a custom path or URL (set below in Paramlib: Custom Schema Path)"
           ],
           "description": "ParamLib schema to use. Drives string-value completions for matched param paths."
+        },
+        "paramlib.schemaClass": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Class inside `CfgSchemas` to activate. Leave empty to use the last class in the file. Run **ParamLib: Select Schema Class** to pick from the available list."
         },
         "paramlib.customSchemaPath": {
           "type": "string",
@@ -51,6 +60,11 @@
       {
         "command": "paramlib.selectSchemaFile",
         "title": "ParamLib: Select Schema File",
+        "category": "ParamLib"
+      },
+      {
+        "command": "paramlib.selectSchemaClass",
+        "title": "ParamLib: Select Schema Class",
         "category": "ParamLib"
       }
     ]

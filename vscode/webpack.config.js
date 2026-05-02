@@ -17,8 +17,12 @@ const mode = PRODUCTION ? "production" : "none";
 /** @type WebpackConfig["devtool"] */
 const devtool = PRODUCTION ? false : "source-map";
 
-let extensionURL = `https://${publisher}.vscode-unpkg.net/${publisher}/${name}/${version}/extension/server/dist/`;
-let schemasURL   = `https://${publisher}.vscode-unpkg.net/${publisher}/${name}/${version}/extension/schemas/`;
+let extensionURL = PRODUCTION
+    ? `https://${publisher}.vscode-unpkg.net/${publisher}/${name}/${version}/extension/server/dist/`
+    : undefined;
+let schemasURL = PRODUCTION
+    ? `https://${publisher}.vscode-unpkg.net/${publisher}/${name}/${version}/extension/schemas/`
+    : undefined;
 
 const swcLoader = {
     test: /\.ts$/,
@@ -75,13 +79,20 @@ const serverBrowserConfig = {
     resolve: { extensions: [".ts", ".js"] },
     plugins: [
         new webpack.DefinePlugin({
+            __DEV_MODE__:      JSON.stringify(!PRODUCTION),
             __EXTENSION_URL__: JSON.stringify(extensionURL),
         }),
         new CopyPlugin({
-            patterns: [{
-                from: path.resolve(__dirname, "../zig-out/wasm/paramlib-lsp.wasm"),
-                to: path.join(__dirname, "server", "dist", "paramlib-lsp.wasm"),
-            }],
+            patterns: [
+                {
+                    from: path.resolve(__dirname, "../zig-out/wasm/paramlib-lsp.wasm"),
+                    to: path.join(__dirname, "server", "dist", "paramlib-lsp.wasm"),
+                },
+                {
+                    from: path.resolve(__dirname, "../zig-out/parsers/color.wasm"),
+                    to: path.join(__dirname, "server", "dist", "parsers", "color.wasm"),
+                },
+            ],
         }),
     ],
     module: {
@@ -100,10 +111,16 @@ const serverNodeConfig = {
     resolve: { extensions: [".ts", ".js"] },
     plugins: [
         new CopyPlugin({
-            patterns: [{
-                from: path.resolve(__dirname, "../zig-out/wasm/paramlib-lsp.wasm"),
-                to: path.join(__dirname, "server", "dist"),
-            }],
+            patterns: [
+                {
+                    from: path.resolve(__dirname, "../zig-out/wasm/paramlib-lsp.wasm"),
+                    to: path.join(__dirname, "server", "dist"),
+                },
+                {
+                    from: path.resolve(__dirname, "../zig-out/parsers/color.wasm"),
+                    to: path.join(__dirname, "server", "dist", "parsers"),
+                },
+            ],
         }),
     ],
     module: { rules: [swcLoader] },

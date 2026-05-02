@@ -603,6 +603,7 @@ fn parseParameter(allocator: Allocator, tokenizer: *lexer.Tokenizer, next: *lexe
     };
 
     next.* = try tokenizer.next();
+    astParam.valuePos = next.pos;
     astParam.value = parseValue(allocator, tokenizer, log, next, &elem_pos_list) catch {
         log.emit(.err, "P01", next, "Expected value after operator in parameter declaration.", null);
         return error.ParseError;

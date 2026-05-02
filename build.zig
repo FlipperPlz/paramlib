@@ -106,6 +106,27 @@ pub fn build(b: *std.Build) void {
         "wasm/paramlib-lsp.wasm",
     );
     install_wasm.step.dependOn(&lsp_wasm.step);
+
+    const color_parser_wasm = b.addExecutable(.{
+        .name = "color",
+        .root_module = b.createModule(.{
+            .target = wasm_target,
+            .optimize = optimize,
+            .root_source_file = b.path("parsers/color/src/main.zig"),
+            .imports = &.{
+                .{ .name = "lsp", .module = lsp_mod },
+            },
+        }),
+    });
+    color_parser_wasm.entry = .disabled;
+    color_parser_wasm.rdynamic = true;
+
+    const install_color_wasm = b.addInstallFile(
+        color_parser_wasm.getEmittedBin(),
+        "parsers/color.wasm",
+    );
+    install_color_wasm.step.dependOn(&color_parser_wasm.step);
+
     const default_step = b.getInstallStep();
 
     if (build_vscode) {
@@ -143,4 +164,5 @@ pub fn build(b: *std.Build) void {
     }
 
     default_step.dependOn(&install_wasm.step);
+    default_step.dependOn(&install_color_wasm.step);
 }

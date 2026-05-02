@@ -3,7 +3,7 @@ export interface ParamlibWasm {
     serverSend(ptr: number, len: number): void;
     alloc(len: number): number;
     free(ptr: number, len: number): void;
-    schemaUpdate(ptr: number, len: number): void;
+    schemaUpdate(contentPtr: number, contentLen: number, classPtr: number, classLen: number): void;
 }
 
 export function wasmSendFrame(wasm: ParamlibWasm, frame: Uint8Array): boolean {
@@ -15,10 +15,21 @@ export function wasmSendFrame(wasm: ParamlibWasm, frame: Uint8Array): boolean {
     return true;
 }
 
-export function wasmSendSchema(wasm: ParamlibWasm, jsonUtf8: Uint8Array): void {
-    const ptr = wasm.alloc(jsonUtf8.length);
-    if (ptr === 0) return;
-    new Uint8Array(wasm.memory.buffer, ptr, jsonUtf8.length).set(jsonUtf8);
-    wasm.schemaUpdate(ptr, jsonUtf8.length);
-    wasm.free(ptr, jsonUtf8.length);
+export function wasmSendSchema(wasm: ParamlibWasm, jsonUtf8: Uint8Array, className?: string): void {
+    const contentPtr = wasm.alloc(jsonUtf8.length);
+    if (contentPtr === 0) return;
+    new Uint8Array(wasm.memory.buffer, contentPtr, jsonUtf8.length).set(jsonUtf8);
+
+    const classBytes = className ? new TextEncoder().encode(className) : new Uint8Array(0);
+    let classPtr = 0;
+    if (classBytes.length > 0) {
+        classPtr = wasm.alloc(classBytes.length);
+        if (classPtr !== 0) {
+            new Uint8Array(wasm.memory.buffer, classPtr, classBytes.length).set(classBytes);
+        }
+    }
+
+    wasm.schemaUpdate(contentPtr, jsonUtf8.length, classPtr, classBytes.length);
+    wasm.free(contentPtr, jsonUtf8.length);
+    if (classPtr !== 0) wasm.free(classPtr, classBytes.length);
 }
