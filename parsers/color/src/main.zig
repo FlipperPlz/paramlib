@@ -163,6 +163,7 @@ export fn textDocument_inlayHint(in_ptr: [*]const u8, in_len: usize, out_ptr: [*
 }
 
 
+
 extern fn wasm_log(ptr: [*]const u8, len: usize) void;
 
 fn log_fmt(comptime fmt: []const u8, args: anytype) void {
@@ -173,7 +174,7 @@ fn log_fmt(comptime fmt: []const u8, args: anytype) void {
 
 fn parseRgbaToU8(input: []const u8, out: *[4]u8) bool {
     const trimmed = std.mem.trim(u8, input, " \t\r\n");
-    log_fmt("parsing input: '{s}'", .{trimmed});
+   // log_fmt("parsing input: '{s}'", .{trimmed});
     if (trimmed.len < 2) return false;
 
     const content = if (trimmed[0] == '{' and trimmed[trimmed.len - 1] == '}')
@@ -188,7 +189,7 @@ fn parseRgbaToU8(input: []const u8, out: *[4]u8) bool {
     while (it.next()) |tok| {
         if (count >= 4) break;
         const v = std.fmt.parseFloat(f32, tok) catch {
-            log_fmt("failed to parse float: '{s}'", .{tok});
+            //log_fmt("failed to parse float: '{s}'", .{tok});
             return false;
         };
         vals[count] = v;
@@ -196,7 +197,7 @@ fn parseRgbaToU8(input: []const u8, out: *[4]u8) bool {
         count += 1;
     }
     if (count < 3) {
-        log_fmt("too few components: {d}", .{count});
+        //log_fmt("too few components: {d}", .{count});
         return false;
     }
 
@@ -204,7 +205,7 @@ fn parseRgbaToU8(input: []const u8, out: *[4]u8) bool {
         vals[3] = if (any_gt_one) 255.0 else 1.0;
     }
 
-    log_fmt("parsed {d} values, any_gt_one={}", .{ count, any_gt_one });
+    //log_fmt("parsed {d} values, any_gt_one={}", .{ count, any_gt_one });
 
     for (0..4) |i| {
         if (any_gt_one) {
@@ -213,7 +214,7 @@ fn parseRgbaToU8(input: []const u8, out: *[4]u8) bool {
             out[i] = @intFromFloat(@max(0, @min(255, @round(vals[i] * 255.0))));
         }
     }
-    log_fmt("result: {d},{d},{d},{d}", .{ out[0], out[1], out[2], out[3] });
+    //log_fmt("result: {d},{d},{d},{d}", .{ out[0], out[1], out[2], out[3] });
     return true;
 }
 

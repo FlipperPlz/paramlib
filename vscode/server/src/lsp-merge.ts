@@ -1,4 +1,4 @@
-export type MergeStrategy = (base: unknown, extra: unknown) => unknown;
+export type MergeStrategy = (base: unknown, extra: unknown, params?: any) => unknown;
 
 function concatArrays(base: unknown, extra: unknown): unknown[] {
     const b = Array.isArray(base)  ? base  : [];
@@ -49,7 +49,41 @@ const strategies = new Map<string, MergeStrategy>([
     ['textDocument/documentHighlight',      (b, e) => concatArrays(b, e)],
     ['textDocument/documentLink',           (b, e) => concatArrays(b, e)],
     ['textDocument/documentColor',          (b, e) => concatArrays(b, e)],
-    ['textDocument/colorPresentation',      (b, e) => concatArrays(b, e)],
+    ['textDocument/colorPresentation', (base: any, extra: any, params: any) => {
+        const b = Array.isArray(base)  ? base  : [];
+        const e = Array.isArray(extra) ? extra : [];
+        let combined = [...b, ...e];
+
+        // Ensure all presentations use 0-1 float format
+        combined = combined.map(p => {
+            if (p.label) p.label = transformToFloatColor(p.label);
+            if (p.textEdit) p.textEdit.newText = transformToFloatColor(p.textEdit.newText);
+            if (p.additionalTextEdits) {
+                p.additionalTextEdits = p.additionalTextEdits.map((te: any) => ({
+                    ...te,
+                    newText: transformToFloatColor(te.newText)
+                }));
+            }
+            return p;
+        });
+
+        // Add default float presentations if none exist
+        if (combined.length === 0 && params?.color) {
+            const c = params.color;
+            const f = (n: number) => n.toFixed(4).replace(/\.?0+$/, '');
+            const str = `${f(c.red)}, ${f(c.green)}, ${f(c.blue)}, ${f(c.alpha)}`;
+            combined.push({
+                label: str,
+                textEdit: { range: params.range, newText: str }
+            });
+            combined.push({
+                label: `{${str}}`,
+                textEdit: { range: params.range, newText: `{${str}}` }
+            });
+        }
+
+        return combined;
+    }],
     ['textDocument/foldingRange',           (b, e) => concatArrays(b, e)],
     ['textDocument/selectionRange',         (b, e) => concatArrays(b, e)],
     ['textDocument/moniker',                (b, e) => concatArrays(b, e)],
@@ -168,8 +202,17 @@ function validateColorInformation(items: any[]): any[] {
     }
     return Array.from(seen.values());
 }
+function transformToFloatColor(text: string): string {
+    const match = text.match(/\{?\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*\}?/);
+    if (match) {
+        const f = (n: string) => parseFloat(n).toFixed(4).replace(/\.?0+$/, '');
+        const str = `${f(match[1])}, ${f(match[2])}, ${f(match[3])}, ${f(match[4])}`;
+        return text.startsWith('{') ? `{${str}}` : str;
+    }
+    return text;
+}
 
-export function mergeLspResults(method: string, base: unknown, additions: string[]): unknown {
+export function mergeLspResults(method: string, base: unknown, additions: string[], params?: any): unknown {
     if (additions.length === 0) return base;
 
     let result = base;
@@ -191,12 +234,14 @@ export function mergeLspResults(method: string, base: unknown, additions: string
 
             const strategy = strategies.get(method);
             if (strategy) {
-                result = strategy(result, extra);
+                result = strategy(result, extra, params);
 
                 if (method === 'textDocument/documentColor' && Array.isArray(result)) {
+                    // Final validation after merge
                     result = validateColorInformation(result);
                 }
             } else if (Array.isArray(result) && Array.isArray(extra)) {
+
                 result = (result as unknown[]).concat(extra as unknown[]);
             } else {
                 result = shallowMergeObjects(result, extra);

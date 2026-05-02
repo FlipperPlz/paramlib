@@ -65,8 +65,6 @@ const clientBrowserConfig = {
 const serverOutput = {
     filename: "[name].js",
     path: path.join(__dirname, "server", "dist"),
-    libraryTarget: "var",
-    library: "serverExportVar",
 };
 
 const serverBrowserConfig = {

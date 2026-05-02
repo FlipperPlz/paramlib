@@ -21,6 +21,7 @@ pub const PrecomputedParserHint = struct {
     line: u32,
     character: u32,
     text: []const u8,
+    length: u32 = 0,
 };
 
 pub const ParserHintsParams = struct {
@@ -346,7 +347,6 @@ pub const SchemaState = struct {
             };
             const is_completions  = std.mem.eql(u8, p.name, "stringCompletions");
             const is_array_inlays = std.mem.eql(u8, p.name, "arrayInlays");
-            // Accept both "parsers" (documented schema format) and "parserRules" (internal name)
             const is_parsers      = std.mem.eql(u8, p.name, "parsers") or std.mem.eql(u8, p.name, "parserRules");
             if (!is_completions and !is_array_inlays and !is_parsers) continue;
 
@@ -665,6 +665,8 @@ const RequestMethods = union(enum) {
     @"textDocument/semanticTokens/full":  lsp.types.semantic_tokens.Params,
     @"textDocument/completion":           lsp.types.completion.Params,
     @"textDocument/inlayHint":            lsp.types.InlayHint.Params,
+    @"textDocument/documentColor":        lsp.types.DocumentColor.Params,
+    @"textDocument/colorPresentation":    lsp.types.ColorPresentation.Params,
     other:                                lsp.MethodWithParams,
 };
 
@@ -709,6 +711,7 @@ pub fn handleMessage(
                                 .triggerCharacters  = &.{" ", "\t"},
                             },
                             .inlayHintProvider     = .{ .inlay_hint_options = .{ .resolveProvider = false } },
+                            .colorProvider         = .{ .bool = true },
                             .semanticTokensProvider = .{ .semantic_tokens_options = .{
                                 .legend = .{
                                     .tokenTypes     = &.{
@@ -798,6 +801,26 @@ pub fn handleMessage(
                 const result = inlayHints(documents, schema, arena.allocator(), params);
                 try transport.writeResponse(io, allocator, req.id,
                     ?[]const lsp.types.InlayHint, result,
+                    .{ .emit_null_optional_fields = false },
+                );
+            },
+
+            .@"textDocument/documentColor" => |params| {
+                var arena = std.heap.ArenaAllocator.init(allocator);
+                defer arena.deinit();
+                const result = documentColors(schema, arena.allocator(), params);
+                try transport.writeResponse(io, allocator, req.id,
+                    ?[]const lsp.types.DocumentColor, result,
+                    .{ .emit_null_optional_fields = false },
+                );
+            },
+
+            .@"textDocument/colorPresentation" => |params| {
+                var arena = std.heap.ArenaAllocator.init(allocator);
+                defer arena.deinit();
+                const result = colorPresentations(arena.allocator(), params);
+                try transport.writeResponse(io, allocator, req.id,
+                    ?[]const lsp.types.ColorPresentation, result,
                     .{ .emit_null_optional_fields = false },
                 );
             },
@@ -1726,6 +1749,60 @@ fn collectArrayInlayHints(
             else => {},
         }
     }
+}
+
+fn parseRgbaFromHint(text: []const u8, out: *[4]u8) bool {
+    var it = std.mem.tokenizeScalar(u8, text, ',');
+    var i: usize = 0;
+    while (it.next()) |part| {
+        if (i >= 4) break;
+        out[i] = std.fmt.parseInt(u8, std.mem.trim(u8, part, " "), 10) catch return false;
+        i += 1;
+    }
+    return i >= 3;
+}
+
+fn documentColors(
+    schema: *const SchemaState,
+    arena:  std.mem.Allocator,
+    params: lsp.types.DocumentColor.Params,
+) ?[]const lsp.types.DocumentColor {
+    const precomputed = schema.documentHints.get(params.textDocument.uri) orelse return null;
+    var colors = std.ArrayList(lsp.types.DocumentColor).empty;
+    for (precomputed) |hint| {
+        if (!std.mem.startsWith(u8, hint.text, "color:")) continue;
+        var rgba: [4]u8 = .{ 0, 0, 0, 255 };
+        if (!parseRgbaFromHint(hint.text["color:".len..], &rgba)) continue;
+        colors.append(arena, .{
+            .range = .{
+                .start = .{ .line = hint.line, .character = hint.character },
+                .end   = .{ .line = hint.line, .character = hint.character + hint.length },
+            },
+            .color = .{
+                .red   = @as(f32, @floatFromInt(rgba[0])) / 255.0,
+                .green = @as(f32, @floatFromInt(rgba[1])) / 255.0,
+                .blue  = @as(f32, @floatFromInt(rgba[2])) / 255.0,
+                .alpha = @as(f32, @floatFromInt(rgba[3])) / 255.0,
+            },
+        }) catch continue;
+    }
+    if (colors.items.len == 0) return null;
+    return colors.toOwnedSlice(arena) catch null;
+}
+
+fn colorPresentations(
+    arena:  std.mem.Allocator,
+    params: lsp.types.ColorPresentation.Params,
+) ?[]const lsp.types.ColorPresentation {
+    const c = params.color;
+    const r: u8 = @intFromFloat(@round(c.red   * 255.0));
+    const g: u8 = @intFromFloat(@round(c.green * 255.0));
+    const b: u8 = @intFromFloat(@round(c.blue  * 255.0));
+    const a: u8 = @intFromFloat(@round(c.alpha * 255.0));
+    const label = std.fmt.allocPrint(arena, "{{{d}, {d}, {d}, {d}}}", .{ r, g, b, a }) catch return null;
+    const list  = arena.alloc(lsp.types.ColorPresentation, 1) catch return null;
+    list[0] = .{ .label = label };
+    return list;
 }
 
 fn completion(

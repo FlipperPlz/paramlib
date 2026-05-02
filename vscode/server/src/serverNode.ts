@@ -58,7 +58,7 @@ function clientSend(ptr: number, len: number): void {
                 const pending = pendingRequests.get(msg.id);
                 if (pending) {
                     pendingRequests.delete(msg.id);
-                    msg.result = mergeLspResults(pending.method, msg.result, pending.wasmResults);
+                    msg.result = mergeLspResults(pending.method, msg.result, pending.wasmResults, pending.params);
                     if (msg.result !== undefined && msg.result !== null) {
                         delete msg.error;
                     }

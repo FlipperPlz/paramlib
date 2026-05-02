@@ -14,7 +14,7 @@ let lastSchemaClasses: string[] = [];
 
 async function pickSchemaClass(): Promise<void> {
     if (lastSchemaClasses.length === 0) {
-        void vscode.window.showInformationMessage('No schema loaded yet — schema class list is empty.');
+        void vscode.window.showInformationMessage('No schema loaded yet - schema class list is empty.');
         return;
     }
     const picked = await vscode.window.showQuickPick(lastSchemaClasses, {
@@ -94,7 +94,7 @@ function getEffectiveSchema(): string {
     return schemaFile;
 }
 
-export function activate(context: vscode.ExtensionContext): void {
+export async function activate(context: vscode.ExtensionContext): Promise<void> {
     ctx = context;
 
     const serverWorkerUri = vscode.Uri.joinPath(
@@ -102,10 +102,12 @@ export function activate(context: vscode.ExtensionContext): void {
         'server', 'dist', 'serverBrowser.js',
     );
 
-    const worker = new Worker(serverWorkerUri.toString());
+    const serverWorkerUrl = await vscode.env.asExternalUri(serverWorkerUri);
+    const worker = new Worker(serverWorkerUrl.toString());
 
     const wasmUri = vscode.Uri.joinPath(context.extensionUri, 'server', 'dist', 'paramlib-lsp.wasm');
-    worker.postMessage({ type: '__paramlib_init__', wasmUrl: wasmUri.toString() });
+    const wasmUrl = await vscode.env.asExternalUri(wasmUri);
+    worker.postMessage({ type: '__paramlib_init__', wasmUrl: wasmUrl.toString() });
 
     const clientOptions: LanguageClientOptions = {
         documentSelector: [
@@ -123,25 +125,25 @@ export function activate(context: vscode.ExtensionContext): void {
         worker,
     );
 
-    void client.start().then(async () => {
-        const sf = getEffectiveSchema();
-        if (sf) await resolveAndSendSchema(sf, getEffectiveSchemaClass());
+    await client.start();
 
-        client.sendRequest('$/paramlib/listSchemaClasses', {}).then(
-            (classes) => { lastSchemaClasses = (classes as string[]) ?? []; },
-        ).catch(() => {});
+    const sf = getEffectiveSchema();
+    if (sf) await resolveAndSendSchema(sf, getEffectiveSchemaClass());
 
-        context.subscriptions.push(
-            vscode.workspace.onDidChangeConfiguration(async e => {
-                if (e.affectsConfiguration('paramlib.schemaFile') ||
-                    e.affectsConfiguration('paramlib.customSchemaPath') ||
-                    e.affectsConfiguration('paramlib.schemaClass')) {
-                    const updated = getEffectiveSchema();
-                    if (updated) await resolveAndSendSchema(updated, getEffectiveSchemaClass());
-                }
-            }),
-        );
-    });
+    client.sendRequest('$/paramlib/listSchemaClasses', {}).then(
+        (classes) => { lastSchemaClasses = (classes as string[]) ?? []; },
+    ).catch(() => { });
+
+    context.subscriptions.push(
+        vscode.workspace.onDidChangeConfiguration(async e => {
+            if (e.affectsConfiguration('paramlib.schemaFile') ||
+                e.affectsConfiguration('paramlib.customSchemaPath') ||
+                e.affectsConfiguration('paramlib.schemaClass')) {
+                const updated = getEffectiveSchema();
+                if (updated) await resolveAndSendSchema(updated, getEffectiveSchemaClass());
+            }
+        }),
+    );
 
     context.subscriptions.push(
         vscode.commands.registerCommand('paramlib.selectSchemaClass', pickSchemaClass),
