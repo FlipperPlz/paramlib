@@ -127,6 +127,27 @@ pub fn build(b: *std.Build) void {
     );
     install_color_wasm.step.dependOn(&color_parser_wasm.step);
 
+    const texture_source_wasm = b.addExecutable(.{
+        .name = "texture_source",
+        .root_module = b.createModule(.{
+            .target = wasm_target,
+            .optimize = optimize,
+            .root_source_file = b.path("parsers/texture_source/src/main.zig"),
+            .imports = &.{
+                .{ .name = "lsp", .module = lsp_mod },
+                .{ .name = "paramlib", .module = mod },
+            },
+        }),
+    });
+    texture_source_wasm.entry = .disabled;
+    texture_source_wasm.rdynamic = true;
+
+    const install_texture_source_wasm = b.addInstallFile(
+        texture_source_wasm.getEmittedBin(),
+        "parsers/texture_source.wasm"
+    );
+    install_texture_source_wasm.step.dependOn(&texture_source_wasm.step);
+
     const default_step = b.getInstallStep();
 
     if (build_vscode) {
@@ -165,4 +186,5 @@ pub fn build(b: *std.Build) void {
 
     default_step.dependOn(&install_wasm.step);
     default_step.dependOn(&install_color_wasm.step);
+    default_step.dependOn(&install_texture_source_wasm.step);
 }

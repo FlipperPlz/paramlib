@@ -1689,6 +1689,12 @@ fn inlayHints(
 
     if (schema.documentHints.get(params.textDocument.uri)) |precomputed| {
         for (precomputed) |ph| {
+            // Hints whose text starts with a known wasm-parser prefix are
+            // handled by that parser's own textDocument_inlayHint export;
+            // rendering them here would produce a redundant blob inlay.
+            if (std.mem.startsWith(u8, ph.text, "texture:")) continue;
+            if (std.mem.startsWith(u8, ph.text, "color:")) continue;
+
             hints.append(arena, lsp.types.InlayHint{
                 .position     = .{ .line = ph.line, .character = ph.character },
                 .label        = .{ .string = ph.text },
@@ -1795,11 +1801,11 @@ fn colorPresentations(
     params: lsp.types.ColorPresentation.Params,
 ) ?[]const lsp.types.ColorPresentation {
     const c = params.color;
-    const r: u8 = @intFromFloat(@round(c.red   * 255.0));
-    const g: u8 = @intFromFloat(@round(c.green * 255.0));
-    const b: u8 = @intFromFloat(@round(c.blue  * 255.0));
-    const a: u8 = @intFromFloat(@round(c.alpha * 255.0));
-    const label = std.fmt.allocPrint(arena, "{{{d}, {d}, {d}, {d}}}", .{ r, g, b, a }) catch return null;
+    // Format as 0-1 floats to match the file format (e.g. {0.5, 0.25, 1.0, 1.0}).
+    // Trim trailing zeros but keep at least one decimal place.
+    const label = std.fmt.allocPrint(arena, "{{{d}, {d}, {d}, {d}}}", .{
+        c.red, c.green, c.blue, c.alpha,
+    }) catch return null;
     const list  = arena.alloc(lsp.types.ColorPresentation, 1) catch return null;
     list[0] = .{ .label = label };
     return list;
