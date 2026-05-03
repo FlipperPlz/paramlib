@@ -16,8 +16,8 @@
     "server"
   ],
   "scripts": {
-    "compile": "webpack --config webpack.config.js",
-    "compile:watch": "webpack --config webpack.config.js --watch",
+    "compile": "tsdown",
+    "compile:watch": "tsdown --watch",
     "package": "bunx vsce package --no-dependencies",
     "dev:browser": "vscode-test-web --extensionDevelopmentPath=. ./ --open-devtools",
     "vsce:publish": "bunx vsce publish",
@@ -100,16 +100,12 @@
     }
   ],
   "devDependencies": {
-    "@swc/core": "latest",
     "@types/node": "^20.0.0",
     "@types/vscode": "^1.64.0",
     "@vscode/test-web": "^0.0.80",
     "@vscode/vsce": "3.8.0",
-    "copy-webpack-plugin": "14.0.0",
     "path-browserify": "1.0.1",
-    "swc-loader": "0.2.7",
-    "typescript": "5.9.3",
-    "webpack": "^5.106.2",
-    "webpack-cli": "^7.0.2"
+    "tsdown": "^0.21.10",
+    "typescript": "5.9.3"
   }
 }
