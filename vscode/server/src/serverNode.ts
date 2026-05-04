@@ -51,9 +51,7 @@ const parserManager = new ParserManager(
         return path.resolve(source);
     },
     (uri, _wasmDiags) => {
-        // Hints just updated with real params — re-emit merged diagnostics using
-        // the cached native diagnostics so the editor sees wasm diags immediately
-        // without waiting for a pull-model refresh round-trip.
+
         const native = nativeDiagCache.get(uri);
         if (native !== undefined) emitMergedDiagnostics(uri, native);
     },
@@ -79,9 +77,6 @@ function clientSend(ptr: number, len: number): void {
                 return;
             }
 
-            // Intercept push-model diagnostics from the native LSP.
-            // Cache them so the wasm callback can re-emit a merged notification,
-            // and immediately merge in any already-cached wasm diagnostics.
             if (msg.method === 'textDocument/publishDiagnostics' && msg.params?.uri) {
                 const uri = msg.params.uri as string;
                 const native: any[] = msg.params.diagnostics ?? [];
@@ -94,7 +89,6 @@ function clientSend(ptr: number, len: number): void {
                     process.stdout.write(`Content-Length: ${Buffer.byteLength(newBody)}\r\n\r\n${newBody}`);
                     return;
                 }
-                // No wasm diags yet — let it pass through unmodified (fall to end of block)
             }
 
             if (msg.id === 'getRules') {
@@ -173,7 +167,14 @@ async function main(): Promise<void> {
     log('loading wasm from %s', wasmPath);
     const bytes = fs.readFileSync(wasmPath);
     const { instance } = await WebAssembly.instantiate(bytes, {
-        env: { clientSend },
+        env: {
+            clientSend,
+            wasm_log(ptr: number, len: number): void {
+                const bytes = new Uint8Array(wasm.memory.buffer, ptr, len);
+                const msg = new TextDecoder().decode(bytes);
+                log('[WASM] %s', msg);
+            }
+        },
     });
     wasm = instance.exports as unknown as ParamlibWasm;
     log('wasm loaded');

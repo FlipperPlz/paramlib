@@ -71,6 +71,7 @@ const TOKENS = std.StaticStringMap(ProcTextureToken).initComptime(.{
     .{ "point",            .Point           },
     .{ "fresnel",          .Fresnel         },
     .{ "r2t",              .R2T             },
+    .{ "text",             .Text            },
     .{ "ui",               .UI              },
     .{ "uiex",             .UIEx            },
     .{ "extension",        .Extension       },
@@ -685,7 +686,6 @@ fn offsetOf(line: u32, character: u32, line_offsets: []const u32) u32 {
     return line_start + character;
 }
 
-// ── helpers shared by all export fns ─────────────────────────────────────────
 
 fn getHintsArr(obj: std.json.ObjectMap) ?[]std.json.Value {
     const v = obj.get("hints") orelse return null;
@@ -699,7 +699,6 @@ fn parseLineOffsets(a: std.mem.Allocator, lo_arr: []const std.json.Value) []u32 
     return offsets;
 }
 
-/// Per-hint context: validates the "texture:" prefix and computes HintPos once.
 const HintCtx = struct {
     hint: ParserHint,
     src:  []const u8,
@@ -715,13 +714,11 @@ const HintCtx = struct {
         return .{ .hint = h, .src = src, .hp = getHintPos(h, src) };
     }
 
-    /// Parse without surfacing diagnostics (callers that only need the texture).
     fn parse(self: HintCtx, a: std.mem.Allocator) ?DiagProcTexture {
         var tmp: std.ArrayListUnmanaged(lsp.types.Diagnostic) = .empty;
         return parseProcTextureWithDiags(a, self.src, &tmp, self.hint, self.hp);
     }
 
-    /// Parse and accumulate diagnostics into the caller-supplied list.
     fn parseDiag(
         self:  HintCtx,
         a:     std.mem.Allocator,
@@ -750,8 +747,6 @@ fn addToken(
     prev_line.* = tok.line;
     prev_char.* = tok.character;
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
 
 export fn textDocument_inlayHint(in_ptr: [*]const u8, in_len: usize, out_ptr: [*]u8, out_max: usize) i32 {
     var arena = std.heap.ArenaAllocator.init(alloc);
@@ -840,14 +835,12 @@ export fn textDocument_completion(in_ptr: [*]const u8, in_len: usize, out_ptr: [
         const dpt_opt = ctx.parse(a);
         const rel_off = cur_off - base_off;
 
-        // Format completions: offer when cursor is in the format field.
         const in_format: bool = if (dpt_opt) |dpt| blk: {
             const end = dpt.format_off + @as(u32, @intCast(
                 std.mem.indexOfScalar(u8, ctx.src[dpt.format_off..], ',') orelse ctx.src.len - dpt.format_off,
             ));
             break :blk rel_off >= dpt.format_off and rel_off <= end;
         } else blk: {
-            // Incomplete parse: in the format field if no comma seen yet after "#(".
             const before = ctx.src[0..@min(rel_off, ctx.src.len)];
             break :blk rel_off >= 2 and std.mem.indexOfScalar(u8, before, ',') == null;
         };
@@ -856,12 +849,10 @@ export fn textDocument_completion(in_ptr: [*]const u8, in_len: usize, out_ptr: [
                 items.append(a, .{ .label = f, .kind = .EnumMember, .detail = "texture format" }) catch continue;
         }
 
-        // Procedure-name completions: offer when cursor is at the proc-name position.
         const in_proc: bool = if (dpt_opt) |dpt| blk: {
             break :blk rel_off >= dpt.proc_off and
                 rel_off <= dpt.proc_off + @as(u32, @intCast(dpt.procedure_name.len));
         } else blk: {
-            // Incomplete parse: offer proc completions if cursor is after the header's closing ")".
             const before = ctx.src[0..@min(rel_off, ctx.src.len)];
             break :blk std.mem.indexOfScalar(u8, before, ')') != null;
         };
@@ -1038,17 +1029,16 @@ export fn textDocument_semanticTokens_full(in_ptr: [*]const u8, in_len: usize, o
         while (lexer.next()) |tok| {
             if (tok.type == .Whitespace) continue;
             const tt: u32 = switch (tok.type) {
-                // punctuation / delimiters
                 .Hash, .OpenParen, .CloseParen, .Comma                   => 4,
-                // keywords: format enums + procedure names
+
                 .AI, .ARGB, .RGB, .A, .I,
                 .Irradiance, .Color, .Dither, .PerlinNoise,
                 .WaterIrradiance, .FresnelGlass,
                 .TreeCrown, .TreeCrownAmb, .Point,
                 .Fresnel, .R2T, .Text, .UI, .UIEx, .Extension            => 0,
-                // map-type identifiers and string literals
+
                 .Co, .Ca, .No, .Ns, .Dt, .Mc, .Sm, .Smdi, .String       => 3,
-                // bare chunks: number or unrecognised identifier
+
                 .Chunk => blk: {
                     const is_num = tok.text.len > 0 and
                         (std.ascii.isDigit(tok.text[0]) or tok.text[0] == '-' or tok.text[0] == '.');

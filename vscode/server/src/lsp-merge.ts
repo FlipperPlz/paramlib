@@ -14,6 +14,93 @@ function shallowMergeObjects(base: unknown, extra: unknown): unknown {
     return extra ?? base;
 }
 
+// Semantic token data is a flat array of 5-integer tuples, delta-encoded:
+//   [deltaLine, deltaStartChar, length, tokenType, tokenModifiers, ...]
+// where deltaLine/deltaStartChar are relative to the *previous* token (or
+// (0,0) for the first token in the array).
+//
+// Two independently-produced delta-encoded arrays cannot be naively
+// concatenated or merge-sorted: WASM tokens for sub-ranges inside a proc
+// texture string overlap the native stringLiteral token that covers the
+// whole value (e.g. "#(argb,…)").  The LSP spec forbids overlapping tokens
+// and VS Code paints whichever token sorts first over the rest.
+//
+// Fix: decode both streams to absolute positions, then for every base token
+// that overlaps one or more WASM tokens, split it into gap-fragments around
+// those WASM ranges instead of emitting it whole.  The fragments plus the
+// WASM tokens are then sorted and re-encoded as a single delta sequence.
+function semTokenMerge(base: any, extra: any): unknown {
+    const bData: number[] = Array.isArray(base?.data)  ? base.data  : [];
+    const eData: number[] = Array.isArray(extra?.data) ? extra.data : [];
+    if (bData.length === 0) return { data: eData };
+    if (eData.length === 0) return { data: bData };
+
+    interface AbsTok { line: number; char: number; len: number; type: number; mod: number; }
+
+    function decode(data: number[]): AbsTok[] {
+        const out: AbsTok[] = [];
+        let line = 0, char = 0;
+        for (let i = 0; i + 4 < data.length; i += 5) {
+            const dl = data[i], dc = data[i+1];
+            line += dl;
+            char  = dl === 0 ? char + dc : dc;
+            out.push({ line, char, len: data[i+2], type: data[i+3], mod: data[i+4] });
+        }
+        return out;
+    }
+
+    function encode(toks: AbsTok[]): number[] {
+        const out: number[] = [];
+        let prevLine = 0, prevChar = 0;
+        for (const t of toks) {
+            const dl = t.line - prevLine;
+            out.push(dl, dl === 0 ? t.char - prevChar : t.char, t.len, t.type, t.mod);
+            prevLine = t.line;
+            prevChar = t.char;
+        }
+        return out;
+    }
+
+    const bToks = decode(bData);
+    const eToks = decode(eData);
+
+    // For each base token, punch out any sub-ranges covered by WASM tokens
+    // on the same line, emitting only the gap fragments that remain.
+    const baseParts: AbsTok[] = [];
+    for (const b of bToks) {
+        const bEnd = b.char + b.len;
+
+        // WASM tokens that intersect this base token (same line, overlapping char range).
+        const overlapping = eToks
+            .filter(e => e.line === b.line && e.char < bEnd && e.char + e.len > b.char)
+            .sort((x, y) => x.char - y.char);
+
+        if (overlapping.length === 0) {
+            baseParts.push(b);
+            continue;
+        }
+
+        // Emit base fragments in the gaps between (and around) the WASM tokens.
+        let cursor = b.char;
+        for (const e of overlapping) {
+            if (cursor < e.char) {
+                baseParts.push({ line: b.line, char: cursor, len: e.char - cursor, type: b.type, mod: b.mod });
+            }
+            cursor = Math.max(cursor, e.char + e.len);
+        }
+        if (cursor < bEnd) {
+            baseParts.push({ line: b.line, char: cursor, len: bEnd - cursor, type: b.type, mod: b.mod });
+        }
+    }
+
+    // Merge the (now non-overlapping) base fragments with all WASM tokens and sort.
+    const allToks = [...baseParts, ...eToks].sort((a, b) =>
+        a.line !== b.line ? a.line - b.line : a.char - b.char
+    );
+
+    return { data: encode(allToks) };
+}
+
 const strategies = new Map<string, MergeStrategy>([
     ['textDocument/hover', (base: any, extra: any) => {
         const bVal: string = base?.contents?.value
@@ -68,19 +155,14 @@ const strategies = new Map<string, MergeStrategy>([
     ['textDocument/implementation', locationMerge],
 
     
-    // Pull-diagnostics: result must be { kind: "full", items: [...] }
     ['textDocument/diagnostic', (base: any, extra: any) => {
         const bItems = Array.isArray(base?.items) ? base.items : (Array.isArray(base) ? base : []);
         const eItems = Array.isArray(extra?.items) ? extra.items : (Array.isArray(extra) ? extra : []);
         return { kind: 'full', items: [...bItems, ...eItems] };
     }],
 
-    ['textDocument/semanticTokens/full', (base: any, extra: any) => ({
-        data: [...(base?.data ?? []), ...(extra?.data ?? [])],
-    })],
-    ['textDocument/semanticTokens/range', (base: any, extra: any) => ({
-        data: [...(base?.data ?? []), ...(extra?.data ?? [])],
-    })],
+    ['textDocument/semanticTokens/full',  semTokenMerge],
+    ['textDocument/semanticTokens/range', semTokenMerge],
 
     
     ['textDocument/rename', (base: any, extra: any) => {
@@ -134,15 +216,11 @@ function isValidRange(r: any): boolean {
            typeof r.end.line === 'number' && typeof r.end.character === 'number')) {
         return false;
     }
-    // Reject empty ranges (start == end) as they cause "Illegal argument: range" in VS Code color providers
     if (r.start.line === r.end.line && r.start.character === r.end.character) {
         return false;
     }
-    // Ensure start is before or at end
-    if (r.start.line > r.end.line || (r.start.line === r.end.line && r.start.character > r.end.character)) {
-        return false;
-    }
-    return true;
+    return !(r.start.line > r.end.line || (r.start.line === r.end.line && r.start.character > r.end.character));
+
 }
 
 function validateColorInformation(items: any[]): any[] {
@@ -150,15 +228,12 @@ function validateColorInformation(items: any[]): any[] {
         if (!item || typeof item !== 'object') return false;
         if (!isValidRange(item.range)) return false;
         const c = item.color;
-        if (!c || typeof c !== 'object' || 
-            typeof c.red !== 'number' || typeof c.green !== 'number' || 
-            typeof c.blue !== 'number' || typeof c.alpha !== 'number') {
-            return false;
-        }
-        return true;
+        return !(!c || typeof c !== 'object' ||
+            typeof c.red !== 'number' || typeof c.green !== 'number' ||
+            typeof c.blue !== 'number' || typeof c.alpha !== 'number');
+
     });
 
-    // De-duplicate: if multiple colors start at the same position, prefer the one with the longer range
     const seen = new Map<string, any>();
     for (const item of valid) {
         const key = `${item.range.start.line}:${item.range.start.character}`;
@@ -195,7 +270,6 @@ export function mergeLspResults(method: string, base: unknown, additions: string
             let extra = JSON.parse(json);
             if (extra === null || extra === undefined) continue;
 
-            // Specific validation for color results
             if (method === 'textDocument/documentColor' && Array.isArray(extra)) {
                 extra = validateColorInformation(extra);
             }
@@ -211,7 +285,6 @@ export function mergeLspResults(method: string, base: unknown, additions: string
                 result = strategy(result, extra, params);
 
                 if (method === 'textDocument/documentColor' && Array.isArray(result)) {
-                    // Final validation after merge
                     result = validateColorInformation(result);
                 }
             } else if (Array.isArray(result) && Array.isArray(extra)) {

@@ -10,6 +10,9 @@ pub fn main(init: std.process.Init) !void {
     return startServer(init.io, init.gpa, transport);
 }
 
+pub export fn custom_log(ptr: [*]const u8, len: usize) void {
+    std.debug.print("{s}\n", .{ptr[0..len]});
+}
 
 pub fn startServer(io: std.Io, allocator: std.mem.Allocator, transport: *lsp.Transport) !void {
     var documents: std.StringArrayHashMapUnmanaged([]const u8) = .empty;

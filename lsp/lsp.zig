@@ -2,6 +2,14 @@ const std      = @import("std");
 const lsp      = @import("lsp");
 const paramlib = @import("paramlib");
 
+extern fn custom_log(ptr: [*]const u8, len: usize) void;
+
+fn log(comptime fmt: []const u8, args: anytype) void {
+    var buf: [2048]u8 = undefined;
+    const msg = std.fmt.bufPrint(&buf, fmt, args) catch return;
+    custom_log(msg.ptr, msg.len);
+}
+
 pub const StringCompletionRule = struct {
     path:   []const u8,
     values: []const []const u8,
@@ -15,6 +23,11 @@ pub const ArrayInlaysRule = struct {
 pub const ParserRule = struct {
     pattern: []const u8,
     wasm_source: []const u8,
+};
+
+pub const ParamDocRule = struct {
+    path: []const u8,
+    doc:  []const u8,
 };
 
 pub const PrecomputedParserHint = struct {
@@ -56,19 +69,23 @@ pub const SchemaState = struct {
     stringCompletions: []StringCompletionRule = &.{},
     arrayInlays: []ArrayInlaysRule = &.{},
     parserRules: []ParserRule = &.{},
+    paramDocs: []ParamDocRule = &.{},
     documentHints: std.StringArrayHashMapUnmanaged([]const PrecomputedParserHint) = .empty,
     schemaClasses: []const []const u8 = &.{},
 
     pub const empty: SchemaState = .{};
 
     pub fn updateFromContent(self: *SchemaState, alloc: std.mem.Allocator, content: []const u8, class_name: ?[]const u8) void {
+        log("[SchemaState.updateFromContent] class_name={?s}", .{class_name});
         const src = alloc.dupeZ(u8, content) catch return;
         defer alloc.free(src);
         var errored = false;
         var root = paramlib.cpp.parser.parseSource(alloc, src, &errored, .none()) catch return;
         defer root.deinit(alloc);
         const new_classes = collectSchemaClassNames(&root, alloc);
+        log("[SchemaState.updateFromContent] found {d} schema classes", .{new_classes.len});
         const sc = findSchemaClass(&root, alloc, class_name) orelse {
+            log("[SchemaState.updateFromContent] schema class not found, clearing state", .{});
             self.deinit(alloc);
             self.schemaClasses = new_classes;
             return;
@@ -76,8 +93,13 @@ pub const SchemaState = struct {
         const empty_named: std.StringArrayHashMapUnmanaged(SchemaState) = .empty;
         var new_state = buildFromSchemaClass(sc.root_ptr, sc.class_ptr, alloc, &empty_named);
         new_state.schemaClasses = new_classes;
+        log("[SchemaState.updateFromContent] built new state: {d} paramDocs, {d} stringCompletions", .{new_state.paramDocs.len, new_state.stringCompletions.len});
+        for (new_state.paramDocs) |rule| {
+            log("[SchemaState.updateFromContent]   paramDoc: path='{s}', doc='{s}'", .{rule.path, rule.doc});
+        }
         self.deinit(alloc);
         self.* = new_state;
+        log("[SchemaState.updateFromContent] state updated successfully", .{});
     }
 
     pub fn extractFromDocuments(
@@ -85,6 +107,7 @@ pub const SchemaState = struct {
         alloc:     std.mem.Allocator,
         documents: *const std.StringArrayHashMapUnmanaged([]const u8),
     ) void {
+        log("[SchemaState.extractFromDocuments] extracting from {d} documents", .{documents.count()});
         self.deinit(alloc);
 
         var named = std.StringArrayHashMapUnmanaged(SchemaState).empty;
@@ -170,6 +193,10 @@ pub const SchemaState = struct {
 
         active.schemaClasses = all_names.toOwnedSlice(alloc) catch &.{};
         all_names = .empty;
+        log("[SchemaState.extractFromDocuments] final state: {d} paramDocs, {d} stringCompletions", .{active.paramDocs.len, active.stringCompletions.len});
+        for (active.paramDocs) |rule| {
+            log("[SchemaState.extractFromDocuments]   paramDoc: path='{s}', doc='{s}'", .{rule.path, rule.doc});
+        }
         self.* = active;
     }
 
@@ -274,6 +301,15 @@ pub const SchemaState = struct {
                 alloc.free(wasm);
             };
         }
+        var pdocs = std.ArrayList(ParamDocRule).empty;
+        for (src.paramDocs) |rule| {
+            const path = alloc.dupe(u8, rule.path) catch continue;
+            const doc  = alloc.dupe(u8, rule.doc)  catch { alloc.free(path); continue; };
+            pdocs.append(alloc, .{ .path = path, .doc = doc }) catch {
+                alloc.free(path);
+                alloc.free(doc);
+            };
+        }
         var docHints = std.StringArrayHashMapUnmanaged([]const PrecomputedParserHint).empty;
         var it = src.documentHints.iterator();
         while (it.next()) |entry| {
@@ -293,9 +329,10 @@ pub const SchemaState = struct {
             };
         }
         return .{
-            .stringCompletions = comps.toOwnedSlice(alloc)  catch &.{},
-            .arrayInlays       = arrays.toOwnedSlice(alloc) catch &.{},
+            .stringCompletions = comps.toOwnedSlice(alloc)   catch &.{},
+            .arrayInlays       = arrays.toOwnedSlice(alloc)  catch &.{},
             .parserRules       = parsers.toOwnedSlice(alloc) catch &.{},
+            .paramDocs         = pdocs.toOwnedSlice(alloc)   catch &.{},
             .documentHints     = docHints,
             .schemaClasses     = &.{},
         };
@@ -322,10 +359,12 @@ pub const SchemaState = struct {
         var completions = std.ArrayList(StringCompletionRule).fromOwnedSlice(base_state.stringCompletions);
         var arrays      = std.ArrayList(ArrayInlaysRule).fromOwnedSlice(base_state.arrayInlays);
         var parsers     = std.ArrayList(ParserRule).fromOwnedSlice(base_state.parserRules);
+        var pdocs       = std.ArrayList(ParamDocRule).fromOwnedSlice(base_state.paramDocs);
         const docHints  = base_state.documentHints;
         base_state.stringCompletions = &.{};
         base_state.arrayInlays       = &.{};
         base_state.parserRules       = &.{};
+        base_state.paramDocs         = &.{};
         base_state.documentHints     = .empty;
         base_state.deinit(alloc);
 
@@ -334,6 +373,7 @@ pub const SchemaState = struct {
                 .stringCompletions = completions.toOwnedSlice(alloc) catch &.{},
                 .arrayInlays       = arrays.toOwnedSlice(alloc)      catch &.{},
                 .parserRules       = parsers.toOwnedSlice(alloc)     catch &.{},
+                .paramDocs         = pdocs.toOwnedSlice(alloc)       catch &.{},
                 .documentHints     = docHints,
             };
         };
@@ -348,7 +388,8 @@ pub const SchemaState = struct {
             const is_completions  = std.mem.eql(u8, p.name, "stringCompletions");
             const is_array_inlays = std.mem.eql(u8, p.name, "arrayInlays");
             const is_parsers      = std.mem.eql(u8, p.name, "parsers") or std.mem.eql(u8, p.name, "parserRules");
-            if (!is_completions and !is_array_inlays and !is_parsers) continue;
+            const is_param_docs   = std.mem.eql(u8, p.name, "paramDocs");
+            if (!is_completions and !is_array_inlays and !is_parsers and !is_param_docs) continue;
 
             if (p.operator == .assign) {
                 if (is_completions) {
@@ -365,12 +406,18 @@ pub const SchemaState = struct {
                         alloc.free(r.labels);
                     }
                     arrays.clearRetainingCapacity();
-                } else {
+                } else if (is_parsers) {
                     for (parsers.items) |r| {
                         alloc.free(r.pattern);
                         alloc.free(r.wasm_source);
                     }
                     parsers.clearRetainingCapacity();
+                } else {
+                    for (pdocs.items) |r| {
+                        alloc.free(r.path);
+                        alloc.free(r.doc);
+                    }
+                    pdocs.clearRetainingCapacity();
                 }
             }
 
@@ -394,6 +441,26 @@ pub const SchemaState = struct {
                         .pattern = alloc.dupe(u8, pat) catch continue,
                         .wasm_source = alloc.dupe(u8, wasm) catch continue,
                     }) catch {};
+                    continue;
+                }
+
+                if (is_param_docs) {
+                    const path_str = switch (pair[0]) {
+                        .string => |s| s,
+                        else    => continue,
+                    };
+                    const doc_str = switch (pair[1]) {
+                        .string => |s| s,
+                        else    => continue,
+                    };
+                    const path = alloc.dupe(u8, path_str) catch continue;
+                    const doc  = alloc.dupe(u8, doc_str)  catch { alloc.free(path); continue; };
+
+                    pdocs.append(alloc, .{ .path = path, .doc = doc }) catch {
+                        alloc.free(path);
+                        alloc.free(doc);
+                    };
+
                     continue;
                 }
 
@@ -440,6 +507,7 @@ pub const SchemaState = struct {
             .stringCompletions = completions.toOwnedSlice(alloc) catch &.{},
             .arrayInlays       = arrays.toOwnedSlice(alloc)      catch &.{},
             .parserRules       = parsers.toOwnedSlice(alloc)     catch &.{},
+            .paramDocs         = pdocs.toOwnedSlice(alloc)       catch &.{},
             .documentHints     = docHints,
         };
     }
@@ -468,6 +536,13 @@ pub const SchemaState = struct {
         if (self.parserRules.len > 0) alloc.free(self.parserRules);
         self.parserRules = &.{};
 
+        for (self.paramDocs) |rule| {
+            alloc.free(rule.path);
+            alloc.free(rule.doc);
+        }
+        if (self.paramDocs.len > 0) alloc.free(self.paramDocs);
+        self.paramDocs = &.{};
+
         var it = self.documentHints.iterator();
         while (it.next()) |entry| {
             alloc.free(entry.key_ptr.*);
@@ -493,6 +568,19 @@ pub const SchemaState = struct {
             const pat = stripArraySuffix(rule.path);
             if (globMatch(pat, param_path)) return rule.labels;
         }
+        return null;
+    }
+
+    pub fn docFor(self: *const SchemaState, param_path: []const u8) ?[]const u8 {
+        log("[docFor] searching for '{s}', have {d} paramDocs rules", .{ param_path, self.paramDocs.len });
+        for (self.paramDocs) |rule| {
+            log("[docFor]   rule.path='{s}' vs param_path='{s}' -> match={}", .{ rule.path, param_path, globMatch(rule.path, param_path) });
+            if (globMatch(rule.path, param_path)) {
+                log("[docFor]   MATCHED! returning doc='{s}'", .{rule.doc});
+                return rule.doc;
+            }
+        }
+        log("[docFor] no match found", .{});
         return null;
     }
 };
@@ -621,7 +709,7 @@ fn globMatchAt(pat: []const u8, pi_start: usize, str: []const u8, si_start: usiz
             const after = pi + 2;
             var rest = after;
             if (rest < pat.len and pat[rest] == '.') rest += 1;
-            var ti = si + 1;
+            var ti = si; // start at si, not si+1, so ** can match zero leading components
             while (true) {
                 if (globMatchAt(pat, rest, str, ti)) return true;
                 if (ti == str.len) break;
@@ -733,7 +821,7 @@ pub fn handleMessage(
             .@"textDocument/hover" => |params| {
                 var arena = std.heap.ArenaAllocator.init(allocator);
                 defer arena.deinit();
-                const result = hover(documents, arena.allocator(), params);
+                const result = hover(documents, schema, arena.allocator(), params);
                 try transport.writeResponse(io, allocator, req.id,
                     ?lsp.types.Hover, result,
                     .{ .emit_null_optional_fields = false },
@@ -1253,9 +1341,11 @@ fn references(
 
 fn hover(
     documents: *const std.StringArrayHashMapUnmanaged([]const u8),
+    schema:    *const SchemaState,
     arena:     std.mem.Allocator,
     params:    lsp.types.Hover.Params,
 ) ?lsp.types.Hover {
+    log("[hover] called for uri={s}, schema has {d} paramDocs", .{params.textDocument.uri, schema.paramDocs.len});
     const text = documents.get(params.textDocument.uri) orelse return null;
 
     const src = arena.dupeZ(u8, text) catch return null;
@@ -1308,9 +1398,29 @@ fn hover(
                 .expression => |v| std.fmt.allocPrint(arena, "**expression** `@{s}`",.{v}) catch return null,
                 .array      => |v| std.fmt.allocPrint(arena, "**array**[{d}]",      .{v.len}) catch return null,
             };
-            break :blk std.fmt.allocPrint(
+            const type_line = std.fmt.allocPrint(
                 arena, "**param** `{s}` {s} {s}", .{ p.name, op, val },
             ) catch return null;
+
+            // Append schema documentation if available for this parameter's dot-path.
+            const enclosing = findClassAtOffset(&root, offset);
+            log("[hover] param.name={s}, enclosing={?s}", .{ p.name, if (enclosing) |enc| enc.name else null });
+            const doc_str: ?[]const u8 = if (enclosing) |enc| doc_blk: {
+                var path_parts = std.ArrayList([]const u8).empty;
+                _ = buildPathToClass(arena, &root, enc, &path_parts);
+                const class_dot_path = std.mem.join(arena, ".", path_parts.items) catch break :doc_blk null;
+                const dot_path = if (class_dot_path.len > 0)
+                    std.fmt.allocPrint(arena, "{s}.{s}", .{ class_dot_path, p.name }) catch break :doc_blk null
+                else
+                    p.name;
+                log("[hover] computed dot_path={s}", .{dot_path});
+                const doc = schema.docFor(dot_path);
+                log("[hover] docFor({s}) = {?s}", .{ dot_path, doc });
+                break :doc_blk doc;
+            } else null;
+
+            log("[hover] final: doc_str={?s}, using={s}", .{ doc_str, if (doc_str != null) "paramDoc" else "type_line" });
+            break :blk doc_str orelse type_line;
         },
     } orelse return null;
 

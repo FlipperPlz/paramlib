@@ -63,8 +63,6 @@ export class ParserManager {
 
     private lspIndex: Map<string, string[]> = new Map();
 
-    // Cache the last wasm-generated diagnostics per URI so they can be merged
-    // into push-model publishDiagnostics notifications from the native LSP.
     private wasmDiagCache: Map<string, any[]> = new Map();
 
     constructor(
@@ -73,8 +71,6 @@ export class ParserManager {
         private sendRefreshNotifications: (uri: string, methods: string[]) => void,
         private readFile?:            (path: string) => Uint8Array,
         private resolveExternalWasm?: (source: string) => string,
-        // Called after hints update with real params — server uses this to re-emit
-        // a merged textDocument/publishDiagnostics when the pull-refresh doesn't fire.
         private onWasmDiagsReady?: (uri: string, diags: any[]) => void,
     ) {}
 
@@ -247,8 +243,6 @@ export class ParserManager {
         return this.documentHints.get(uri) ?? [];
     }
 
-    // Run the wasm diagnostic export synchronously against current hints.
-    // Returns the merged array of diagnostic objects (may be empty).
     public getWasmDiagnostics(uri: string): any[] {
         const results = this.handleLsp('textDocument/diagnostic', {}, uri);
         const diags: any[] = [];
@@ -262,9 +256,6 @@ export class ParserManager {
         return diags;
     }
 
-    // Merge wasm diagnostics with a set of native diagnostics.
-    // Call this from the server whenever a textDocument/publishDiagnostics
-    // notification is intercepted from the native LSP.
     public mergePublishDiagnostics(uri: string, nativeDiags: any[]): any[] {
         const cached = this.wasmDiagCache.get(uri) ?? [];
         return [...nativeDiags, ...cached];
@@ -291,11 +282,6 @@ export class ParserManager {
         });
         const text = rawText ?? existing?.text;
 
-        // If this is an initial text-only call (no params yet), only run regex-based
-        // rules.  We deliberately do NOT send workspace/diagnostic/refresh here —
-        // the pull will fire before glob-matched hints (which need params) are ready,
-        // so we hold off and let the second processDocument call (with real params)
-        // own the refresh signal.
         const isParamlessOpen = params.length === 0 && rawText !== undefined;
 
         const hints: PrecomputedParserHint[] = [];
@@ -364,10 +350,6 @@ export class ParserManager {
             this.sendToWasm({ jsonrpc: '2.0', method: '$/paramlib/parserHints', params: { uri, hints } });
             this.sendRefreshNotifications(uri, this.getHintDrivenRefreshNotifications());
 
-            // Recompute wasm diagnostics now that hints are ready and notify the
-            // server so it can re-emit a merged textDocument/publishDiagnostics.
-            // This is the reliable push-model fallback for environments where
-            // workspace/diagnostic/refresh doesn't trigger a re-pull.
             const wasmDiags = this.getWasmDiagnostics(uri);
             this.wasmDiagCache.set(uri, wasmDiags);
             console.error(`[paramlib:processDocument] wasm diag cache updated: ${wasmDiags.length} diags for ${uri}`);
@@ -376,8 +358,6 @@ export class ParserManager {
             console.error(`[paramlib:processDocument] skipping refresh on paramless open (waiting for getDocumentParams)`);
             this.sendToWasm({ jsonrpc: '2.0', method: '$/paramlib/parserHints', params: { uri, hints } });
         } else if (!isParamlessOpen) {
-            // Real params pass but no hints — clear the wasm diag cache so stale
-            // diagnostics don't persist after the user removes texture values.
             this.wasmDiagCache.set(uri, []);
         }
     }

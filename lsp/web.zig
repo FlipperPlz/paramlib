@@ -60,6 +60,12 @@ export fn free(ptr: u32, len: u32) void {
     allocator.free(p[0..len]);
 }
 
+pub export fn custom_log(ptr: [*]const u8, len: usize) void {
+    wasm_log(ptr, len);
+}
+
+extern fn wasm_log(ptr: [*]const u8, len: usize) void;
+
 export fn serverSend(ptr: [*]const u8, len: u32) u32 {
     @memcpy(rx_buf[0..len], ptr[0..len]);
     reader = std.Io.Reader.fixed(rx_buf[0..len]);

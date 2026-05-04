@@ -1,5 +1,7 @@
 Going through the whole codebase:
 High priority - blocks merge from working correctly:
+Add a type enforcer to my schema so CfgSurfaces.*.friction needs to be float for example
+
 
 Reference guard in deleteClass: the merge's delete-marker path calls factory.deleteClass, but there's no check before freeing a class that's still someone else's base. Add if (data.references.load(.monotonic) > 1) return error.ClassInUse; at the top of deleteClass.
 findChildByNameHash and findParamByNameHash helpers: they're private to merge.zig in the code above but should probably live in query.zig since they're basic traversal operations you'll need elsewhere.

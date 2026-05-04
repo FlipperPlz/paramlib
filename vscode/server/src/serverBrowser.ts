@@ -72,7 +72,15 @@ async function loadWasm(): Promise<void> {
         throw new Error(`Failed to fetch WASM: ${response.status}`);
     }
     const { instance } = await WebAssembly.instantiate(await response.arrayBuffer(), {
-        env: { clientSend },
+        env: {
+            clientSend,
+            wasm_log(ptr: number, len: number): void {
+                if (!wasm) return;
+                const bytes = new Uint8Array(wasm.memory.buffer, ptr, len);
+                const msg = new TextDecoder().decode(bytes);
+                console.log('[WASM]', msg);
+            }
+        },
     });
     wasm = instance.exports as unknown as ParamlibWasm;
 }
@@ -100,6 +108,7 @@ function emitMergedDiagnostics(uri: string, nativeDiags: any[]): void {
     // @ts-ignore
     writer.write({
         jsonrpc: '2.0',
+        // @ts-ignore
         method: 'textDocument/publishDiagnostics',
         params: { uri, diagnostics: merged },
     });
@@ -139,6 +148,8 @@ dispatchToClient = (data: Uint8Array): void => {
                     // @ts-ignore
                     writer.write({
                         jsonrpc: '2.0',
+                        // @ts-ignore
+
                         id: '__paramlib_cap_reg__',
                         method: 'client/registerCapability',
                         params: {

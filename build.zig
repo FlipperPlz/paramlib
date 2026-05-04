@@ -160,6 +160,8 @@ pub fn build(b: *std.Build) void {
 
         const vscode_install = b.addSystemCommand(&.{ "bun", "install" });
         vscode_install.step.dependOn(&install_wasm.step);
+        vscode_install.step.dependOn(&install_color_wasm.step);
+        vscode_install.step.dependOn(&install_texture_source_wasm.step);
         vscode_install.setCwd(b.path(vscode_dir));
 
         const vscode_compile_ts = b.addSystemCommand(&.{ "bun", "run", "compile" });
@@ -181,6 +183,10 @@ pub fn build(b: *std.Build) void {
             vsix_filename,
         );
         install_vsix.step.dependOn(&vscode_compile.step);
+
+        // Make native LSP build depend on vscode compilation being done
+        lsp_exe.step.dependOn(&vscode_compile_ts.step);
+
         default_step.dependOn(&install_vsix.step);
     }
 
