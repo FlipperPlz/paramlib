@@ -1,11 +1,11 @@
 class CfgSchemas {
     class DayZ {
         stringCompletions[] += {
-            {"**.Stage*.uvSource", {"tex", "pos", "norm"}},
+            {"**.uvSource", {"none", "tex", "texwateranim", "pos", "norm", "tex1", "worldpos",  "worldnorm", "texshoreanim"}},
         };
         arrayInlays[] += {
             {"**.pos[3]",                {"x", "y", "z"}},
-            {"**.uvTransform.aside[3]", {"x", "y", "z"}},
+            {"**.uvTransform.aside[3]",  {"x", "y", "z"}},
             {"**.uvTransform.up[3]",     {"x", "y", "z"}},
             {"**.uvTransform.dir[3]",    {"x", "y", "z"}},
             {"**.itemsCargoSize[2]",     {"width", "height"}},

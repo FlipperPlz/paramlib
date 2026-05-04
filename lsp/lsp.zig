@@ -665,8 +665,6 @@ const RequestMethods = union(enum) {
     @"textDocument/semanticTokens/full":  lsp.types.semantic_tokens.Params,
     @"textDocument/completion":           lsp.types.completion.Params,
     @"textDocument/inlayHint":            lsp.types.InlayHint.Params,
-    @"textDocument/documentColor":        lsp.types.DocumentColor.Params,
-    @"textDocument/colorPresentation":    lsp.types.ColorPresentation.Params,
     other:                                lsp.MethodWithParams,
 };
 
@@ -801,26 +799,6 @@ pub fn handleMessage(
                 const result = inlayHints(documents, schema, arena.allocator(), params);
                 try transport.writeResponse(io, allocator, req.id,
                     ?[]const lsp.types.InlayHint, result,
-                    .{ .emit_null_optional_fields = false },
-                );
-            },
-
-            .@"textDocument/documentColor" => |params| {
-                var arena = std.heap.ArenaAllocator.init(allocator);
-                defer arena.deinit();
-                const result = documentColors(schema, arena.allocator(), params);
-                try transport.writeResponse(io, allocator, req.id,
-                    ?[]const lsp.types.DocumentColor, result,
-                    .{ .emit_null_optional_fields = false },
-                );
-            },
-
-            .@"textDocument/colorPresentation" => |params| {
-                var arena = std.heap.ArenaAllocator.init(allocator);
-                defer arena.deinit();
-                const result = colorPresentations(arena.allocator(), params);
-                try transport.writeResponse(io, allocator, req.id,
-                    ?[]const lsp.types.ColorPresentation, result,
                     .{ .emit_null_optional_fields = false },
                 );
             },
@@ -1757,59 +1735,6 @@ fn collectArrayInlayHints(
     }
 }
 
-fn parseRgbaFromHint(text: []const u8, out: *[4]u8) bool {
-    var it = std.mem.tokenizeScalar(u8, text, ',');
-    var i: usize = 0;
-    while (it.next()) |part| {
-        if (i >= 4) break;
-        out[i] = std.fmt.parseInt(u8, std.mem.trim(u8, part, " "), 10) catch return false;
-        i += 1;
-    }
-    return i >= 3;
-}
-
-fn documentColors(
-    schema: *const SchemaState,
-    arena:  std.mem.Allocator,
-    params: lsp.types.DocumentColor.Params,
-) ?[]const lsp.types.DocumentColor {
-    const precomputed = schema.documentHints.get(params.textDocument.uri) orelse return null;
-    var colors = std.ArrayList(lsp.types.DocumentColor).empty;
-    for (precomputed) |hint| {
-        if (!std.mem.startsWith(u8, hint.text, "color:")) continue;
-        var rgba: [4]u8 = .{ 0, 0, 0, 255 };
-        if (!parseRgbaFromHint(hint.text["color:".len..], &rgba)) continue;
-        colors.append(arena, .{
-            .range = .{
-                .start = .{ .line = hint.line, .character = hint.character },
-                .end   = .{ .line = hint.line, .character = hint.character + hint.length },
-            },
-            .color = .{
-                .red   = @as(f32, @floatFromInt(rgba[0])) / 255.0,
-                .green = @as(f32, @floatFromInt(rgba[1])) / 255.0,
-                .blue  = @as(f32, @floatFromInt(rgba[2])) / 255.0,
-                .alpha = @as(f32, @floatFromInt(rgba[3])) / 255.0,
-            },
-        }) catch continue;
-    }
-    if (colors.items.len == 0) return null;
-    return colors.toOwnedSlice(arena) catch null;
-}
-
-fn colorPresentations(
-    arena:  std.mem.Allocator,
-    params: lsp.types.ColorPresentation.Params,
-) ?[]const lsp.types.ColorPresentation {
-    const c = params.color;
-    // Format as 0-1 floats to match the file format (e.g. {0.5, 0.25, 1.0, 1.0}).
-    // Trim trailing zeros but keep at least one decimal place.
-    const label = std.fmt.allocPrint(arena, "{{{d}, {d}, {d}, {d}}}", .{
-        c.red, c.green, c.blue, c.alpha,
-    }) catch return null;
-    const list  = arena.alloc(lsp.types.ColorPresentation, 1) catch return null;
-    list[0] = .{ .label = label };
-    return list;
-}
 
 fn completion(
     documents: *const std.StringArrayHashMapUnmanaged([]const u8),
@@ -1835,10 +1760,58 @@ fn completion(
 
     const enclosing = findClassAtOffset(&root, offset) orelse return null;
 
+    // Compute dot-path of enclosing class once — used by both passes below.
+    var enc_path_parts = std.ArrayList([]const u8).empty;
+    _ = buildPathToClass(arena, &root, enclosing, &enc_path_parts);
+    const enc_dot_path = std.mem.join(arena, ".", enc_path_parts.items) catch "";
+
+    var items = std.ArrayList(lsp.types.completion.Item).empty;
+
+    // ── Pass 1: value completions ────────────────────────────────────────────
+    // If the cursor is inside an existing param's value, offer schema values
+    // for it.  This works even when the enclosing class has no base.
+    value_pass: {
+        const members = enclosing.members orelse break :value_pass;
+
+        // Find the param whose value starts at or before the cursor and is not
+        // superseded by a later param starting before the cursor.
+        var vp: ?*const paramlib.cpp.ast.ParameterAst = null;
+        for (members.items) |*m| {
+            if (m.* != .param) continue;
+            const p = &m.param;
+            if (offset < p.valuePos) continue;
+            var blocked = false;
+            for (members.items) |*m2| {
+                if (m2.* != .param) continue;
+                if (m2.param.namePos > p.valuePos and m2.param.namePos <= offset) {
+                    blocked = true;
+                    break;
+                }
+            }
+            if (!blocked) vp = p;
+        }
+
+        const p = vp orelse break :value_pass;
+        const dot_path = if (enc_dot_path.len > 0)
+            std.fmt.allocPrint(arena, "{s}.{s}", .{ enc_dot_path, p.name }) catch p.name
+        else p.name;
+        const allowed = schema.valuesFor(dot_path) orelse break :value_pass;
+        for (allowed) |val| {
+            items.append(arena, lsp.types.completion.Item{
+                .label      = val,
+                .kind       = .Value,
+                .insertText = val,
+                .detail     = "schema value",
+            }) catch {};
+        }
+        if (items.items.len > 0) return .{ .completion_items = items.items };
+    }
+
+    // ── Pass 2: missing-param completions ────────────────────────────────────
+    // Walk the base chain and suggest params/classes not yet in this class.
     const effective_base = enclosing.base orelse resolveImplicitBase(&root, enclosing, arena);
     if (effective_base == null) return null;
 
-    var items = std.ArrayList(lsp.types.completion.Item).empty;
     var seen = std.StringHashMapUnmanaged(void){};
     defer seen.deinit(arena);
 
@@ -1853,10 +1826,6 @@ fn completion(
     }
 
     var current_base: ?*const paramlib.cpp.ast.ClassAst = effective_base;
-
-    var enc_path_parts = std.ArrayList([]const u8).empty;
-    _ = buildPathToClass(arena, &root, enclosing, &enc_path_parts);
-    const enc_dot_path = std.mem.join(arena, ".", enc_path_parts.items) catch "";
 
     while (current_base) |base| {
         const baseName    = base.name orelse "?";

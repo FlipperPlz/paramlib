@@ -6,14 +6,40 @@ import { ParserManager } from './parser';
 import { mergeLspResults } from './lsp-merge';
 import { buildCapabilitiesPatch } from './lsp-capabilities';
 
+const LOG = fs.createWriteStream(
+    path.join(require('os').tmpdir(), 'paramlib-lsp.log'),
+    { flags: 'a' },
+);
+function log(...args: unknown[]): void {
+    const line = `[${new Date().toISOString()}] ${args.map(a =>
+        typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ')}\n`;
+    LOG.write(line);
+}
+
+log('--- server start ---');
+
 let wasm: ParamlibWasm;
 const documentTexts = new Map<string, string>();
 const pendingRequests = new Map<number | string, { method: string, params: any, uri?: string, wasmResults: string[] }>();
+const nativeDiagCache = new Map<string, any[]>();
+
+function emitMergedDiagnostics(uri: string, nativeDiags: any[]): void {
+    const merged = parserManager.mergePublishDiagnostics(uri, nativeDiags);
+    const body = JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'textDocument/publishDiagnostics',
+        params: { uri, diagnostics: merged },
+    });
+    log('emitMergedDiagnostics: uri=%s native=%d wasm=%d total=%d',
+        uri, nativeDiags.length, merged.length - nativeDiags.length, merged.length);
+    process.stdout.write(`Content-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`);
+}
 
 const parserManager = new ParserManager(
     (msg) => sendRpcToWasm({ jsonrpc: '2.0', ...msg }),
     (name) => path.join(__dirname, 'parsers', `${name}.wasm`),
     (uri, methods) => {
+        log('sendRefresh uri=%s methods=%j', uri, methods);
         for (const method of methods) {
             const body = JSON.stringify({ jsonrpc: '2.0', method, params: null });
             process.stdout.write(`Content-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`);
@@ -23,6 +49,13 @@ const parserManager = new ParserManager(
     (source) => {
         if (source.startsWith('http://') || source.startsWith('https://')) return source;
         return path.resolve(source);
+    },
+    (uri, _wasmDiags) => {
+        // Hints just updated with real params — re-emit merged diagnostics using
+        // the cached native diagnostics so the editor sees wasm diags immediately
+        // without waiting for a pull-model refresh round-trip.
+        const native = nativeDiagCache.get(uri);
+        if (native !== undefined) emitMergedDiagnostics(uri, native);
     },
 );
 
@@ -37,6 +70,8 @@ function clientSend(ptr: number, len: number): void {
 
             if (msg.result && msg.result.capabilities) {
                 const patch = buildCapabilitiesPatch(parserManager.getRegisteredMethods());
+                log('capabilities patch (at initialize, registeredMethods=%j): %j',
+                    parserManager.getRegisteredMethods(), patch);
                 Object.assign(msg.result.capabilities, patch);
                 const newBody = JSON.stringify(msg);
                 const header = `Content-Length: ${Buffer.byteLength(newBody)}\r\n\r\n`;
@@ -44,8 +79,53 @@ function clientSend(ptr: number, len: number): void {
                 return;
             }
 
+            // Intercept push-model diagnostics from the native LSP.
+            // Cache them so the wasm callback can re-emit a merged notification,
+            // and immediately merge in any already-cached wasm diagnostics.
+            if (msg.method === 'textDocument/publishDiagnostics' && msg.params?.uri) {
+                const uri = msg.params.uri as string;
+                const native: any[] = msg.params.diagnostics ?? [];
+                nativeDiagCache.set(uri, native);
+                const merged = parserManager.mergePublishDiagnostics(uri, native);
+                if (merged.length !== native.length) {
+                    log('publishDiagnostics intercept: uri=%s native=%d merged=%d', uri, native.length, merged.length);
+                    msg.params.diagnostics = merged;
+                    const newBody = JSON.stringify(msg);
+                    process.stdout.write(`Content-Length: ${Buffer.byteLength(newBody)}\r\n\r\n${newBody}`);
+                    return;
+                }
+                // No wasm diags yet — let it pass through unmodified (fall to end of block)
+            }
+
             if (msg.id === 'getRules') {
-                parserManager.updateRules(msg.result || []);
+                log('getRules response: %d rules', (msg.result || []).length);
+                parserManager.updateRules(msg.result || []).then(() => {
+                    const methods = parserManager.getRegisteredMethods();
+                    log('updateRules done, registeredMethods=%j', methods);
+                    const hasDiagnostic = methods.some(
+                        m => m === 'textDocument_diagnostic' || m === 'diagnostic',
+                    );
+                    log('hasDiagnostic=%s', hasDiagnostic);
+                    if (hasDiagnostic) {
+                        const body = JSON.stringify({
+                            jsonrpc: '2.0',
+                            id: '__paramlib_cap_reg__',
+                            method: 'client/registerCapability',
+                            params: {
+                                registrations: [{
+                                    id: 'paramlib-diagnosticProvider',
+                                    method: 'textDocument/diagnostic',
+                                    registerOptions: {
+                                        interFileDependencies: false,
+                                        workspaceDiagnostics:  false,
+                                    },
+                                }],
+                            },
+                        });
+                        log('sending client/registerCapability for textDocument/diagnostic');
+                        process.stdout.write(`Content-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`);
+                    }
+                }).catch(e => log('updateRules error:', e));
                 return;
             }
             if (typeof msg.id === 'string' && msg.id.startsWith('getParams:')) {
@@ -58,7 +138,12 @@ function clientSend(ptr: number, len: number): void {
                 const pending = pendingRequests.get(msg.id);
                 if (pending) {
                     pendingRequests.delete(msg.id);
+                    const before = msg.result;
                     msg.result = mergeLspResults(pending.method, msg.result, pending.wasmResults, pending.params);
+                    if (pending.method === 'textDocument/diagnostic') {
+                        log('diagnostic merge: base=%j wasmResults=%j -> merged=%j',
+                            before, pending.wasmResults, msg.result);
+                    }
                     if (msg.result !== undefined && msg.result !== null) {
                         delete msg.error;
                     }
@@ -68,7 +153,7 @@ function clientSend(ptr: number, len: number): void {
                     return;
                 }
             }
-        } catch (e) {}
+        } catch (e) { log('clientSend parse error:', e); }
     }
     process.stdout.write(Buffer.from(slice));
 }
@@ -85,20 +170,25 @@ function sendRpcToWasm(msg: object): void {
 
 async function main(): Promise<void> {
     const wasmPath = path.join(__dirname, 'paramlib-lsp.wasm');
+    log('loading wasm from %s', wasmPath);
     const bytes = fs.readFileSync(wasmPath);
     const { instance } = await WebAssembly.instantiate(bytes, {
         env: { clientSend },
     });
     wasm = instance.exports as unknown as ParamlibWasm;
+    log('wasm loaded');
 
     const schemaFile = process.env['PARAMLIB_SCHEMA_FILE'];
+    log('PARAMLIB_SCHEMA_FILE=%s', schemaFile);
     if (schemaFile) {
         const sendSchema = (): void => {
             try {
                 const bytes = fs.readFileSync(schemaFile);
                 wasmSendSchema(wasm, bytes);
                 sendRpcToWasm({ jsonrpc: '2.0', id: 'getRules', method: '$/paramlib/getParserRules' });
+                log('schema sent, getRules requested');
             } catch (e) {
+                log('Failed to load schema file:', e);
                 console.error('[paramlib] Failed to load schema file:', e);
             }
         };
@@ -128,25 +218,31 @@ async function main(): Promise<void> {
             if (buf.length < frameEnd) break;
 
             const frame = buf.slice(0, frameEnd);
-            
+
             try {
                 const body = JSON.parse(buf.slice(headerEnd + 4, frameEnd).toString('utf8'));
 
                 if (body.id !== undefined && body.method) {
                     const uri = body.params?.textDocument?.uri as string | undefined;
                     const wasmResults = parserManager.handleLsp(body.method, body.params, uri);
-
+                    if (body.method === 'textDocument/diagnostic') {
+                        log('textDocument/diagnostic request: uri=%s wasmResults=%j hints=%j',
+                            uri,
+                            wasmResults,
+                            uri ? parserManager.getHints(uri) : []);
+                    }
                     pendingRequests.set(body.id, {
                         method: body.method,
                         params: body.params,
                         uri,
-                        wasmResults
+                        wasmResults,
                     });
                 }
 
                 if (body.method === 'textDocument/didOpen') {
                     const uri  = body.params.textDocument.uri as string;
                     const text = body.params.textDocument.text as string;
+                    log('didOpen uri=%s len=%d', uri, text.length);
                     documentTexts.set(uri, text);
                     parserManager.openDocument(uri, text);
                     void parserManager.processDocument(uri, [], text);
@@ -165,6 +261,8 @@ async function main(): Promise<void> {
                     const uri = body.params.textDocument.uri as string;
                     documentTexts.delete(uri);
                     parserManager.closeDocument(uri);
+                } else if (body.method === '__paramlib_cap_reg__' || body.id === '__paramlib_cap_reg__') {
+                    log('client/registerCapability ack received: %j', body);
                 }
 
                 sendToWasm(frame);
@@ -176,6 +274,7 @@ async function main(): Promise<void> {
                     }, 0);
                 }
             } catch (e) {
+                log('stdin parse error:', e);
                 sendToWasm(frame);
             }
 
@@ -186,4 +285,4 @@ async function main(): Promise<void> {
     process.stdin.resume();
 }
 
-main().catch(console.error);
+main().catch(e => { log('main error:', e); console.error(e); });

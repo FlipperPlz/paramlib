@@ -36,6 +36,10 @@ const parserManager = new ParserManager(
         if (source.startsWith('http://') || source.startsWith('https://')) return source;
         return `${serverDistBase}${source}`;
     },
+    (uri, _wasmDiags) => {
+        const native = nativeDiagCache.get(uri);
+        if (native !== undefined) emitMergedDiagnostics(uri, native);
+    },
 );
 
 function clientSend(ptr: number, len: number): void {
@@ -89,6 +93,17 @@ workerSelf.addEventListener('message', (e: MessageEvent) => {
 
 const documentTexts = new Map<string, string>();
 const pendingRequests = new Map<number | string, { method: string, params: any, uri?: string, wasmResults: string[] }>();
+const nativeDiagCache = new Map<string, any[]>();
+
+function emitMergedDiagnostics(uri: string, nativeDiags: any[]): void {
+    const merged = parserManager.mergePublishDiagnostics(uri, nativeDiags);
+    // @ts-ignore
+    writer.write({
+        jsonrpc: '2.0',
+        method: 'textDocument/publishDiagnostics',
+        params: { uri, diagnostics: merged },
+    });
+}
 
 dispatchToClient = (data: Uint8Array): void => {
     const text      = new TextDecoder().decode(data);
@@ -104,8 +119,41 @@ dispatchToClient = (data: Uint8Array): void => {
             return;
         }
 
+        if (msg.method === 'textDocument/publishDiagnostics' && msg.params?.uri) {
+            const uri = msg.params.uri as string;
+            const native: any[] = msg.params.diagnostics ?? [];
+            nativeDiagCache.set(uri, native);
+            const merged = parserManager.mergePublishDiagnostics(uri, native);
+            msg.params.diagnostics = merged;
+            writer.write(msg);
+            return;
+        }
+
         if (msg.id === 'getRules') {
-            parserManager.updateRules(msg.result || []);
+            parserManager.updateRules(msg.result || []).then(() => {
+                const methods = parserManager.getRegisteredMethods();
+                const hasDiagnostic = methods.some(
+                    m => m === 'textDocument_diagnostic' || m === 'diagnostic',
+                );
+                if (hasDiagnostic) {
+                    // @ts-ignore
+                    writer.write({
+                        jsonrpc: '2.0',
+                        id: '__paramlib_cap_reg__',
+                        method: 'client/registerCapability',
+                        params: {
+                            registrations: [{
+                                id: 'paramlib-diagnosticProvider',
+                                method: 'textDocument/diagnostic',
+                                registerOptions: {
+                                    interFileDependencies: false,
+                                    workspaceDiagnostics:  false,
+                                },
+                            }],
+                        },
+                    });
+                }
+            }).catch(console.error);
             return;
         }
 

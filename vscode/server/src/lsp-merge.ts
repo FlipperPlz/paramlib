@@ -68,6 +68,13 @@ const strategies = new Map<string, MergeStrategy>([
     ['textDocument/implementation', locationMerge],
 
     
+    // Pull-diagnostics: result must be { kind: "full", items: [...] }
+    ['textDocument/diagnostic', (base: any, extra: any) => {
+        const bItems = Array.isArray(base?.items) ? base.items : (Array.isArray(base) ? base : []);
+        const eItems = Array.isArray(extra?.items) ? extra.items : (Array.isArray(extra) ? extra : []);
+        return { kind: 'full', items: [...bItems, ...eItems] };
+    }],
+
     ['textDocument/semanticTokens/full', (base: any, extra: any) => ({
         data: [...(base?.data ?? []), ...(extra?.data ?? [])],
     })],
@@ -194,7 +201,8 @@ export function mergeLspResults(method: string, base: unknown, additions: string
             }
 
             if (result === null || result === undefined) {
-                result = extra;
+                const strategy = strategies.get(method);
+                result = strategy ? strategy(null, extra, params) : extra;
                 continue;
             }
 
