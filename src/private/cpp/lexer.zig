@@ -42,6 +42,11 @@ inline fn isIdentifierStart(c: u8) bool       { return CHAR_TABLE[c] & CF_IDENT_
 inline fn isIdentifierContinue(c: u8) bool    { return CHAR_TABLE[c] & CF_IDENT_CONTINUE != 0; }
 inline fn isDigit(c: u8) bool                 { return CHAR_TABLE[c] & CF_DIGIT != 0; }
 
+const MULTI_SYMBOLS = std.StaticStringMap(TokenKind).initComptime(.{
+    .{ "+=",  .addAssign },
+    .{ "-=",  .subAssign },
+    .{ "\\n", .escapedNewline },
+});
 const KEYWORDS = std.StaticStringMap(TokenKind).initComptime(.{
     .{ "class",  .classKeyword  },
     .{ "delete", .deleteKeyword },
@@ -231,6 +236,7 @@ pub const TokenKind = enum {
     rightBracket,
     leftParenthesis,
     rightParenthesis,
+    escapedNewline,
     equals,
     addAssign,
     subAssign,
@@ -361,15 +367,30 @@ pub const Tokenizer = struct {
             }
             if (raw[i] == '"') {
                 var j = i + 1;
-                while (j < raw.len and (raw[j] == ' ' or raw[j] == '\t')) j += 1;
-                if (j < raw.len and raw[j] == '\n') {
-                    j += 1;
-                    while (j < raw.len and (raw[j] == ' ' or raw[j] == '\t')) j += 1;
+                while (j < raw.len and (raw[j] == ' ' or raw[j] == '\t' or raw[j] == '\r' or raw[j] == '\n')) j += 1;
+                if (j < raw.len and raw[j] == '"') {
+                    try out.append(allocator, '\n');
+                    i = j + 1;
+                    continue;
+                }
+                
+                j = i + 1;
+                while (j < raw.len and (raw[j] == ' ' or raw[j] == '\t' or raw[j] == '\r')) j += 1;
+                if (j + 1 < raw.len and raw[j] == '\\' and raw[j+1] == 'n') {
+                    j += 2;
+                    while (j < raw.len and (raw[j] == ' ' or raw[j] == '\t' or raw[j] == '\r' or raw[j] == '\n')) j += 1;
                     if (j < raw.len and raw[j] == '"') {
+                        try out.append(allocator, '\n');
                         i = j + 1;
                         continue;
                     }
                 }
+
+                if (i + 1 == raw.len) {
+                    i += 1;
+                    continue;
+                }
+
                 try out.append(allocator, '"');
                 i += 1;
                 continue;
@@ -382,7 +403,7 @@ pub const Tokenizer = struct {
 
     test "bench - unescapeString" {
         const allocator = std.testing.allocator;
-        const raw = "hello \"\"world\"\", this \"\"is\"\" a test string";
+        const raw = "hello \" \\n \"world\" \\n \", this \" \\n \"is\" \n \" a \"\"test string";
 
         const iters: u64 = 50_000;
         const start = std.Io.Timestamp.now(std.testing.io, .real).nanoseconds;
@@ -432,7 +453,7 @@ pub const Tokenizer = struct {
         const allocator = std.testing.allocator;
         const result = try unescapeString(allocator, "abc\"");
         defer allocator.free(result);
-        try std.testing.expectEqualStrings("abc\"", result);
+        try std.testing.expectEqualStrings("abc", result);
     }
 
 
@@ -466,20 +487,25 @@ pub const Tokenizer = struct {
                 const savedIndex = self.index;
                 self.skipWhileInline(isStringWhitespace);
 
+                var is_continuation = false;
                 if (self.peek() == '\n') {
                     self.advance();
-                    self.skipWhileInline(isStringWhitespace);
+                    is_continuation = true;
+                } else if (self.peek() == '\\' and self.peekForward(1) == 'n') {
+                    self.index += 2;
+                    is_continuation = true;
+                }
 
+                if (is_continuation) {
+                    self.skipWhileInline(isStringWhitespace);
                     if (self.peek() == '"') {
                         needsUnescape = true;
                         self.advance();
                         continue;
                     }
-
-                    self.index = savedIndex;
-                    return .{ .text = self.source[start..end], .needsUnescape = needsUnescape };
                 }
 
+                self.index = savedIndex;
                 return .{ .text = self.source[start..end], .needsUnescape = needsUnescape };
             }
 
@@ -510,24 +536,24 @@ pub const Tokenizer = struct {
 
     test "quoted string - line continuation" {
         var buf: [4]Token = undefined;
-        _ = try tokenizeAll("\"foo\"\n\"bar\"\x00", &buf);
+        _ = try tokenizeAll("\"foo\" \\n \"bar\"\x00", &buf);
         try std.testing.expectEqual(TokenKind.stringLiteral, buf[0].kind);
         try std.testing.expect(buf[0].data.string.needsUnescape);
         const data = try unescapeString(std.testing.allocator, buf[0].data.string.text);
         defer std.testing.allocator.free(data);
-        try std.testing.expectEqualStrings(data, "foobar");
+        try std.testing.expectEqualStrings(data, "foo\nbar");
 
     }
 
     test "quoted string - line continuation joins segments" {
         const allocator = std.testing.allocator;
         var buf: [4]Token = undefined;
-        _ = try tokenizeAll("\"foo\"\n\"bar\"\x00", &buf);
+        _ = try tokenizeAll("\"foo\"\\n\"bar\"\x00", &buf);
         try std.testing.expectEqual(TokenKind.stringLiteral, buf[0].kind);
         try std.testing.expect(buf[0].data.string.needsUnescape);
         const joined = try unescapeString(allocator, buf[0].data.string.text);
         defer allocator.free(joined);
-        try std.testing.expectEqualStrings("foobar", joined);
+        try std.testing.expectEqualStrings("foo\nbar", joined);
     }
 
     test "quoted string - line continuation with whitespace" {
@@ -537,7 +563,7 @@ pub const Tokenizer = struct {
         try std.testing.expectEqual(TokenKind.stringLiteral, buf[0].kind);
         const joined = try unescapeString(allocator, buf[0].data.string.text);
         defer allocator.free(joined);
-        try std.testing.expectEqualStrings("helloworld", joined);
+        try std.testing.expectEqualStrings("hello\nworld", joined);
     }
 
     test "quoted string - unterminated returns error" {

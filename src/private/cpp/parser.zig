@@ -4,6 +4,7 @@ const TokenKind = lexer.TokenKind;
 const lexer = @import("./lexer.zig");
 const logger = @import("utils/log.zig");
 const ast = @import("ast.zig");
+const database = @import("../../api/database.zig");
 
 const ParseError = error{
     UnexpectedToken,
@@ -16,8 +17,6 @@ const ParseError = error{
     UnterminatedComment,
     Overflow,
 };
-
-const database = @import("../../api/database.zig");
 
 fn z(comptime s: []const u8) [:0]const u8 {
     return s ++ [_:0]u8{};
@@ -156,7 +155,6 @@ test "parse: array value" {
     const log = logger.DiagType.stdErr(std.testing.io, &lineTable, src, "test.cpp", true);
     var result = try parseSource(std.testing.allocator, src, &errored, log);
     const arr = result.members.?.items[0].param.value.array;
-    defer std.testing.allocator.free(arr);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(@as(usize, 3), arr.len);
@@ -189,7 +187,6 @@ test "parse: array += operator" {
     const log = logger.DiagType.stdErr(std.testing.io, &lineTable, src, "test.cpp", true);
     var result = try parseSource(std.testing.allocator, src, &errored, log);
     const arr = result.members.?.items[0].param.value.array;
-    defer std.testing.allocator.free(arr);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(ast.OperatorAst.addAssign, result.members.?.items[0].param.operator);
@@ -205,11 +202,13 @@ test "parse: array -= operator" {
     const log = logger.DiagType.stdErr(std.testing.io, &lineTable, src, "test.cpp", true);
     var result = try parseSource(std.testing.allocator, src, &errored, log);
     const arr = result.members.?.items[0].param.value.array;
-    defer std.testing.allocator.free(arr);
     defer result.deinit(std.testing.allocator);
     try std.testing.expect(!errored);
 
     try std.testing.expectEqual(ast.OperatorAst.subAssign, result.members.?.items[0].param.operator);
+    try std.testing.expectEqual(@as(usize, 2), arr.len);
+    try std.testing.expectEqual(@as(i32, 10), arr[0].integer);
+    try std.testing.expectEqual(@as(i32, 20), arr[1].integer);
 }
 
 test "parse: multiple top-level members" {
@@ -649,9 +648,9 @@ fn parseValue(allocator: Allocator, tokenizer: *lexer.Tokenizer, log: *const log
                     if (s.needsUnescape) {
                         break :blk2 try lexer.Tokenizer.unescapeString(allocator, s.text);
                     }
-                    break :blk2 s.text;
+                    break :blk2 try allocator.dupe(u8, s.text);
                 },
-                .text => |t| t,
+                .text => |t| try allocator.dupe(u8, t),
                 else => unreachable,
             };
             break :blk ast.ValueAst{ .string = str };
@@ -664,21 +663,10 @@ fn parseValue(allocator: Allocator, tokenizer: *lexer.Tokenizer, log: *const log
     };
 }
 
-fn freeValue(allocator: Allocator, value: ast.ValueAst) void {
-    switch (value) {
-        .string => |s| allocator.free(s),
-        .array => |a| {
-            for (a) |item| freeValue(allocator, item);
-            allocator.free(a);
-        },
-        else => {},
-    }
-}
-
 fn parseArray(allocator: Allocator, tokenizer: *lexer.Tokenizer, log: *const logger.DiagType, start: *lexer.Token, elem_positions: ?*std.ArrayList(u32)) ParseError!ast.ValueAst {
     var values = std.ArrayList(ast.ValueAst).empty;
     errdefer {
-        for (values.items) |item| freeValue(allocator, item);
+        for (values.items) |*item| item.deinit(allocator);
     }
     defer values.deinit(allocator);
 

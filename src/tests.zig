@@ -15,6 +15,8 @@ const source      = @import("private/slabs/source.zig");
 const query       = @import("private/tree/query.zig");
 const factory     = @import("private/tree/factory.zig");
 const parser      = @import("private/cpp/parser.zig");
+const cpp_proc     = @import("private/cpp/processor.zig");
+const preprocessor = @import("private/common/preprocessor.zig");
 
 test "query tests" {
     std.testing.refAllDecls(query);
@@ -62,6 +64,14 @@ test "handle tests" {
 
 test "cpp lexer tests" {
     std.testing.refAllDecls(cpp_lexer);
+}
+
+test "cpp proc tests" {
+    std.testing.refAllDecls(cpp_proc);
+}
+
+test "preprocessor tests" {
+    std.testing.refAllDecls(preprocessor);
 }
 
 test "value tests" {

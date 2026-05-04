@@ -1,5 +1,6 @@
 const std   = @import("std");
 const lexer = @import("../lexer.zig");
+const preprocessor = @import("../../common/preprocessor.zig");
 
 const ESC    = "\x1b[";
 const Color = struct {
@@ -37,6 +38,19 @@ pub const DiagType = union(enum) {
         use_color:  bool,
     ) DiagType {
         return .{.StdErr = stderrLog(io, line_table, contents, filename, use_color)};
+    }
+
+    pub fn stdErrMapped(
+        io:         std.Io,
+        line_table: *const lexer.LineTable,
+        contents:   [:0]const u8,
+        filename:   []const u8,
+        use_color:  bool,
+        pp_result:  *const preprocessor.PreprocessedResult,
+    ) DiagType {
+        var log = stderrLog(io, line_table, contents, filename, use_color);
+        log.pp_result = pp_result;
+        return .{.StdErr = log};
     }
     pub fn none() DiagType {
         return . { .None = undefined };
@@ -118,6 +132,7 @@ pub const ParseLog = struct {
     filename:   []const u8,
     use_color:  bool,
     diag_sink:  ?DiagSink = null,
+    pp_result:  ?*const preprocessor.PreprocessedResult = null,
 
     pub fn init(
         io:         std.Io,
@@ -153,7 +168,9 @@ pub const ParseLog = struct {
             var buffer: [4096]u8 = undefined;
             var wr = std.Io.File.stderr().writer(self.io, &buffer);
             const w = &wr.interface;
-            const pos = self.line_table.resolve(token.pos);
+
+            const effective_pos = if (self.pp_result) |pp| pp.resolveOffset(token.pos) else token.pos;
+            const pos = self.line_table.resolve(effective_pos);
 
             if (err_code) |c| {
                 w.print("{s}{s}[{s}]{s}: {s}{s}{s}\n", .{
