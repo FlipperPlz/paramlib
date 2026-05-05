@@ -920,7 +920,7 @@ pub fn handleMessage(
                         };
                         defer allocator.free(src);
 
-                        const line_table = paramlib.cpp.lexer.LineTable.build(allocator, src) catch {
+                        const line_table = paramlib.cpp.lines.LineTable.build(allocator, src) catch {
                             try transport.writeResponse(io, allocator, req.id, void, {}, .{});
                             return;
                         };
@@ -1085,7 +1085,7 @@ fn semanticTokensFull(
     const text = documents.get(params.textDocument.uri) orelse return null;
     const src   = arena.dupeZ(u8, text) catch return null;
 
-    const line_table = paramlib.cpp.lexer.LineTable.build(arena, src) catch return null;
+    const line_table = paramlib.cpp.lines.LineTable.build(arena, src) catch return null;
 
     var data = std.ArrayList(u32).empty;
 
@@ -1162,7 +1162,7 @@ fn definition(
     const text = documents.get(params.textDocument.uri) orelse return null;
     const src   = arena.dupeZ(u8, text) catch return null;
 
-    const line_table = paramlib.cpp.lexer.LineTable.build(arena, src) catch return null;
+    const line_table = paramlib.cpp.lines.LineTable.build(arena, src) catch return null;
 
     const offset = offsetOf(
         line_table, src,
@@ -1231,7 +1231,7 @@ fn collectClassOverrides(
     class:      *const paramlib.cpp.ast.ClassAst,
     base_name:  []const u8,
     uri:        []const u8,
-    line_table: *const paramlib.cpp.lexer.LineTable,
+    line_table: *const paramlib.cpp.lines.LineTable,
     list:       *std.ArrayList(lsp.types.Location),
     arena:      std.mem.Allocator,
 ) void {
@@ -1260,7 +1260,7 @@ fn collectParamOverrides(
     param_name: []const u8,
     owner_name: []const u8,
     uri:        []const u8,
-    line_table: *const paramlib.cpp.lexer.LineTable,
+    line_table: *const paramlib.cpp.lines.LineTable,
     list:       *std.ArrayList(lsp.types.Location),
     arena:      std.mem.Allocator,
 ) void {
@@ -1294,7 +1294,7 @@ fn references(
 ) ?[]const lsp.types.Location {
     const text = documents.get(params.textDocument.uri) orelse return null;
     const src   = arena.dupeZ(u8, text) catch return null;
-    const line_table = paramlib.cpp.lexer.LineTable.build(arena, src) catch return null;
+    const line_table = paramlib.cpp.lines.LineTable.build(arena, src) catch return null;
     const offset = offsetOf(
         line_table, src,
         @as(u32, @intCast(params.position.line))      + 1,
@@ -1350,7 +1350,7 @@ fn hover(
 
     const src = arena.dupeZ(u8, text) catch return null;
 
-    const line_table = paramlib.cpp.lexer.LineTable.build(arena, src) catch return null;
+    const line_table = paramlib.cpp.lines.LineTable.build(arena, src) catch return null;
 
     const offset = offsetOf(
         line_table, src,
@@ -1402,6 +1402,7 @@ fn hover(
                 arena, "**param** `{s}` {s} {s}", .{ p.name, op, val },
             ) catch return null;
 
+            // Append schema documentation if available for this parameter's dot-path.
             const enclosing = findClassAtOffset(&root, offset);
             log("[hover] param.name={s}, enclosing={?s}", .{ p.name, if (enclosing) |enc| enc.name else null });
             const doc_str: ?[]const u8 = if (enclosing) |enc| doc_blk: {
@@ -1431,7 +1432,7 @@ fn hover(
 fn collectDocumentParams(
     root:       *const paramlib.cpp.ast.ClassAst,
     class:      *const paramlib.cpp.ast.ClassAst,
-    line_table: *const paramlib.cpp.lexer.LineTable,
+    line_table: *const paramlib.cpp.lines.LineTable,
     arena:      std.mem.Allocator,
     list:       *std.ArrayList(DocumentParam),
 ) void {
@@ -1482,7 +1483,7 @@ fn collectSymbols(
     gpa:        std.mem.Allocator,
     class:      *const paramlib.cpp.ast.ClassAst,
     uri:        []const u8,
-    line_table: *const paramlib.cpp.lexer.LineTable,
+    line_table: *const paramlib.cpp.lines.LineTable,
     list:       *std.ArrayList(lsp.types.SymbolInformation),
 ) void {
     const members = class.members orelse return;
@@ -1531,7 +1532,7 @@ fn documentSymbols(
     const src = gpa.dupeZ(u8, text) catch return null;
     defer gpa.free(src);
 
-    const line_table = paramlib.cpp.lexer.LineTable.build(gpa, src) catch return null;
+    const line_table = paramlib.cpp.lines.LineTable.build(gpa, src) catch return null;
     defer line_table.deinit(gpa);
 
     var errored = false;
@@ -1566,7 +1567,7 @@ fn publishDiagnostics(
     const src = try gpa.dupeZ(u8, text);
     defer gpa.free(src);
 
-    const line_table = try paramlib.cpp.lexer.LineTable.build(gpa, src);
+    const line_table = try paramlib.cpp.lines.LineTable.build(gpa, src);
     defer line_table.deinit(gpa);
 
     var raw_diags: std.ArrayListUnmanaged(paramlib.cpp.logger.DiagEntry) = .empty;
@@ -1621,13 +1622,13 @@ fn publishDiagnostics(
     );
 }
 
-fn offsetOf(lt: paramlib.cpp.lexer.LineTable, src: [:0]const u8, line: u32, col: u32) u32 {
+fn offsetOf(lt: paramlib.cpp.lines.LineTable, src: [:0]const u8, line: u32, col: u32) u32 {
     const line_start: u32 = if (line <= 1) 0
         else lt.newline_offsets[@min(line - 2, lt.newline_offsets.len -| 1)] + 1;
     return @min(line_start + col - 1, @as(u32, @intCast(src.len)));
 }
 
-fn lspPos(lt: *const paramlib.cpp.lexer.LineTable, offset: u32) lsp.types.Position {
+fn lspPos(lt: *const paramlib.cpp.lines.LineTable, offset: u32) lsp.types.Position {
     const r = lt.resolve(offset);
     const line: u32 = if (r.line > 0) r.line - 1 else 0;
     const character: u32 = if (r.column > 0) r.column - 1 else 0;
@@ -1764,7 +1765,7 @@ fn inlayHints(
     const text = documents.get(params.textDocument.uri) orelse return null;
     const src   = arena.dupeZ(u8, text) catch return null;
 
-    const line_table = paramlib.cpp.lexer.LineTable.build(arena, src) catch return null;
+    const line_table = paramlib.cpp.lines.LineTable.build(arena, src) catch return null;
 
     var errored = false;
     var root = paramlib.cpp.parser.parseSource(arena, src, &errored, .none()) catch return null;
@@ -1776,6 +1777,8 @@ fn inlayHints(
 
     if (schema.documentHints.get(params.textDocument.uri)) |precomputed| {
         for (precomputed) |ph| {
+            if (std.mem.startsWith(u8, ph.text, "texture:")) continue;
+            if (std.mem.startsWith(u8, ph.text, "color:")) continue;
 
             hints.append(arena, lsp.types.InlayHint{
                 .position     = .{ .line = ph.line, .character = ph.character },
@@ -1794,7 +1797,7 @@ fn collectArrayInlayHints(
     root:       *const paramlib.cpp.ast.ClassAst,
     class:      *const paramlib.cpp.ast.ClassAst,
     schema:     *const SchemaState,
-    line_table: *const paramlib.cpp.lexer.LineTable,
+    line_table: *const paramlib.cpp.lines.LineTable,
     arena:      std.mem.Allocator,
     hints:      *std.ArrayList(lsp.types.InlayHint),
 ) void {
@@ -1849,7 +1852,7 @@ fn completion(
     const text = documents.get(params.textDocument.uri) orelse return null;
     const src   = arena.dupeZ(u8, text) catch return null;
 
-    const lineTable = paramlib.cpp.lexer.LineTable.build(arena, src) catch return null;
+    const lineTable = paramlib.cpp.lines.LineTable.build(arena, src) catch return null;
 
     const offset = offsetOf(
         lineTable, src,

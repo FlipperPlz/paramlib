@@ -1,7 +1,7 @@
 const std = @import("std");
 const pp = @import("../common/preprocessor.zig");
-const lexer = @import("lexer.zig");
-const logger = @import("utils/log.zig");
+const logger = @import("../common/log.zig");
+const cpp_token = @import("lexer.zig").Token;
 
 const PreProcessError = error {
     IncludeError,
@@ -152,7 +152,7 @@ const CppPreLexer = struct {
                     had_skip = true;
                     continue;
                 } else {
-                    const tok = lexer.Token{ .kind = .invalid, .data = .{ .none = {} }, .pos = self.index };
+                    const tok = cpp_token{ .kind = .invalid, .data = .{ .none = {} }, .pos = self.index };
                     self.log.emit(.warning, "PPL01", &tok, "Backslash followed by non-newline is treated as literal backslash.", null);
                 }
             }
@@ -422,14 +422,6 @@ const CppPreLexer = struct {
     }
 };
 
-
-
-
-const CppPreParser = struct {
-
-
-};
-
 pub const CppPreprocessor = struct {
     defines: std.StringHashMapUnmanaged(Macro),
     arg_scope: ?*ArgumentScope = null,
@@ -546,20 +538,20 @@ pub const CppPreprocessor = struct {
         deinit(self, allocator);
     }
 
-    fn preprocessWrapper(ptr: *anyopaque, allocator: std.mem.Allocator, source: [:0]const u8) anyerror!pp.PreprocessedResult {
+    fn preprocessWrapper(ptr: *anyopaque, allocator: std.mem.Allocator, source: [:0]const u8, log: *logger.DiagType) anyerror!pp.PreprocessedResult {
         const self: *CppPreprocessor = @ptrCast(@alignCast(ptr));
-        return self.preprocess(allocator, source);
+        return self.preprocess(allocator, source, log);
     }
 
-    fn preprocess(self: *CppPreprocessor, allocator: std.mem.Allocator, source: [:0]const u8) anyerror!pp.PreprocessedResult {
-        _ = self;
-        _ = source;
+    fn preprocess(self: *CppPreprocessor, allocator: std.mem.Allocator, source: [:0]const u8, log: *const logger.DiagType) anyerror!pp.PreprocessedResult {
+        const lex = CppPreLexer.init(source, log);
         const out = std.ArrayList(u8).empty;
-        const mappings = std.ArrayList(pp.SourceMapping).empty;
+
+        _ = self;
 
         return .{
             .source = out.toOwnedSlice(allocator),
-            .mappings = mappings.toOwnedSlice(allocator)
+            .mappings = lex.mappings.toOwnedSlice(allocator),
         };
     }
 };

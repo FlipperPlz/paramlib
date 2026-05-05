@@ -1,6 +1,7 @@
 const std   = @import("std");
-const lexer = @import("../lexer.zig");
-const preprocessor = @import("../../common/preprocessor.zig");
+const lines = @import("lines.zig");
+const preprocessor = @import("preprocessor.zig");
+const lexer = @import("../cpp/lexer.zig");
 
 const ESC    = "\x1b[";
 const Color = struct {
@@ -32,7 +33,7 @@ pub const DiagType = union(enum) {
 
     pub fn stdErr(
         io:         std.Io,
-        line_table: *const lexer.LineTable,
+        line_table: *const lines.LineTable,
         contents:   [:0]const u8,
         filename:   []const u8,
         use_color:  bool,
@@ -42,7 +43,7 @@ pub const DiagType = union(enum) {
 
     pub fn stdErrMapped(
         io:         std.Io,
-        line_table: *const lexer.LineTable,
+        line_table: *const lines.LineTable,
         contents:   [:0]const u8,
         filename:   []const u8,
         use_color:  bool,
@@ -52,13 +53,14 @@ pub const DiagType = union(enum) {
         log.pp_result = pp_result;
         return .{.StdErr = log};
     }
+
     pub fn none() DiagType {
         return . { .None = undefined };
     }
 
     pub fn both(
         io:         std.Io,
-        line_table: *const lexer.LineTable,
+        line_table: *const lines.LineTable,
         contents:   [:0]const u8,
         filename:   []const u8,
         use_color:  bool,
@@ -128,7 +130,7 @@ pub const ParseLog = struct {
     const Self = @This();
     contents:   [:0]const u8,
     io:         std.Io,
-    line_table: *const lexer.LineTable,
+    line_table: *const lines.LineTable,
     filename:   []const u8,
     use_color:  bool,
     diag_sink:  ?DiagSink = null,
@@ -136,7 +138,7 @@ pub const ParseLog = struct {
 
     pub fn init(
         io:         std.Io,
-        line_table: *const lexer.LineTable,
+        line_table: *const lines.LineTable,
         source:     [:0]const u8,
         filename:   []const u8,
         use_color:  bool,
@@ -253,7 +255,7 @@ pub const ParseLog = struct {
 };
 
 
-fn lineSlice(source: []const u8, lt: *const lexer.LineTable, line: u32) []const u8 {
+fn lineSlice(source: []const u8, lt: *const lines.LineTable, line: u32) []const u8 {
     const offsets = lt.newline_offsets;
     const lo: usize = line - 1;
 
@@ -316,7 +318,7 @@ fn writeRepeat(writer: *std.Io.Writer, ch: u8, n: usize) !void {
 
 pub fn stderrLog(
     io:         std.Io,
-    line_table: *const lexer.LineTable,
+    line_table: *const lines.LineTable,
     contents:   [:0]const u8,
     filename:   []const u8,
     use_color:  bool,

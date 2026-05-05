@@ -1,4 +1,6 @@
 const std = @import("std");
+const logger = @import("log.zig");
+const lines = @import("lines.zig");
 
 pub const SourceMapping = struct {
     pre_offset: u32,
@@ -49,12 +51,12 @@ pub const Preprocessor = struct {
     vtable: *const VTable,
 
     pub const VTable = struct {
-        preprocess: *const fn (ptr: *anyopaque, allocator: std.mem.Allocator, source: [:0]const u8) anyerror!PreprocessedResult,
+        preprocess: *const fn (ptr: *anyopaque, allocator: std.mem.Allocator, source: [:0]const u8, log: *const logger.DiagType) anyerror!PreprocessedResult,
         deinit: *const fn (ptr: *anyopaque, allocator: std.mem.Allocator) void,
     };
 
-    pub fn preprocess(self: Preprocessor, allocator: std.mem.Allocator, source: [:0]const u8) !PreprocessedResult {
-        return self.vtable.preprocess(self.ptr, allocator, source);
+    pub fn preprocess(self: Preprocessor, allocator: std.mem.Allocator, source: [:0]const u8, log: *const logger.DiagType) !PreprocessedResult {
+        return self.vtable.preprocess(self.ptr, allocator, source, log);
     }
 
     pub fn deinit(self: Preprocessor, allocator: std.mem.Allocator) void {
@@ -73,7 +75,8 @@ pub const PassthroughPreprocessor = struct {
         };
     }
 
-    fn preprocess(_: *anyopaque, allocator: std.mem.Allocator, source: [:0]const u8) anyerror!PreprocessedResult {
+    fn preprocess(_: *anyopaque, allocator: std.mem.Allocator, source: [:0]const u8, log: *const logger.DiagType) anyerror!PreprocessedResult {
+        _ = log;
         const copy = try allocator.dupeZ(u8, source);
         return .{
             .source = copy,
@@ -109,36 +112,3 @@ test "Preprocessor: simple mapping" {
     try std.testing.expectEqual(@as(u32, 11), result.resolveOffset(11));
     try std.testing.expectEqual(@as(u32, 20), result.resolveOffset(20));
 }
-
-pub const MockPreprocessor = struct {
-    pub fn preprocessor(self: *MockPreprocessor) Preprocessor {
-        return .{
-            .ptr = self,
-            .vtable = &.{
-                .preprocess = preprocess,
-                .deinit = deinit,
-            },
-        };
-    }
-
-    fn preprocess(_: *anyopaque, allocator: std.mem.Allocator, source: [:0]const u8) anyerror!PreprocessedResult {
-        const new_src = try allocator.dupeZ(u8, source);
-        for (new_src, 0..) |*c, i| {
-            if (c.* == 'A') {
-                c.* = 'B';
-                _ = i;
-            }
-        }
-        
-        var mappings = try allocator.alloc(SourceMapping, 1);
-        mappings[0] = .{ .pre_offset = 0, .orig_offset = 0, .length = @intCast(source.len) };
-        
-        return .{
-            .source = new_src,
-            .mappings = mappings,
-            .allocator = allocator,
-        };
-    }
-
-    fn deinit(_: *anyopaque) void {}
-};
