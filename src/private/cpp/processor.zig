@@ -5,15 +5,16 @@ const cpp_token = @import("lexer.zig").Token;
 
 const PreProcessError = error {
     IncludeError,
-    IncludeMaxRecursion
+    IncludeNotFound,
 };
 
 const CppPreLexer = struct {
-    source:       [:0]const u8,
-    index:        u32,
-    pre_offset:   u32 = 0,
-    mappings:     std.ArrayList(pp.SourceMapping),
-    log:          *const logger.DiagType,
+    source:        [:0]const u8,
+    index:         u32,
+    pre_offset:    u32 = 0,
+    mappings:      std.ArrayList(pp.SourceMapping),
+    log:           *const logger.DiagType,
+    newline:       bool = true,
 
     const CF_WHITESPACE:          u8 = 1 << 0;
     const CF_IDENT_START:         u8 = 1 << 2;
@@ -44,24 +45,18 @@ const CppPreLexer = struct {
         break :blk t;
     };
 
-    inline fn isWhitespace(c: u8) bool            { return CHAR_TABLE[c] & CF_WHITESPACE != 0; }
-    inline fn isIdentifierStart(c: u8) bool       { return CHAR_TABLE[c] & CF_IDENT_START != 0; }
-    inline fn isIdentifierContinue(c: u8) bool    { return CHAR_TABLE[c] & CF_IDENT_CONTINUE != 0; }
-    inline fn isLineContinue(c: u8) bool          { return CHAR_TABLE[c] & CF_LINE_CONTINUE != 0; }
+    pub inline fn isWhitespace(c: u8) bool            { return CHAR_TABLE[c] & CF_WHITESPACE != 0; }
+    pub inline fn isIdentifierStart(c: u8) bool       { return CHAR_TABLE[c] & CF_IDENT_START != 0; }
+    pub inline fn isIdentifierContinue(c: u8) bool    { return CHAR_TABLE[c] & CF_IDENT_CONTINUE != 0; }
+    pub inline fn isLineContinue(c: u8) bool          { return CHAR_TABLE[c] & CF_LINE_CONTINUE != 0; }
 
     const Token = struct {
-        kind: TokenKind,
-        data: TokenData,
+        kind:   TokenKind,
+        text:   []const u8,
         offset: usize,
-        len: usize,
+        len:    usize,
     };
 
-    const TokenData = union(enum) {
-        text: []const u8,
-        comment: []const u8,
-        symbol: void,
-        keyword: void,
-    };
 
     const TokenKind = enum {
         Define, Undef, Include, IfDef, IfNDef, Else, EndIf,
@@ -377,14 +372,14 @@ const CppPreLexer = struct {
             const symbol = findSymbol(text) orelse TokenKind.Text;
             if(symbol != .Text) return .{
                 .kind = symbol,
-                .data = .{ .keyword = {} },
+                .data = text,
                 .offset = start_pre,
                 .len = self.pre_offset - start_pre,
             };
 
             return .{
                 .kind = .Text,
-                .data = .{ .text = text },
+                .data = text,
                 .offset = start_pre,
                 .len = self.pre_offset - start_pre,
             };
@@ -405,21 +400,19 @@ const CppPreLexer = struct {
                 buffer[1] = '#';
             }
         }
-
-        const symbol = findSymbol(buffer) orelse return .{
-            .kind = TokenKind.Unknown,
-            .data = .{ .text = allocator.dupe(u8, buffer) },
-            .offset = start_pre,
-            .len = self.pre_offset - start_pre,
-        };
-
         return .{
-            .kind = symbol,
-            .data = .{ .symbol = {} },
+            .kind =  findSymbol(buffer) orelse TokenKind.Unknown,
+            .data = allocator.dupe(u8, buffer) ,
             .offset = start_pre,
             .len = self.pre_offset - start_pre,
         };
     }
+};
+
+pub const IncludeError = enum {
+    None,
+    PathNotFound,
+    ReadError,
 };
 
 pub const CppPreprocessor = struct {
@@ -427,6 +420,7 @@ pub const CppPreprocessor = struct {
     arg_scope: ?*ArgumentScope = null,
     recursion_depth: u32 = 0,
     max_recursion: u32 = 100,
+    processInclude: ?fn (path: []const u8, log: *const logger.DiagType, errored: *IncludeError) []const u8,
 
     pub const Macro = struct {
         value: []const u8,
@@ -474,6 +468,101 @@ pub const CppPreprocessor = struct {
     pub const empty: CppPreprocessor = .{
         .defines = std.StringHashMapUnmanaged(Macro).empty,
     };
+
+    fn preprocess(self: *CppPreprocessor, allocator: std.mem.Allocator, source: [:0]const u8, log: *const logger.DiagType) anyerror!pp.PreprocessedResult {
+        const lex = CppPreLexer.init(source, log);
+        const out = std.ArrayList(u8).empty;
+
+        var quoted = false;
+        var t = lex.lex(allocator);
+        while(t) |token| : (t = lex.lex(allocator)) {
+
+            if(token.kind == .Quote ) {
+                quoted = !quoted;
+                lex.prevTokenKind = .Quote;
+                try out.append(allocator, '"');
+            } else if(quoted) {
+                try out.appendSlice(allocator, token.data.text);
+            } else if (token.kind == CppPreLexer.TokenKind.NewLine or token.kind == CppPreLexer.TokenKind.NewFile) {
+                if(token.kind == CppPreLexer.TokenKind.NewLine) try out.append(allocator, '\n');
+                lex.skipWhileInline(CppPreLexer.isWhitespace);
+
+                t = lex.lex(allocator) orelse break;
+                if(t.?.kind == .Hash) {
+                    t = lex.lex(allocator) orelse break;
+                    lex.skipWhileInline(CppPreLexer.isWhitespace);
+                    switch (t.?.kind) {
+                        CppPreLexer.TokenKind.Include => try handleInclude(self, allocator, &lex, log),
+                        CppPreLexer.TokenKind.Define => {
+
+                        },
+                        CppPreLexer.TokenKind.IfDef => {
+
+                        },
+                        CppPreLexer.TokenKind.IfNDef => {
+
+                        },
+                        CppPreLexer.TokenKind.EndIf => {
+
+                        },
+                        CppPreLexer.TokenKind.Else => {
+
+                        },
+                        CppPreLexer.TokenKind.Undef => {
+
+                        },
+                        else => {
+                            log.emit(.err, "PPP01", &token, "Unexpected preprocessor directive.", null);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+
+    fn handleInclude(self: *CppPreprocessor, allocator: std.mem.Allocator, lex: *CppPreLexer, log: *const logger.DiagType) !void {
+        if (self.recursion_depth >= self.max_recursion) {
+            return PreProcessError.IncludeMaxRecursion;
+        }
+
+        const next = lex.peekLexed() orelse {
+            log.emit(.err, "PPP01", null, "Unexpected end of file in include directive.", null);
+            return PreProcessError.InvalidIncludePath;
+        };
+        const path: []const u8 = pth: {
+            if (next == '"') {
+                _ = lex.nextLexed(allocator, &lex.pre_offset);
+                break :pth try lex.scanString(allocator, "\"", &lex.pre_offset);
+            } else if (next == '<') {
+                _ = lex.nextLexed(allocator, &lex.pre_offset);
+                break :pth try lex.scanString(allocator, ">", &lex.pre_offset);
+            } else {
+                log.emit(.err, "PPP02", null, "Invalid include path, use `<>` or `\"\"`", null);
+                //todo recover by skipping to end of line
+                return PreProcessError.InvalidIncludePath;
+            }
+        };
+
+        var err: IncludeError = .None;
+        const content = self.processInclude(path, log, &err);
+        defer allocator.free(content);
+
+        if(err == .PathNotFound) {
+            log.emit(.err, "PPP03", null, "Failed to include file. Not found", null);
+            //todo recover by skipping to end of line
+            return PreProcessError.IncludeNotFound;
+        } else if (err == .ReadError) {
+            //todo recover by skipping to end of line
+            log.emit(.err, "PPP04", null, "Failed to read included file.", null);
+            return PreProcessError.IncludeError;
+        } else if (err != .None) {
+            //todo recover by skipping to end of line
+            log.emit(.err, "PPP05", null, "Unknown/undocumented error while including file.", null);
+            return;
+        }
+        return self.preprocess(allocator,  log);
+    }
 
     pub fn deinit(self: *CppPreprocessor, allocator: std.mem.Allocator) void {
         var it = self.defines.iterator();
@@ -543,17 +632,7 @@ pub const CppPreprocessor = struct {
         return self.preprocess(allocator, source, log);
     }
 
-    fn preprocess(self: *CppPreprocessor, allocator: std.mem.Allocator, source: [:0]const u8, log: *const logger.DiagType) anyerror!pp.PreprocessedResult {
-        const lex = CppPreLexer.init(source, log);
-        const out = std.ArrayList(u8).empty;
 
-        _ = self;
-
-        return .{
-            .source = out.toOwnedSlice(allocator),
-            .mappings = lex.mappings.toOwnedSlice(allocator),
-        };
-    }
 };
 
 test "Macro setup" {
