@@ -14,21 +14,6 @@ function shallowMergeObjects(base: unknown, extra: unknown): unknown {
     return extra ?? base;
 }
 
-// Semantic token data is a flat array of 5-integer tuples, delta-encoded:
-//   [deltaLine, deltaStartChar, length, tokenType, tokenModifiers, ...]
-// where deltaLine/deltaStartChar are relative to the *previous* token (or
-// (0,0) for the first token in the array).
-//
-// Two independently-produced delta-encoded arrays cannot be naively
-// concatenated or merge-sorted: WASM tokens for sub-ranges inside a proc
-// texture string overlap the native stringLiteral token that covers the
-// whole value (e.g. "#(argb,…)").  The LSP spec forbids overlapping tokens
-// and VS Code paints whichever token sorts first over the rest.
-//
-// Fix: decode both streams to absolute positions, then for every base token
-// that overlaps one or more WASM tokens, split it into gap-fragments around
-// those WASM ranges instead of emitting it whole.  The fragments plus the
-// WASM tokens are then sorted and re-encoded as a single delta sequence.
 function semTokenMerge(base: any, extra: any): unknown {
     const bData: number[] = Array.isArray(base?.data)  ? base.data  : [];
     const eData: number[] = Array.isArray(extra?.data) ? extra.data : [];
@@ -64,13 +49,10 @@ function semTokenMerge(base: any, extra: any): unknown {
     const bToks = decode(bData);
     const eToks = decode(eData);
 
-    // For each base token, punch out any sub-ranges covered by WASM tokens
-    // on the same line, emitting only the gap fragments that remain.
     const baseParts: AbsTok[] = [];
     for (const b of bToks) {
         const bEnd = b.char + b.len;
 
-        // WASM tokens that intersect this base token (same line, overlapping char range).
         const overlapping = eToks
             .filter(e => e.line === b.line && e.char < bEnd && e.char + e.len > b.char)
             .sort((x, y) => x.char - y.char);
@@ -80,7 +62,6 @@ function semTokenMerge(base: any, extra: any): unknown {
             continue;
         }
 
-        // Emit base fragments in the gaps between (and around) the WASM tokens.
         let cursor = b.char;
         for (const e of overlapping) {
             if (cursor < e.char) {
@@ -93,7 +74,6 @@ function semTokenMerge(base: any, extra: any): unknown {
         }
     }
 
-    // Merge the (now non-overlapping) base fragments with all WASM tokens and sort.
     const allToks = [...baseParts, ...eToks].sort((a, b) =>
         a.line !== b.line ? a.line - b.line : a.char - b.char
     );

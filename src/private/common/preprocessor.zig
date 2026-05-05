@@ -97,7 +97,7 @@ test "Preprocessor: simple mapping" {
     defer allocator.free(mappings);
     
     mappings[0] = .{ .pre_offset = 0, .orig_offset = 0, .length = 10 };
-    mappings[1] = .{ .pre_offset = 10, .orig_offset = 10, .length = 19 }; // rest of file
+    mappings[1] = .{ .pre_offset = 10, .orig_offset = 10, .length = 19 };
     
     const result = PreprocessedResult{
         .source = try allocator.dupeZ(u8, pre_src),

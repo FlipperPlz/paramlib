@@ -709,7 +709,7 @@ fn globMatchAt(pat: []const u8, pi_start: usize, str: []const u8, si_start: usiz
             const after = pi + 2;
             var rest = after;
             if (rest < pat.len and pat[rest] == '.') rest += 1;
-            var ti = si; // start at si, not si+1, so ** can match zero leading components
+            var ti = si;
             while (true) {
                 if (globMatchAt(pat, rest, str, ti)) return true;
                 if (ti == str.len) break;
@@ -1402,7 +1402,6 @@ fn hover(
                 arena, "**param** `{s}` {s} {s}", .{ p.name, op, val },
             ) catch return null;
 
-            // Append schema documentation if available for this parameter's dot-path.
             const enclosing = findClassAtOffset(&root, offset);
             log("[hover] param.name={s}, enclosing={?s}", .{ p.name, if (enclosing) |enc| enc.name else null });
             const doc_str: ?[]const u8 = if (enclosing) |enc| doc_blk: {
@@ -1777,11 +1776,6 @@ fn inlayHints(
 
     if (schema.documentHints.get(params.textDocument.uri)) |precomputed| {
         for (precomputed) |ph| {
-            // Hints whose text starts with a known wasm-parser prefix are
-            // handled by that parser's own textDocument_inlayHint export;
-            // rendering them here would produce a redundant blob inlay.
-            if (std.mem.startsWith(u8, ph.text, "texture:")) continue;
-            if (std.mem.startsWith(u8, ph.text, "color:")) continue;
 
             hints.append(arena, lsp.types.InlayHint{
                 .position     = .{ .line = ph.line, .character = ph.character },
@@ -1870,21 +1864,15 @@ fn completion(
 
     const enclosing = findClassAtOffset(&root, offset) orelse return null;
 
-    // Compute dot-path of enclosing class once — used by both passes below.
     var enc_path_parts = std.ArrayList([]const u8).empty;
     _ = buildPathToClass(arena, &root, enclosing, &enc_path_parts);
     const enc_dot_path = std.mem.join(arena, ".", enc_path_parts.items) catch "";
 
     var items = std.ArrayList(lsp.types.completion.Item).empty;
 
-    // ── Pass 1: value completions ────────────────────────────────────────────
-    // If the cursor is inside an existing param's value, offer schema values
-    // for it.  This works even when the enclosing class has no base.
     value_pass: {
         const members = enclosing.members orelse break :value_pass;
 
-        // Find the param whose value starts at or before the cursor and is not
-        // superseded by a later param starting before the cursor.
         var vp: ?*const paramlib.cpp.ast.ParameterAst = null;
         for (members.items) |*m| {
             if (m.* != .param) continue;
@@ -1917,8 +1905,6 @@ fn completion(
         if (items.items.len > 0) return .{ .completion_items = items.items };
     }
 
-    // ── Pass 2: missing-param completions ────────────────────────────────────
-    // Walk the base chain and suggest params/classes not yet in this class.
     const effective_base = enclosing.base orelse resolveImplicitBase(&root, enclosing, arena);
     if (effective_base == null) return null;
 

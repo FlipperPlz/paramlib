@@ -3,8 +3,7 @@ pub const cpp = struct {
     pub const lexer = @import("private/cpp/lexer.zig");
     pub const logger = @import("private/cpp/utils/log.zig");
     pub const ast = @import("private/cpp/ast.zig");
-    pub const preprocessor = @import("private/cpp/preprocessor.zig");
-    pub const parser_interface = @import("private/cpp/parser.zig");
+    pub const preprocessor = @import("private/cpp/processor.zig");
 };
 
 pub const slabs = struct {

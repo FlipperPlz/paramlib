@@ -115,7 +115,7 @@ const Lexer = struct {
         if (char == '"') {
             self.pos += 1;
             while (self.pos < self.src.len and self.src[self.pos] != '"') : (self.pos += 1) {}
-            if (self.pos < self.src.len) self.pos += 1; // skip closing quote
+            if (self.pos < self.src.len) self.pos += 1;
             return .{ .type = .String, .text = self.src[start..self.pos], .offset = start };
         }
 

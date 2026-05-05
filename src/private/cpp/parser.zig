@@ -99,7 +99,7 @@ test "parse: class forward declaration" {
     try std.testing.expectEqual(@as(usize, 1), members.len);
     const cls = members[0].class;
     try std.testing.expectEqualStrings("MyClass", cls.name.?);
-    try std.testing.expect(cls.members == null); // forward decl has no body
+    try std.testing.expect(cls.members == null);
     try std.testing.expect(!errored);
 }
 

@@ -1139,7 +1139,6 @@ pub const Tokenizer = struct {
         try std.testing.expectEqual(TokenKind.eof, buf[0].kind);
     }
 
-    // benchmark helper
     fn benchRun(comptime f: fn () void, iters: u64) u64 {
         const start = std.time.nanoTimestamp();
         var i: u64 = 0;

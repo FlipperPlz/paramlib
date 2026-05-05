@@ -8,11 +8,10 @@ const PreProcessError = error {
     IncludeMaxRecursion
 };
 
-
-
 const CppPreLexer = struct {
     source:       [:0]const u8,
     index:        u32,
+    pre_offset:   u32 = 0,
     mappings:     std.ArrayList(pp.SourceMapping),
     log:          *const logger.DiagType,
 
@@ -71,7 +70,7 @@ const CppPreLexer = struct {
         Quote, LeftAngle, RightAngle, DoubleHash, Text, Unknown,
     };
 
-    const SYMBOLS = std.StaticStringMap(TokenKind) {
+    const SYMBOLS = std.StaticStringMap(TokenKind).initComptime(.{
         .{ "define", .Define },
         .{ "undef", .Undef },
         .{ "include", .Include },
@@ -91,7 +90,7 @@ const CppPreLexer = struct {
         .{ "<", .LeftAngle },
         .{ ">", .RightAngle },
         .{ "##", .DoubleHash },
-    };
+    });
 
     fn init(source: [:0]const u8, log: *const logger.DiagType) CppPreLexer {
         return .{
@@ -123,6 +122,12 @@ const CppPreLexer = struct {
         }
     }
 
+    pub inline fn skipLexedWhileInline(self: *CppPreLexer, allocator: std.mem.Allocator, pre_offset: u32, comptime predicate: fn (u8) callconv(.@"inline") bool) void {
+        while (predicate(peekLexed(*CppPreLexer, pre_offset))) {
+            _ = try self.nextLexed(allocator, pre_offset);
+        }
+    }
+
     inline fn isCarriageReturn(char: u8) bool {
         return char == '\r';
     }
@@ -148,7 +153,7 @@ const CppPreLexer = struct {
                     continue;
                 } else {
                     const tok = lexer.Token{ .kind = .invalid, .data = .{ .none = {} }, .pos = self.index };
-                    self.log.emit(.warning, "P01", &tok, "Backslash followed by non-newline is treated as literal backslash.", null);
+                    self.log.emit(.warning, "PPL01", &tok, "Backslash followed by non-newline is treated as literal backslash.", null);
                 }
             }
             break;
@@ -159,13 +164,13 @@ const CppPreLexer = struct {
         const c = self.source[self.index];
         if (had_skip or self.mappings.items.len == 0 or
             self.index != self.mappings.items[self.mappings.items.len - 1].orig_offset + self.mappings.items[self.mappings.items.len - 1].length)
-        {
-            try self.mappings.append(allocator, .{
-                .pre_offset = pre_offset,
-                .orig_offset = self.index,
-                .length = 1,
-            });
-        } else {
+            {
+                try self.mappings.append(allocator, .{
+                    .pre_offset = pre_offset,
+                    .orig_offset = self.index,
+                    .length = 1,
+                });
+            } else {
             self.mappings.items[self.mappings.items.len - 1].length += 1;
         }
 
@@ -173,6 +178,32 @@ const CppPreLexer = struct {
         return c;
     }
 
+    test "CppPreLexer - nextLexed and mappings" {
+        const allocator = std.testing.allocator;
+        const log = logger.DiagType.none();
+        const src = "a\\\n b\nc" ++ [_:0]u8{};
+        var lexer_inst = CppPreLexer.init(src, &log);
+        defer lexer_inst.mappings.deinit(allocator);
+
+        var out = std.ArrayList(u8).empty;
+        defer out.deinit(allocator);
+
+        while (try lexer_inst.nextLexed(allocator, @intCast(out.items.len))) |c| {
+            try out.append(allocator, c);
+        }
+
+        try std.testing.expectEqualStrings("a b\nc", out.items);
+
+        try std.testing.expectEqual(@as(usize, 2), lexer_inst.mappings.items.len);
+
+        try std.testing.expectEqual(@as(u32, 0), lexer_inst.mappings.items[0].pre_offset);
+        try std.testing.expectEqual(@as(u32, 0), lexer_inst.mappings.items[0].orig_offset);
+        try std.testing.expectEqual(@as(u32, 1), lexer_inst.mappings.items[0].length);
+
+        try std.testing.expectEqual(@as(u32, 1), lexer_inst.mappings.items[1].pre_offset);
+        try std.testing.expectEqual(@as(u32, 3), lexer_inst.mappings.items[1].orig_offset);
+        try std.testing.expectEqual(@as(u32, 4), lexer_inst.mappings.items[1].length);
+    }
 
     fn peekLexed(self: *const CppPreLexer) ?u8 {
         var idx = self.index;
@@ -189,9 +220,6 @@ const CppPreLexer = struct {
                 if (idx + i < self.source.len and self.source[idx + i] == '\n') {
                     idx += i + 1;
                     continue;
-                } else {
-                    const tok = lexer.Token{ .kind = .invalid, .data = .{ .none = {} }, .pos = idx };
-                    self.log.emit(.warning, "P01", &tok, "Backslash followed by non-newline is treated as literal backslash.", null);
                 }
             }
             break;
@@ -207,7 +235,8 @@ const CppPreLexer = struct {
         var name = std.ArrayList(u8).empty;
         errdefer name.deinit(allocator);
 
-        while (self.peekLexed()) |c| {
+        while (name.items.len < 128) {
+            const c = self.peekLexed() orelse break;
             if (!isIdentifierContinue(c)) break;
             _ = try self.nextLexed(allocator, pre_offset_ptr.*);
             pre_offset_ptr.* += 1;
@@ -216,78 +245,185 @@ const CppPreLexer = struct {
 
         return try name.toOwnedSlice(allocator);
     }
+
+    test "CppPreLexer - scanName" {
+        const allocator = std.testing.allocator;
+        const log = logger.DiagType.none();
+
+        {
+            const src = "myVar123" ++ [_:0]u8{};
+            var lexer_inst = CppPreLexer.init(src, &log);
+            defer lexer_inst.mappings.deinit(allocator);
+            var pre_offset: u32 = 0;
+            const name = try lexer_inst.scanName(allocator, &pre_offset);
+            defer allocator.free(name);
+            try std.testing.expectEqualStrings("myVar123", name);
+            try std.testing.expectEqual(@as(u32, 8), pre_offset);
+        }
+
+        {
+            const src = "my\\\nVar" ++ [_:0]u8{};
+            var lexer_inst = CppPreLexer.init(src, &log);
+            defer lexer_inst.mappings.deinit(allocator);
+            var pre_offset: u32 = 0;
+            const name = try lexer_inst.scanName(allocator, &pre_offset);
+            defer allocator.free(name);
+            try std.testing.expectEqualStrings("myVar", name);
+            try std.testing.expectEqual(@as(u32, 5), pre_offset);
+            try std.testing.expectEqual(@as(usize, 2), lexer_inst.mappings.items.len);
+        }
+
+        {
+            const src = "foo = 1;" ++ [_:0]u8{};
+            var lexer_inst = CppPreLexer.init(src, &log);
+            defer lexer_inst.mappings.deinit(allocator);
+            var pre_offset: u32 = 0;
+            const name = try lexer_inst.scanName(allocator, &pre_offset);
+            defer allocator.free(name);
+            try std.testing.expectEqualStrings("foo", name);
+            try std.testing.expectEqual(@as(u32, 3), pre_offset);
+            try std.testing.expectEqual(@as(u8, ' '), lexer_inst.peekLexed().?);
+        }
+    }
+
+    fn scanString(self: *CppPreLexer, allocator: std.mem.Allocator, terminators: []const u8, pre_offset_ptr: *u32) ![]const u8 {
+        var result = std.ArrayList(u8).empty;
+        errdefer result.deinit(allocator);
+
+        while (self.peekLexed()) |c| {
+            if (std.mem.indexOfScalar(u8, terminators, c) != null) break;
+            _ = try self.nextLexed(allocator, pre_offset_ptr.*);
+            pre_offset_ptr.* += 1;
+            try result.append(allocator, c);
+        }
+
+        return try result.toOwnedSlice(allocator);
+    }
+
+    test "CppPreLexer - scanString" {
+        const allocator = std.testing.allocator;
+        const log = logger.DiagType.none();
+
+        {
+            const src = "hello world;next" ++ [_:0]u8{};
+            var lexer_inst = CppPreLexer.init(src, &log);
+            defer lexer_inst.mappings.deinit(allocator);
+            var pre_offset: u32 = 0;
+            const s = try lexer_inst.scanString(allocator, ";", &pre_offset);
+            defer allocator.free(s);
+            try std.testing.expectEqualStrings("hello world", s);
+            try std.testing.expectEqual(@as(u32, 11), pre_offset);
+            try std.testing.expectEqual(@as(u8, ';'), lexer_inst.peekLexed().?);
+        }
+
+        {
+            const src = "line1\\\nline2\"rest" ++ [_:0]u8{};
+            var lexer_inst = CppPreLexer.init(src, &log);
+            defer lexer_inst.mappings.deinit(allocator);
+            var pre_offset: u32 = 0;
+            const s = try lexer_inst.scanString(allocator, "\"", &pre_offset);
+            defer allocator.free(s);
+            try std.testing.expectEqualStrings("line1line2", s);
+            try std.testing.expectEqual(@as(u32, 10), pre_offset);
+            try std.testing.expectEqual(@as(u8, '\"'), lexer_inst.peekLexed().?);
+        }
+
+        {
+            const src = ";next" ++ [_:0]u8{};
+            var lexer_inst = CppPreLexer.init(src, &log);
+            defer lexer_inst.mappings.deinit(allocator);
+            var pre_offset: u32 = 0;
+            const s = try lexer_inst.scanString(allocator, ";", &pre_offset);
+            defer allocator.free(s);
+            try std.testing.expectEqualStrings("", s);
+            try std.testing.expectEqual(@as(u32, 0), pre_offset);
+        }
+
+        {
+            const src = "abc(def" ++ [_:0]u8{};
+            var lexer_inst = CppPreLexer.init(src, &log);
+            defer lexer_inst.mappings.deinit(allocator);
+            var pre_offset: u32 = 0;
+            const s = try lexer_inst.scanString(allocator, "()", &pre_offset);
+            defer allocator.free(s);
+            try std.testing.expectEqualStrings("abc", s);
+            try std.testing.expectEqual(@as(u8, '('), lexer_inst.peekLexed().?);
+        }
+    }
+
+    test "CppPreLexer - findSymbol" {
+        try std.testing.expectEqual(TokenKind.Define, findSymbol("define").?);
+        try std.testing.expectEqual(TokenKind.Include, findSymbol("include").?);
+        try std.testing.expectEqual(TokenKind.LeftParen, findSymbol("(").?);
+        try std.testing.expectEqual(@as(?TokenKind, null), findSymbol("not_a_symbol"));
+    }
+
+    pub fn findSymbol(text: []const u8) ?TokenKind {
+        for (SYMBOLS) |entry| {
+            if(std.mem.eql(u8, entry.key, text)) {
+                return entry.value;
+            }
+        }
+        return null;
+    }
+
+    pub fn lex(self: *CppPreLexer, allocator: std.mem.Allocator) ?Token{
+        const start_pre = self.pre_offset;
+        self.skipLexedWhileInline(allocator, &self.pre_offset, isCarriageReturn);
+        const next = self.peekLexed() orelse return null;
+
+        if(isIdentifierStart(next)) {
+            const text = self.scanName(allocator, &self.pre_offset);
+            const symbol = findSymbol(text) orelse TokenKind.Text;
+            if(symbol != .Text) return .{
+                .kind = symbol,
+                .data = .{ .keyword = {} },
+                .offset = start_pre,
+                .len = self.pre_offset - start_pre,
+            };
+
+            return .{
+                .kind = .Text,
+                .data = .{ .text = text },
+                .offset = start_pre,
+                .len = self.pre_offset - start_pre,
+            };
+        }
+        const buffer: [3:0] u8 = [_:0]u8{ next, 0, 0 };
+
+        if(next == '/' or next == '\\') {
+            _ = self.nextLexed(allocator, &self.pre_offset);
+            self.skipLexedWhileInline(allocator, self.pre_offset, isCarriageReturn);
+            const n = self.peekLexed() orelse return null;
+            if(isIdentifierStart(n)) {
+                buffer[1] = n;
+                _ = self.nextLexed(allocator, &self.pre_offset);
+            }
+        } else if (next == '#') {
+            _ = self.nextLexed(allocator, &self.pre_offset);
+            if (self.peekLexed() == '#') {
+                buffer[1] = '#';
+            }
+        }
+
+        const symbol = findSymbol(buffer) orelse return .{
+            .kind = TokenKind.Unknown,
+            .data = .{ .text = allocator.dupe(u8, buffer) },
+            .offset = start_pre,
+            .len = self.pre_offset - start_pre,
+        };
+
+        return .{
+            .kind = symbol,
+            .data = .{ .symbol = {} },
+            .offset = start_pre,
+            .len = self.pre_offset - start_pre,
+        };
+    }
 };
 
-test "CppPreLexer - scanName" {
-    const allocator = std.testing.allocator;
-    const log = logger.DiagType.none();
 
-    // Test basic name
-    {
-        const src = "myVar123" ++ [_:0]u8{};
-        var lexer_inst = CppPreLexer.init(src, &log);
-        defer lexer_inst.mappings.deinit(allocator);
-        var pre_offset: u32 = 0;
-        const name = try lexer_inst.scanName(allocator, &pre_offset);
-        defer allocator.free(name);
-        try std.testing.expectEqualStrings("myVar123", name);
-        try std.testing.expectEqual(@as(u32, 8), pre_offset);
-    }
 
-    // Test name with line continuation
-    {
-        const src = "my\\\nVar" ++ [_:0]u8{};
-        var lexer_inst = CppPreLexer.init(src, &log);
-        defer lexer_inst.mappings.deinit(allocator);
-        var pre_offset: u32 = 0;
-        const name = try lexer_inst.scanName(allocator, &pre_offset);
-        defer allocator.free(name);
-        try std.testing.expectEqualStrings("myVar", name);
-        try std.testing.expectEqual(@as(u32, 5), pre_offset);
-        // Mapping should have gap
-        try std.testing.expectEqual(@as(usize, 2), lexer_inst.mappings.items.len);
-    }
-
-    // Test name followed by something else
-    {
-        const src = "foo = 1;" ++ [_:0]u8{};
-        var lexer_inst = CppPreLexer.init(src, &log);
-        defer lexer_inst.mappings.deinit(allocator);
-        var pre_offset: u32 = 0;
-        const name = try lexer_inst.scanName(allocator, &pre_offset);
-        defer allocator.free(name);
-        try std.testing.expectEqualStrings("foo", name);
-        try std.testing.expectEqual(@as(u32, 3), pre_offset);
-        try std.testing.expectEqual(@as(u8, ' '), lexer_inst.peekLexed().?);
-    }
-}
-
-test "CppPreLexer - nextLexed and mappings" {
-    const allocator = std.testing.allocator;
-    const log = logger.DiagType.none();
-    const src = "a\\\n b\nc" ++ [_:0]u8{};
-    var lexer_inst = CppPreLexer.init(src, &log);
-    defer lexer_inst.mappings.deinit(allocator);
-
-    var out = std.ArrayList(u8).empty;
-    defer out.deinit(allocator);
-
-    while (try lexer_inst.nextLexed(allocator, @intCast(out.items.len))) |c| {
-        try out.append(allocator, c);
-    }
-
-    try std.testing.expectEqualStrings("a b\nc", out.items);
-    
-    try std.testing.expectEqual(@as(usize, 2), lexer_inst.mappings.items.len);
-    
-    try std.testing.expectEqual(@as(u32, 0), lexer_inst.mappings.items[0].pre_offset);
-    try std.testing.expectEqual(@as(u32, 0), lexer_inst.mappings.items[0].orig_offset);
-    try std.testing.expectEqual(@as(u32, 1), lexer_inst.mappings.items[0].length);
-
-    try std.testing.expectEqual(@as(u32, 1), lexer_inst.mappings.items[1].pre_offset);
-    try std.testing.expectEqual(@as(u32, 3), lexer_inst.mappings.items[1].orig_offset);
-    try std.testing.expectEqual(@as(u32, 4), lexer_inst.mappings.items[1].length); // ' ', 'b', '\n', and 'c'
-}
 
 const CppPreParser = struct {
 
