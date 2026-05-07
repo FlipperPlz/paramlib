@@ -16,20 +16,25 @@ const Color = struct {
 
 pub const DiagEntry = struct {
     level:     Level,
+    file_name: []const u8,
+    line:      u32,
+    column:    u32,
     token_pos: u32,
     span:      u32,
     message:   []const u8,
 };
 
-pub const DiagSink = struct {
-    list:  *std.ArrayListUnmanaged(DiagEntry),
-    alloc: std.mem.Allocator,
-};
-
-pub const DiagType = union(enum) {
-    None: void,
-    Sink: DiagSink,
-    StdErr: ParseLog,
+pub const DiagType = struct {
+    contents:   ?[:0]const u8 = null,
+    io:         ?std.Io = null,
+    line_table: ?*const lines.LineTable = null,
+    filename:   []const u8 = "",
+    use_color:  bool = false,
+    diag_sink:  ?struct {
+        list:  *std.ArrayListUnmanaged(DiagEntry),
+        alloc: std.mem.Allocator,
+    } = null,
+    pp_result:  ?*const preprocessor.PreprocessedResult = null,
 
     pub fn stdErr(
         io:         std.Io,
@@ -38,7 +43,13 @@ pub const DiagType = union(enum) {
         filename:   []const u8,
         use_color:  bool,
     ) DiagType {
-        return .{.StdErr = stderrLog(io, line_table, contents, filename, use_color)};
+        return .{
+            .io = io,
+            .line_table = line_table,
+            .contents = contents,
+            .filename = filename,
+            .use_color = use_color,
+        };
     }
 
     pub fn stdErrMapped(
@@ -47,15 +58,39 @@ pub const DiagType = union(enum) {
         contents:   [:0]const u8,
         filename:   []const u8,
         use_color:  bool,
-        pp_result:  *const preprocessor.PreprocessedResult,
+        pp_result:  ?*const preprocessor.PreprocessedResult,
     ) DiagType {
-        var log = stderrLog(io, line_table, contents, filename, use_color);
-        log.pp_result = pp_result;
-        return .{.StdErr = log};
+        return .{
+            .io = io,
+            .line_table = line_table,
+            .contents = contents,
+            .filename = filename,
+            .use_color = use_color,
+            .pp_result = pp_result,
+        };
+    }
+
+    pub fn sink(
+        alloc: std.mem.Allocator,
+        list: *std.ArrayListUnmanaged(DiagEntry),
+        filename: []const u8,
+        line_table: ?*const lines.LineTable,
+        pp_result: ?*const preprocessor.PreprocessedResult,
+    ) DiagType {
+        return .{
+            .diag_sink = .{ .alloc = alloc, .list = list },
+            .filename = filename,
+            .line_table = line_table,
+            .pp_result = pp_result,
+        };
     }
 
     pub fn none() DiagType {
-        return . { .None = undefined };
+        return .{};
+    }
+
+    pub fn lineTable(self: DiagType) ?*const lines.LineTable {
+        return self.line_table;
     }
 
     pub fn both(
@@ -64,41 +99,152 @@ pub const DiagType = union(enum) {
         contents:   [:0]const u8,
         filename:   []const u8,
         use_color:  bool,
-        diag_sink:  DiagSink
+        s:          DiagType,
     ) DiagType {
-        var log = stderrLog(io, line_table, contents, filename, use_color);
-        log.diag_sink = diag_sink;
-        return .{ .StdErr = log };
+        var res = DiagType.stdErr(io, line_table, contents, filename, use_color);
+        if (s.diag_sink) |ds| {
+            res.diag_sink = ds;
+        }
+        res.pp_result = s.pp_result;
+        return res;
+    }
+
+    inline fn ansi(self: DiagType, seq: []const u8) []const u8 {
+        return if (self.use_color) seq else "";
     }
 
     pub fn emit(
         self:       *const DiagType,
         level:      Level,
         err_code:   ?[]const u8,
-        token:      *const lexer.Token,
+        token:      ?*const lexer.Token,
         message:    []const u8,
         label_text: ?[]const u8,
     ) void {
-        switch (self.*) {
-            .Sink => |sink| {
-                const span2: u32 = switch (token.data) {
-                    .text  => |t| @intCast(t.len),
-                    else   => 1,
+        const token_pos = if (token) |t| t.pos else 0;
+
+        const pos = if (self.pp_result) |pp| blk: {
+            if (self.line_table) |lt| {
+                break :blk pp.resolveLocation(token_pos, self.filename, lt);
+            }
+            break :blk preprocessor.PreprocessedResult.ResolvedLocation{
+                .file_name = self.filename,
+                .line = 1,
+                .column = 1,
+            };
+        } else blk: {
+            if (self.line_table) |lt| {
+                const phys_loc = lt.resolve(token_pos);
+                break :blk preprocessor.PreprocessedResult.ResolvedLocation{
+                    .file_name = self.filename,
+                    .line = phys_loc.line,
+                    .column = phys_loc.column,
                 };
-                sink.list.append(sink.alloc, .{
-                    .level     = level,
-                    .token_pos = token.pos,
-                    .span      = @max(span2, 1),
-                    .message   = message,
+            }
+            break :blk preprocessor.PreprocessedResult.ResolvedLocation{
+                .file_name = self.filename,
+                .line = 1,
+                .column = 1,
+            };
+        };
+
+        if (self.io) |io| {
+            const is_freestanding = @import("builtin").os.tag == .freestanding;
+            if (!is_freestanding) {
+                var buffer: [4096]u8 = undefined;
+                var wr = std.Io.File.stderr().writer(io, &buffer);
+                const w = &wr.interface;
+
+                if (err_code) |c| {
+                    w.print("{s}{s}[{s}]{s}: {s}{s}{s}\n", .{
+                        self.ansi(level.color()), level.label(), c,
+                        self.ansi(Color.reset),
+                        self.ansi(Color.bold), message, self.ansi(Color.reset),
+                    }) catch {};
+                } else {
+                    w.print("{s}{s}{s}: {s}{s}{s}\n", .{
+                        self.ansi(level.color()), level.label(),
+                        self.ansi(Color.reset),
+                        self.ansi(Color.bold), message, self.ansi(Color.reset),
+                    }) catch {};
+                }
+
+                const margin = digitWidth(pos.line);
+                w.print("{s} {s}-->{s} {s}:{d}:{d}\n", .{
+                    spaces(margin),
+                    self.ansi(Color.blue), self.ansi(Color.reset),
+                    pos.file_name, pos.line, pos.column,
                 }) catch {};
-            },
-            .StdErr => |*log| {
-                log.emit(level, err_code, token, message, label_text);
-            },
-            .None => {},
+
+                if (token) |t| {
+                    if (self.contents) |contents| {
+                        if (self.line_table) |lt| {
+                            const effective_pos = if (self.pp_result) |pp| pp.resolveOffset(token_pos) else token_pos;
+                            const phys_pos = lt.resolve(effective_pos);
+                            const line_text = lineSlice(contents, lt, phys_pos.line);
+
+                            w.print("{s} {s}|{s}\n", .{
+                                spaces(margin),
+                                self.ansi(Color.blue), self.ansi(Color.reset),
+                            }) catch {};
+                            w.print("{s}{d}{s} {s}|{s} {s}\n", .{
+                                self.ansi(Color.blue), pos.line, self.ansi(Color.reset),
+                                self.ansi(Color.blue), self.ansi(Color.reset),
+                                line_text,
+                            }) catch {};
+                            w.print("{s} {s}|{s} ", .{
+                                spaces(margin),
+                                self.ansi(Color.blue), self.ansi(Color.reset),
+                            }) catch {};
+
+                            const col0: usize = pos.column - 1;
+                            const span        = tokenSpan(t, line_text, col0);
+
+                            writeRepeat(w, ' ', col0) catch {};
+                            w.print("{s}", .{ self.ansi(level.color()) }) catch {};
+                            writeRepeat(w, '^', @max(1, span)) catch {};
+
+                            const lbl = label_text orelse message;
+                            w.print(" {s}{s}\n\n", .{ lbl, self.ansi(Color.reset) }) catch {};
+                        }
+                    }
+                }
+                w.flush() catch {};
+            }
+        }
+
+        if (self.diag_sink) |ds| {
+            const span2: u32 = if (token) |t| switch (t.data) {
+                .text   => |txt| @intCast(txt.len),
+                else    => 1,
+            } else 1;
+            ds.list.append(ds.alloc, .{
+                .level     = level,
+                .file_name = ds.alloc.dupe(u8, pos.file_name) catch pos.file_name,
+                .line      = pos.line,
+                .column    = pos.column,
+                .token_pos = token_pos,
+                .span      = @max(span2, 1),
+                .message   = ds.alloc.dupe(u8, message) catch message,
+            }) catch {};
         }
     }
 
+    pub fn err(self: *const DiagType, code: ?[]const u8, token: ?*const lexer.Token, msg: []const u8) void {
+        self.emit(.err, code, token, msg, null);
+    }
+
+    pub fn warn(self: *const DiagType, code: ?[]const u8, token: ?*const lexer.Token, msg: []const u8) void {
+        self.emit(.warning, code, token, msg, null);
+    }
+
+    pub fn note(self: *const DiagType, token: ?*const lexer.Token, msg: []const u8) void {
+        self.emit(.note, null, token, msg, null);
+    }
+
+    pub fn hint(self: *const DiagType, token: ?*const lexer.Token, msg: []const u8) void {
+        self.emit(.hint, null, token, msg, null);
+    }
 };
 
 pub const Level = enum {
@@ -125,135 +271,6 @@ pub const Level = enum {
         };
     }
 };
-
-pub const ParseLog = struct {
-    const Self = @This();
-    contents:   [:0]const u8,
-    io:         std.Io,
-    line_table: *const lines.LineTable,
-    filename:   []const u8,
-    use_color:  bool,
-    diag_sink:  ?DiagSink = null,
-    pp_result:  ?*const preprocessor.PreprocessedResult = null,
-
-    pub fn init(
-        io:         std.Io,
-        line_table: *const lines.LineTable,
-        source:     [:0]const u8,
-        filename:   []const u8,
-        use_color:  bool,
-    ) Self {
-        return .{
-            .contents   = source,
-            .io         = io,
-            .line_table = line_table,
-            .filename   = filename,
-            .use_color  = use_color,
-        };
-    }
-
-    inline fn ansi(self: Self, seq: []const u8) []const u8 {
-        return if (self.use_color) seq else "";
-    }
-
-    pub fn emit(
-        self:       *const Self,
-        level:      Level,
-        err_code:   ?[]const u8,
-        token:      *const lexer.Token,
-        message:    []const u8,
-        label_text: ?[]const u8,
-    ) void {
-        const is_freestanding = @import("builtin").os.tag == .freestanding;
-
-        if (!is_freestanding) {
-            var buffer: [4096]u8 = undefined;
-            var wr = std.Io.File.stderr().writer(self.io, &buffer);
-            const w = &wr.interface;
-
-            const effective_pos = if (self.pp_result) |pp| pp.resolveOffset(token.pos) else token.pos;
-            const pos = self.line_table.resolve(effective_pos);
-
-            if (err_code) |c| {
-                w.print("{s}{s}[{s}]{s}: {s}{s}{s}\n", .{
-                    self.ansi(level.color()), level.label(), c,
-                    self.ansi(Color.reset),
-                    self.ansi(Color.bold), message, self.ansi(Color.reset),
-                }) catch {};
-            } else {
-                w.print("{s}{s}{s}: {s}{s}{s}\n", .{
-                    self.ansi(level.color()), level.label(),
-                    self.ansi(Color.reset),
-                    self.ansi(Color.bold), message, self.ansi(Color.reset),
-                }) catch {};
-            }
-
-            const margin = digitWidth(pos.line);
-            w.print("{s} {s}-->{s} {s}:{d}:{d}\n", .{
-                spaces(margin),
-                self.ansi(Color.blue), self.ansi(Color.reset),
-                self.filename, pos.line, pos.column,
-            }) catch {};
-
-            const line_text = lineSlice(self.contents, self.line_table, pos.line);
-
-            w.print("{s} {s}|{s}\n", .{
-                spaces(margin),
-                self.ansi(Color.blue), self.ansi(Color.reset),
-            }) catch {};
-            w.print("{s}{d}{s} {s}|{s} {s}\n", .{
-                self.ansi(Color.blue), pos.line, self.ansi(Color.reset),
-                self.ansi(Color.blue), self.ansi(Color.reset),
-                line_text,
-            }) catch {};
-            w.print("{s} {s}|{s} ", .{
-                spaces(margin),
-                self.ansi(Color.blue), self.ansi(Color.reset),
-            }) catch {};
-
-            const col0: usize = pos.column - 1;
-            const span        = tokenSpan(token, line_text, col0);
-
-            writeRepeat(w, ' ', col0) catch {};
-            w.print("{s}", .{ self.ansi(level.color()) }) catch {};
-            writeRepeat(w, '^', @max(1, span)) catch {};
-
-            const lbl = label_text orelse message;
-            w.print(" {s}{s}\n\n", .{ lbl, self.ansi(Color.reset) }) catch {};
-            w.flush() catch {};
-        }
-
-        if (self.diag_sink) |sink| {
-            const span2: u32 = switch (token.data) {
-                .text   => |t| @intCast(t.len),
-                else    => 1,
-            };
-            sink.list.append(sink.alloc, .{
-                .level     = level,
-                .token_pos = token.pos,
-                .span      = @max(span2, 1),
-                .message   = message,
-            }) catch {};
-        }
-    }
-
-    pub fn err(self: *const Self, source: [:0]const u8, code: ?[]const u8, token: lexer.Token, msg: []const u8) void {
-        self.emit(source, .err, code, token, msg, null);
-    }
-
-    pub fn warn(self: *const Self, source: [:0]const u8, code: ?[]const u8, token: lexer.Token, msg: []const u8) void {
-        self.emit(source, .warning, code, token, msg, null);
-    }
-
-    pub fn note(self: *const Self, source: [:0]const u8, token: lexer.Token, msg: []const u8) void {
-        self.emit(source, .note, null, token, msg, null);
-    }
-
-    pub fn hint(self: *const Self, source: [:0]const u8, token: lexer.Token, msg: []const u8) void {
-        self.emit(source, .hint, null, token, msg, null);
-    }
-};
-
 
 fn lineSlice(source: []const u8, lt: *const lines.LineTable, line: u32) []const u8 {
     const offsets = lt.newline_offsets;
@@ -314,14 +331,4 @@ fn writeRepeat(writer: *std.Io.Writer, ch: u8, n: usize) !void {
     var i: usize = 0;
     while (i < n) : (i += 1) try writer.writeByte(ch);
     try writer.flush();
-}
-
-pub fn stderrLog(
-    io:         std.Io,
-    line_table: *const lines.LineTable,
-    contents:   [:0]const u8,
-    filename:   []const u8,
-    use_color:  bool,
-) ParseLog {
-    return ParseLog.init(io, line_table, contents, filename, use_color);
 }

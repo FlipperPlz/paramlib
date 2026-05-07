@@ -1574,7 +1574,7 @@ fn publishDiagnostics(
     defer raw_diags.deinit(gpa);
 
     var errored = false;
-    var root = paramlib.cpp.parser.parseSource(gpa, src, &errored, .{ .Sink = .{ .list = &raw_diags, .alloc = gpa } }) catch |err| {
+    var root = paramlib.cpp.parser.parseSource(gpa, src, &errored, paramlib.cpp.logger.DiagType.sink(gpa, &raw_diags, uri, &line_table, null)) catch |err| {
         try transport.writeNotification(io, gpa,
             "textDocument/publishDiagnostics",
             lsp.types.publish_diagnostics.Params,

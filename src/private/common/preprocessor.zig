@@ -8,13 +8,24 @@ pub const SourceMapping = struct {
     length: u32,
 };
 
+pub const LineOverride = struct {
+    pre_offset: u32,
+    line_number: u32,
+    file_name: ?[]const u8,
+};
+
 pub const PreprocessedResult = struct {
     source: [:0]const u8,
     mappings: []const SourceMapping,
+    line_overrides: []const LineOverride = &.{},
 
     pub fn deinit(self: PreprocessedResult, allocator: std.mem.Allocator) void {
         allocator.free(self.source);
         allocator.free(self.mappings);
+        for (self.line_overrides) |lo| {
+            if (lo.file_name) |fname| allocator.free(fname);
+        }
+        allocator.free(self.line_overrides);
     }
 
     pub fn resolveOffset(self: PreprocessedResult, pre_offset: u32) u32 {
@@ -43,6 +54,47 @@ pub const PreprocessedResult = struct {
         }
         
         return pre_offset;
+    }
+
+    pub const ResolvedLocation = struct {
+        file_name: []const u8,
+        line: u32,
+        column: u32,
+    };
+
+    pub fn resolveLocation(self: PreprocessedResult, pre_offset: u32, default_filename: []const u8, line_table: *const lines.LineTable) ResolvedLocation {
+        const orig_offset = self.resolveOffset(pre_offset);
+        const phys_loc = line_table.resolve(orig_offset);
+
+        var best_override: ?LineOverride = null;
+        for (self.line_overrides) |lo| {
+            if (lo.pre_offset <= pre_offset) {
+                if (best_override == null or lo.pre_offset >= best_override.?.pre_offset) {
+                    best_override = lo;
+                }
+            }
+        }
+
+        if (best_override) |ov| {
+            // Find how many newlines are between the override point and current point in preprocessed source
+            var line_delta: u32 = 0;
+            var i = ov.pre_offset;
+            while (i < pre_offset and i < self.source.len) : (i += 1) {
+                if (self.source[i] == '\n') line_delta += 1;
+            }
+
+            return .{
+                .file_name = ov.file_name orelse default_filename,
+                .line = ov.line_number + line_delta,
+                .column = phys_loc.column,
+            };
+        }
+
+        return .{
+            .file_name = default_filename,
+            .line = phys_loc.line,
+            .column = phys_loc.column,
+        };
     }
 };
 
@@ -81,11 +133,10 @@ pub const PassthroughPreprocessor = struct {
         return .{
             .source = copy,
             .mappings = &.{},
-            .allocator = allocator,
         };
     }
 
-    fn deinit(_: *anyopaque) void {}
+    fn deinit(_: *anyopaque, _: std.mem.Allocator) void {}
 };
 
 test "Preprocessor: simple mapping" {
@@ -97,18 +148,17 @@ test "Preprocessor: simple mapping" {
     const pre_src = "foo = 42;\n//ignore\nbar = 24;";
     
     var mappings = try allocator.alloc(SourceMapping, 2);
-    defer allocator.free(mappings);
     
     mappings[0] = .{ .pre_offset = 0, .orig_offset = 0, .length = 10 };
-    mappings[1] = .{ .pre_offset = 10, .orig_offset = 10, .length = 19 };
+    mappings[1] = .{ .pre_offset = 10, .orig_offset = 18, .length = 10 };
     
     const result = PreprocessedResult{
         .source = try allocator.dupeZ(u8, pre_src),
-        .mappings = try allocator.dupe(SourceMapping, mappings),
+        .mappings = mappings,
     };
     defer result.deinit(allocator);
     
     try std.testing.expectEqual(@as(u32, 5), result.resolveOffset(5));
-    try std.testing.expectEqual(@as(u32, 11), result.resolveOffset(11));
-    try std.testing.expectEqual(@as(u32, 20), result.resolveOffset(20));
+    try std.testing.expectEqual(@as(u32, 18), result.resolveOffset(10));
+    try std.testing.expectEqual(@as(u32, 23), result.resolveOffset(15));
 }

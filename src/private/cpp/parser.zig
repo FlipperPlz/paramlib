@@ -6,6 +6,8 @@ const logger = @import("../common/log.zig");
 const lines = @import("../common/lines.zig");
 const ast = @import("ast.zig");
 const database = @import("../../api/database.zig");
+const preprocessor = @import("./processor.zig");
+const pp = @import("../common/preprocessor.zig");
 
 const ParseError = error{
     UnexpectedToken,
@@ -86,6 +88,65 @@ test "parse: string without escapes (literal content preserved)" {
     try std.testing.expectEqualStrings("hello world", param.value.string);
     try std.testing.expect(!errored);
 
+}
+
+test "parse: with preprocessor macro" {
+    const allocator = std.testing.allocator;
+    const src = z(
+        \\#define VAL 42
+        \\value = VAL;
+    );
+    var errored: bool = false;
+    const log = logger.DiagType.none();
+    var cpp = preprocessor.CppPreprocessor.empty;
+    defer cpp.deinit(allocator);
+
+    var result = try parseSourceWithPreprocessor(allocator, src, &errored, log, &cpp);
+    defer result.deinit(allocator);
+
+    const members = result.ast.members.?.items;
+    try std.testing.expectEqual(@as(usize, 1), members.len);
+    const param = members[0].param;
+    const name = try allocator.dupe(u8, param.name);
+    defer allocator.free(name);
+    try std.testing.expectEqualStrings("value", name);
+    try std.testing.expectEqual(@as(i32, 42), param.value.integer);
+    try std.testing.expect(!errored);
+}
+
+test "parse: with preprocessor include" {
+    const allocator = std.testing.allocator;
+    const src = z(
+        \\#include "other.h"
+        \\value = VAL;
+    );
+    
+    const Mock = struct {
+        pub fn processInclude(path: []const u8, alloc: std.mem.Allocator, _: *const logger.DiagType, _: *preprocessor.IncludeError) [:0]const u8 {
+            if (std.mem.eql(u8, path, "other.h")) {
+                return alloc.dupeZ(u8, "#define VAL 100") catch unreachable;
+            }
+            return alloc.dupeZ(u8, "") catch unreachable;
+        }
+    };
+
+    var errored: bool = false;
+    const log = logger.DiagType.none();
+    var cpp = preprocessor.CppPreprocessor.empty;
+    cpp.processInclude = Mock.processInclude;
+    defer cpp.deinit(allocator);
+
+    var result = try parseSourceWithPreprocessor(allocator, src, &errored, log, &cpp);
+    defer result.deinit(allocator);
+
+    const members = result.ast.members.?.items;
+    try std.testing.expectEqual(@as(usize, 1), members.len);
+    const param = members[0].param;
+    const name = try allocator.dupe(u8, param.name);
+    defer allocator.free(name);
+    try std.testing.expectEqualStrings("value", name);
+    try std.testing.expectEqual(@as(i32, 100), param.value.integer);
+    try std.testing.expect(!errored);
 }
 
 test "parse: class forward declaration" {
@@ -387,12 +448,48 @@ fn synchronize(tokenizer: *lexer.Tokenizer, next: *lexer.Token) ParseError!void 
     }
 }
 
+pub const ParseWithPreprocessorResult = struct {
+    ast: ast.ClassAst,
+    pp_res: pp.PreprocessedResult,
+    pp_lt: lines.LineTable,
+
+    pub fn deinit(self: *ParseWithPreprocessorResult, allocator: Allocator) void {
+        self.ast.deinit(allocator);
+        self.pp_lt.deinit(allocator);
+        self.pp_res.deinit(allocator);
+    }
+};
+
+pub fn parseSourceWithPreprocessor(allocator: Allocator, data: [:0]const u8, errored: *bool, log: logger.DiagType, cpp: *preprocessor.CppPreprocessor) !ParseWithPreprocessorResult {
+    const pp_res = try cpp.preprocess(allocator, data, &log);
+    errdefer pp_res.deinit(allocator);
+
+    const pp_lt = try lines.LineTable.build(allocator, pp_res.source);
+    errdefer pp_lt.deinit(allocator);
+
+    const pp_log = logger.DiagType.stdErrMapped(
+        log.io orelse std.testing.io,
+        &pp_lt,
+        pp_res.source,
+        log.filename,
+        log.use_color,
+        &pp_res,
+    );
+
+    const class_ast = try parseSource(allocator, pp_res.source, errored, pp_log);
+    return ParseWithPreprocessorResult{
+        .ast = class_ast,
+        .pp_res = pp_res,
+        .pp_lt = pp_lt,
+    };
+}
+
 pub fn parseSource(allocator: Allocator, data: [:0]const u8, errored: *bool, log: logger.DiagType) ParseError!ast.ClassAst {
     var l = lexer.Tokenizer.init(data);
 
     var root = ast.ClassAst {
         .base     = null,
-        .members  = .empty,
+        .members  = std.ArrayList(ast.MemberAst).empty,
         .name     = "",
         .namePos = 0,
         .parent   = null,
@@ -509,7 +606,7 @@ fn parseClass(allocator: Allocator, tokenizer: *lexer.Tokenizer, next: *lexer.To
     switch (next.kind) {
         TokenKind.colon => {
             next.* = try tokenizer.next();
-            heapClass.members = .empty;
+            heapClass.members = std.ArrayList(ast.MemberAst).empty;
 
             if(next.kind != .identifier) {
                 log.emit(.err, "C04", next, "Expected identifier after ':' in class declaration", null);
@@ -539,7 +636,7 @@ fn parseClass(allocator: Allocator, tokenizer: *lexer.Tokenizer, next: *lexer.To
             return top;
         },
         TokenKind.leftBrace => {
-            heapClass.members = .empty;
+            heapClass.members = std.ArrayList(ast.MemberAst).empty;
         },
         else => {
             log.emit(.err, "C03", next, "Expected ':', '{' or a ';' after class name", null);

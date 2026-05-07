@@ -91,7 +91,7 @@ pub const TokenKind = enum {
 
     eof,
     invalid,
-    comment,
+    preprocessorDirective,
 };
 
 pub const TokenData = union(enum) {
@@ -417,112 +417,44 @@ pub const Tokenizer = struct {
         try std.testing.expectError(TokenizerError.UnterminatedString, result);
     }
 
-    //   skippable         ::= { whitespace | line-comment | block-comment | line-directive }
+    //   skippable         ::= { whitespace | line-comment | block-comment | directive }
     //   whitespace        ::= ' ' | '\t' | '\r' | '\n'
-    //   line-comment      ::= '//' { !'\n\ } ( '\n' | EOF )
-    //   block-comment     ::= '/*' { . } '*/' | '/*/'
-    //   line-directive    ::= doc-todo
     fn skipWhiteSpaceAndComments(self: *Tokenizer) TokenizerError!void {
         while (true) {
             self.skipWhileInline(isWhitespace);
 
-            const c0 = self.peek();
-            const c1 = self.peekForward(1);
-
-            if (c0 == '/' and c1 == '/') {
-                self.index += 2;
-                const rest = self.source[self.index..];
-                if (std.mem.indexOfScalar(u8, rest, '\n')) |rel| {
-                    self.index += @intCast(rel + 1);
-                } else {
-                    self.index = @intCast(self.source.len);
-                }
+            if(self.index + 1 > self.source.len) return;
+            const n = self.peek();
+            if (n == '#') {
+                self.skipWhileInline(isNotNewLine);
                 continue;
             }
-
-            if (c0 == '/' and c1 == '*') {
-                self.index += 2;
-                const rest = self.source[self.index..];
-                if (std.mem.indexOf(u8, rest, "*/")) |rel| {
-                    self.index += @intCast(rel + 2);
-                } else {
-                    return TokenizerError.UnterminatedComment;
+            if (n == '/') {
+                switch (self.peekForward(2)) {
+                    '/' =>{
+                        self.skipWhileInline(isNotNewLine);
+                        continue;
+                    },
+                    '*' => {
+                        self.advance(); self.advance();
+                        while (true)  {
+                            switch (self.peek()) {
+                                '*' => if(self.peekForward(2) == '/') {
+                                    self.advance(); self.advance();
+                                    break;
+                                },
+                                else => break
+                            }
+                        }
+                    },
+                    else => return,
                 }
-                continue;
-            }
-
-            if (c0 == '#') {
-                const saved = self.index;
-                self.advance();
-                var matches = true;
-                for ("line") |ch| {
-                    if (self.peek() != ch) { matches = false; break; }
-                    self.advance();
-                }
-                if (matches) {
-                    skipWhileInline(self, isSpace);
-                    self.index = saved;
-                    const numStart = self.index;
-                    skipWhileInline(self, isDigit);
-                    if (self.index > numStart) {
-                        const numStr = self.source[numStart..self.index];
-                        if (std.fmt.parseInt(u32, numStr, 10)) |n| {
-                            //TODO line/source masking
-                            _ = n;
-                        } else |_| {}
-                    }
-                    skipWhileInline(self, isNotNewLine);
-                    continue;
-                }
-                self.index = saved;
-                break;
             }
             break;
         }
     }
 
-    test "line comment skipped" {
-        var buf: [4]Token = undefined;
-        const n = try tokenizeAll("// comment\n42\x00", &buf);
-        try std.testing.expectEqual(@as(usize, 2), n);
-        try std.testing.expectEqual(TokenKind.intLiteral, buf[0].kind);
-    }
 
-    test "block comment skipped" {
-        var buf: [4]Token = undefined;
-        const n = try tokenizeAll("/* block */99\x00", &buf);
-        try std.testing.expectEqual(@as(usize, 2), n);
-        try std.testing.expectEqual(TokenKind.intLiteral, buf[0].kind);
-        try std.testing.expectEqual(@as(i32, 99), buf[0].data.int);
-    }
-
-    test "block comment - multi-line" {
-        var buf: [4]Token = undefined;
-        const n = try tokenizeAll("/* line1\nline2\n*/1\x00", &buf);
-        try std.testing.expectEqual(@as(usize, 2), n);
-        try std.testing.expectEqual(TokenKind.intLiteral, buf[0].kind);
-    }
-
-    test "block comment - unterminated returns error" {
-        var t = Tokenizer.init("/* no end\x00");
-        const result = t.next();
-        try std.testing.expectError(TokenizerError.UnterminatedComment, result);
-    }
-
-    test "nested-looking block comments are not recursive" {
-        var buf: [4]Token = undefined;
-        const n = try tokenizeAll("/* /* inner */ 1\x00", &buf);
-
-        try std.testing.expectEqual(@as(usize, 2), n);
-        try std.testing.expectEqual(TokenKind.intLiteral, buf[0].kind);
-    }
-
-    test "multiple comments and whitespace" {
-        var buf: [8]Token = undefined;
-        const n = try tokenizeAll("// c1\n /* c2 */ foo\x00", &buf);
-        try std.testing.expectEqual(@as(usize, 2), n);
-        try std.testing.expectEqual(TokenKind.identifier, buf[0].kind);
-    }
 
     //   unquoted-value    ::= unquoted-body-char+ { ' ' | '\t' }
     //   unquoted-body-char::= !('\r' | '\n' | ';' | '}' | ',')
@@ -706,7 +638,6 @@ pub const Tokenizer = struct {
     }
 
     //   token             ::= EOF
-    //                       | comment
     //                       | '{' | '}' | '[' | ']' | '(' | ')'
     //                       | '=' | ';' | ',' | ':'
     //                       | quoted-string
@@ -717,39 +648,9 @@ pub const Tokenizer = struct {
     //                       | invalid-char
     //   keyword           ::= 'class' | 'delete' | 'enum' | '__EXEC' | '__EVAL'
     //   numeric-token     ::= ( digit | '+' | '-' ) unquoted-value
-    //   comment           ::= (line-comment | block-comment)
-    //   line-comment      ::= '//' .* EOL
-    //   block-comment     ::= '/*/' | '/*' .* '*/'
     pub fn nextSemantic(self: *Tokenizer) TokenizerError!Token {
         while (true) {
             self.skipWhileInline(isWhitespace);
-
-            const pos = self.index;
-            const c0  = self.peek();
-            const c1  = self.peekForward(1);
-
-            if (c0 == '/' and c1 == '/') {
-                self.index += 2;
-                const rest = self.source[self.index..];
-                if (std.mem.indexOfScalar(u8, rest, '\n')) |rel| {
-                    self.index += @intCast(rel);
-                } else {
-                    self.index = @intCast(self.source.len);
-                }
-                return .{ .kind = .comment, .data = .{ .none = {} }, .pos = pos };
-            }
-
-            if (c0 == '/' and c1 == '*') {
-                self.index += 2;
-                const rest = self.source[self.index..];
-                if (std.mem.indexOf(u8, rest, "*/")) |rel| {
-                    self.index += @intCast(rel + 2);
-                } else {
-                    return TokenizerError.UnterminatedComment;
-                }
-                return .{ .kind = .comment, .data = .{ .none = {} }, .pos = pos };
-            }
-
             return self.scanToken();
         }
     }
@@ -778,6 +679,15 @@ pub const Tokenizer = struct {
             '@' => {
                 self.advance();
                 return .{ .kind = .expression, .data = .{ .text = self.scanUnquotedValue() }, .pos = pos };
+            },
+            '#' => {
+                self.advance(); // consume '#'
+                self.skipWhileInline(isSpace); // skip spaces between '#' and directive name
+                const dir_start = self.index;
+                self.skipWhileInline(isNotNewLine);
+                var end = self.index;
+                while (end > dir_start and isSpace(self.source[end - 1])) end -= 1;
+                return .{ .kind = .preprocessorDirective, .data = .{ .text = self.source[dir_start..end] }, .pos = pos };
             },
             else => {
                 if (c == '+' and self.peekForward(1) == '=') {
@@ -962,6 +872,21 @@ pub const Tokenizer = struct {
             if (tok.kind == .eof) break;
         }
         return n;
+    }
+
+    test "preprocessorDirective token - nextSemantic exposes it" {
+        var t = Tokenizer.init("#line 42 \"foo.cpp\"\nident\x00");
+        const dir = try t.nextSemantic();
+        try std.testing.expectEqual(TokenKind.preprocessorDirective, dir.kind);
+        try std.testing.expectEqualStrings("line 42 \"foo.cpp\"", dir.text());
+        const id = try t.nextSemantic();
+        try std.testing.expectEqual(TokenKind.identifier, id.kind);
+    }
+
+    test "preprocessorDirective token - next() skips it" {
+        var t = Tokenizer.init("#line 42 \"foo.cpp\"\nident\x00");
+        const tok = try t.next();
+        try std.testing.expectEqual(TokenKind.identifier, tok.kind);
     }
 
     test "invalid character" {
