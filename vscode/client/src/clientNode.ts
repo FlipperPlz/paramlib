@@ -94,6 +94,7 @@ export function activate(context: vscode.ExtensionContext): void {
         documentSelector: [
             { language: 'paramlib' },
             { pattern: '**/config.cpp' },
+            { pattern: '**/paramlib.cpp' },
             { pattern: '**/*.rvmat' },
         ],
         synchronize: {

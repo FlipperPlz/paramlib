@@ -47,6 +47,7 @@ export interface PrecomputedParserHint {
 interface ParserInstance {
     parse: (input: string) => string | null;
     lsp: Map<string, (paramsJson: string) => string | null>;
+    deinit?: () => void;
 }
 
 interface OpenDocument {
@@ -92,6 +93,19 @@ export class ParserManager {
         for (const [uri, doc] of this.openDocuments) {
             this.processDocument(uri, doc.params, doc.text);
         }
+    }
+
+    public reset(): void {
+        for (const [source, inst] of this.instances) {
+            if (inst.deinit) {
+                console.error(`[parser-wasm] deinit: ${source}`);
+                inst.deinit();
+            }
+        }
+        this.instances.clear();
+        this.documentHints.clear();
+        this.wasmDiagCache.clear();
+        this.lspIndex.clear();
     }
 
     private resolveWasmPath(source: string): string {
@@ -170,14 +184,20 @@ export class ParserManager {
                     const exportedNames: string[] = [];
                     for (const [name, val] of Object.entries(exp)) {
                         if (WASM_RESERVED.has(name) || typeof val !== 'function') continue;
+                        if (name === 'deinit') continue;   // stored separately below
                         lsp.set(name, (json) => callWasm(val as CallableFunction, json));
                         exportedNames.push(name);
                     }
                     console.error(`[parser-wasm] ${rule.wasm_source} exports: ${exportedNames.join(', ')}`);
 
+                    const rawDeinit = exp.deinit as (() => void) | undefined;
                     this.instances.set(rule.wasm_source, {
                         parse: (input) => callWasm(parseFn, input),
                         lsp,
+                        deinit: typeof rawDeinit === 'function' ? () => {
+                            try { rawDeinit(); }
+                            catch (e) { console.error(`[parser-wasm] ${rule.wasm_source}: deinit error:`, e); }
+                        } : undefined,
                     });
                 } catch (e) {
                     console.error(`[parser-wasm] FAILED to load ${rule.wasm_source}:`, e);

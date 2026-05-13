@@ -90,6 +90,27 @@ test "parse: string without escapes (literal content preserved)" {
 
 }
 
+test "parse: with comments" {
+    const src = z(
+        \\/* Block comment */
+        \\class CfgSchemas {
+        \\    // Line comment
+        \\    value = 42;
+        \\};
+    );
+    var errored: bool = false;
+    const lineTable = try lines.LineTable.build(std.testing.allocator, src);
+    const log = logger.DiagType.stdErr(std.testing.io, &lineTable, src, "test.cpp", true);
+    var result = try parseSource(std.testing.allocator, src, &errored, log);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!errored);
+    const members = result.members.?.items;
+    try std.testing.expectEqual(@as(usize, 1), members.len);
+    const cls = members[0].class;
+    try std.testing.expectEqualStrings("CfgSchemas", cls.name.?);
+}
+
 test "parse: with preprocessor macro" {
     const allocator = std.testing.allocator;
     const src = z(
@@ -518,8 +539,7 @@ pub fn parseSource(allocator: Allocator, data: [:0]const u8, errored: *bool, log
                 while (next.kind == .semicolon) next = try l.next();
 
                 if(topAst.parent) |parent| {
-                    try parent.members.?.append(allocator, .{ .class = topAst.* });
-                    allocator.destroy(topAst);
+                    try parent.members.?.append(allocator, .{ .class = topAst });
                     topAst = parent;
                 }
                 continue;
@@ -628,8 +648,7 @@ fn parseClass(allocator: Allocator, tokenizer: *lexer.Tokenizer, next: *lexer.To
             }
         },
         TokenKind.semicolon => {
-            defer allocator.destroy(heapClass);
-            top.members.?.append(allocator, .{ .class = heapClass.* }) catch {
+            top.members.?.append(allocator, .{ .class = heapClass }) catch {
                 log.emit(.err, "C05", next, "Failed to add external class declaration to AST stack", null);
                 return error.ParseError;
             };

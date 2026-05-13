@@ -91,6 +91,7 @@ pub const TokenKind = enum {
 
     eof,
     invalid,
+    comment,
     preprocessorDirective,
 };
 
@@ -423,31 +424,31 @@ pub const Tokenizer = struct {
         while (true) {
             self.skipWhileInline(isWhitespace);
 
-            if(self.index + 1 > self.source.len) return;
+            if (self.index >= self.source.len) return;
             const n = self.peek();
             if (n == '#') {
                 self.skipWhileInline(isNotNewLine);
                 continue;
             }
             if (n == '/') {
-                switch (self.peekForward(2)) {
-                    '/' =>{
-                        self.skipWhileInline(isNotNewLine);
-                        continue;
-                    },
-                    '*' => {
-                        self.advance(); self.advance();
-                        while (true)  {
-                            switch (self.peek()) {
-                                '*' => if(self.peekForward(2) == '/') {
-                                    self.advance(); self.advance();
-                                    break;
-                                },
-                                else => break
-                            }
+                const next_char = self.peekForward(1);
+                if (next_char == '/') {
+                    self.skipWhileInline(isNotNewLine);
+                    continue;
+                } else if (next_char == '*') {
+                    self.advance();
+                    self.advance();
+                    while (true) {
+                        const c = self.peek();
+                        if (c == 0) return error.UnterminatedComment;
+                        if (c == '*' and self.peekForward(1) == '/') {
+                            self.advance();
+                            self.advance();
+                            break;
                         }
-                    },
-                    else => return,
+                        self.advance();
+                    }
+                    continue;
                 }
             }
             break;
@@ -805,7 +806,7 @@ pub const Tokenizer = struct {
     test "bench - tokenizer throughput" {
         const BENCH_ITERS: u64 = 100;
 
-        const BENCH_SRC: *const [210143:0]u8 = @embedFile("tests/game.cpp");
+        const BENCH_SRC = @embedFile("tests/game.cpp");
         var totalTokens: usize = 0;
 
         const start = std.Io.Timestamp.now(std.testing.io, .real).nanoseconds;

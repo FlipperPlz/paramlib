@@ -12,6 +12,8 @@ export fn wasm_free(ptr: [*]u8, len: usize) void {
     alloc.free(ptr[0..len]);
 }
 
+export fn deinit() void {}
+
 export fn parse(in_ptr: [*]const u8, in_len: usize, out_ptr: [*]u8, out_max: usize) i32 {
     const input = std.mem.trim(u8, in_ptr[0..in_len], " \t\r\n");
     var rgba: [4]u8 = .{ 0, 0, 0, 255 };
@@ -210,7 +212,6 @@ fn parseRgbaToU8(input: []const u8, out: *[4]u8) bool {
             out[i] = @intFromFloat(@max(0, @min(255, @round(vals[i] * 255.0))));
         }
     }
-    //log_fmt("result: {d},{d},{d},{d}", .{ out[0], out[1], out[2], out[3] });
     return true;
 }
 

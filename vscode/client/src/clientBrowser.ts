@@ -113,6 +113,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         documentSelector: [
             { language: 'paramlib' },
             { pattern: '**/config.cpp' },
+            { pattern: '**/paramlib.cpp' },
             { pattern: '**/*.rvmat' },
         ],
         synchronize: {},

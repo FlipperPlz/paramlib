@@ -91,6 +91,11 @@ function clientSend(ptr: number, len: number): void {
                 }
             }
 
+            if (msg.id === 'schemaReset') {
+                log('schemaReset response received (internal, suppressed)');
+                return;
+            }
+
             if (msg.id === 'getRules') {
                 log('getRules response: %d rules', (msg.result || []).length);
                 parserManager.updateRules(msg.result || []).then(() => {
@@ -181,13 +186,30 @@ async function main(): Promise<void> {
 
     const schemaFile = process.env['PARAMLIB_SCHEMA_FILE'];
     log('PARAMLIB_SCHEMA_FILE=%s', schemaFile);
-    if (schemaFile) {
+
+    // Auto-detect paramlib.cpp in the working directory when no explicit file is set.
+    const autoSchemaPath = path.join(process.cwd(), 'paramlib.cpp');
+    const resolvedSchemaFile: string | null =
+        schemaFile
+            ? schemaFile
+            : fs.existsSync(autoSchemaPath)
+                ? autoSchemaPath
+                : null;
+    log('resolvedSchemaFile=%s', resolvedSchemaFile);
+
+    if (resolvedSchemaFile) {
         const sendSchema = (): void => {
             try {
-                const bytes = fs.readFileSync(schemaFile);
+                const bytes = fs.readFileSync(resolvedSchemaFile);
                 wasmSendSchema(wasm, bytes);
+
+                parserManager.reset();
+
+                sendRpcToWasm({ jsonrpc: '2.0', id: 'schemaReset', method: '$/paramlib/resetSchema' });
+
                 sendRpcToWasm({ jsonrpc: '2.0', id: 'getRules', method: '$/paramlib/getParserRules' });
-                log('schema sent, getRules requested');
+
+                log('schema sent, reset + getRules requested (file=%s)', resolvedSchemaFile);
             } catch (e) {
                 log('Failed to load schema file:', e);
                 console.error('[paramlib] Failed to load schema file:', e);
@@ -195,7 +217,7 @@ async function main(): Promise<void> {
         };
         sendSchema();
         try {
-            fs.watch(schemaFile, () => { sendSchema(); });
+            fs.watch(resolvedSchemaFile, () => { sendSchema(); });
         } catch (e) {
             console.error('[paramlib] fs.watch failed for schema file:', e);
         }

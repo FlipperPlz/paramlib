@@ -97,6 +97,22 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_unit_tests.step);
 
+    const lsp_tests = b.addTest(.{
+        .name = "lsp-tests",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("lsp/lsp.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "paramlib", .module = mod },
+                .{ .name = "lsp", .module = lsp_mod }
+            },
+        }),
+    });
+    const run_lsp_tests = b.addRunArtifact(lsp_tests);
+    const lsp_test_step = b.step("test-lsp", "Run LSP tests");
+    lsp_test_step.dependOn(&run_lsp_tests.step);
+
     const lsp_run = b.addRunArtifact(lsp_exe);
     const lsp_run_step = b.step("lsp", "Run the LSP server");
     lsp_run_step.dependOn(&lsp_run.step);
@@ -168,7 +184,7 @@ pub fn build(b: *std.Build) void {
         vscode_compile_ts.step.dependOn(&vscode_install.step);
         vscode_compile_ts.setCwd(b.path(vscode_dir));
 
-        const vscode_mkdir = b.addSystemCommand(&.{ "mkdir", "-p", "./out" });
+        const vscode_mkdir = b.addSystemCommand(&.{ "bun", "-e", "import fs from 'fs'; fs.mkdirSync('./out', { recursive: true })" });
         vscode_mkdir.step.dependOn(&vscode_compile_ts.step);
         vscode_mkdir.setCwd(b.path(vscode_dir));
 

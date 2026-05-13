@@ -76,7 +76,6 @@ pub const PreprocessedResult = struct {
         }
 
         if (best_override) |ov| {
-            // Find how many newlines are between the override point and current point in preprocessed source
             var line_delta: u32 = 0;
             var i = ov.pre_offset;
             while (i < pre_offset and i < self.source.len) : (i += 1) {

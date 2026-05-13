@@ -1,14 +1,17 @@
 const std = @import("std");
 const clazz = @import("../slabs/class.zig");
 pub const MemberAst = union(enum) {
-    class: ClassAst,
+    class: *ClassAst,
     param: ParameterAst,
     delete: ?[]const u8,
     enumerable: EnumerableAst,
 
     pub fn deinit(self: *MemberAst, allocator: std.mem.Allocator) void {
         switch (self.*) {
-            .class => |*c| c.deinit(allocator),
+            .class => |c| {
+                c.deinit(allocator);
+                allocator.destroy(c);
+            },
             .param => |*p| p.deinit(allocator),
             .enumerable => |*e| e.deinit(allocator),
             .delete => {},
@@ -47,7 +50,7 @@ pub const ClassAst = struct {
             for (members.items) |*v| {
                 //todo visibility testing and normalization
                 if (v.* == .class and std.mem.eql(u8, v.class.name.?, name)) {
-                    return &v.class;
+                    return v.class;
                 }
             }
         }

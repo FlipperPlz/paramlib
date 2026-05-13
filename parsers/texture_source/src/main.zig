@@ -20,6 +20,8 @@ export fn wasm_free(ptr: [*]u8, len: usize) void {
     alloc.free(ptr[0..len]);
 }
 
+export fn deinit() void {}
+
 const ProcTextureToken = enum {
     Comma,
     OpenParen,

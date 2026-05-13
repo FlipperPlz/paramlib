@@ -89,6 +89,7 @@ export fn serverSend(ptr: [*]const u8, len: u32) u32 {
 export fn schemaUpdate(content_ptr: [*]const u8, content_len: u32, class_ptr: [*]const u8, class_len: u32) void {
     const class_name: ?[]const u8 = if (class_len > 0) class_ptr[0..class_len] else null;
     schema.updateFromContent(allocator, content_ptr[0..content_len], class_name);
+    schema.extractFromDocuments(allocator, &documents);
 }
 
 export fn deinit() void {

@@ -80,6 +80,7 @@
   },
   "activationEvents": [
     "workspaceContains:config.cpp",
+    "workspaceContains:paramlib.cpp",
     "workspaceContains:*.rvmat",
     "onLanguage:paramlib"
   ],
@@ -95,6 +96,9 @@
       "extensions": [
         ".cpp",
         ".rvmat"
+      ],
+      "filenames": [
+        "paramlib.cpp"
       ],
       "configuration": "./language-configuration.json"
     }
