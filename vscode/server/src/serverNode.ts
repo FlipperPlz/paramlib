@@ -1,5 +1,6 @@
 import * as fs   from 'fs';
 import * as path from 'path';
+import { fileURLToPath, pathToFileURL } from 'url';
 
 import { ParamlibWasm, wasmSendFrame, wasmSendSchema } from './common';
 import { ParserManager } from './parser';
@@ -167,6 +168,66 @@ function sendRpcToWasm(msg: object): void {
     sendToWasm(Buffer.from(header + body));
 }
 
+const schemaWatches = new Map<string, fs.FSWatcher>();
+const knownSchemas   = new Set<string>();
+
+function findSchemas(filePath: string): string[] {
+    const schemas: string[] = [];
+    let currentDir = path.dirname(filePath);
+    while (true) {
+        const schemaPath = path.join(currentDir, 'paramlib.cpp');
+        if (fs.existsSync(schemaPath)) {
+            schemas.push(schemaPath);
+        }
+        const parentDir = path.dirname(currentDir);
+        if (parentDir === currentDir) break;
+        currentDir = parentDir;
+    }
+    return schemas.reverse();
+}
+
+function ensureSchemaLoaded(uri: string): void {
+    if (!uri.startsWith('file://')) return;
+    try {
+        const filePath = fileURLToPath(uri);
+        const schemas = findSchemas(filePath);
+        for (const s of schemas) {
+            if (!knownSchemas.has(s)) {
+                loadSchema(s);
+            }
+        }
+    } catch (e) {
+        log('ensureSchemaLoaded failed for %s: %s', uri, e);
+    }
+}
+
+function loadSchema(schemaPath: string): void {
+    try {
+        log('loading schema from %s', schemaPath);
+        const bytes = fs.readFileSync(schemaPath);
+        const schemaUri = pathToFileURL(schemaPath).toString();
+        wasmSendSchema(wasm, schemaUri, bytes);
+
+        knownSchemas.add(schemaPath);
+
+        if (!schemaWatches.has(schemaPath)) {
+            try {
+                const watch = fs.watch(schemaPath, () => {
+                    log('schema changed: %s', schemaPath);
+                    loadSchema(schemaPath);
+                });
+                schemaWatches.set(schemaPath, watch);
+            } catch (e) {
+                log('failed to watch schema %s: %s', schemaPath, e);
+            }
+        }
+        
+        sendRpcToWasm({ jsonrpc: '2.0', id: 'getRules', method: '$/paramlib/getParserRules' });
+    } catch (e) {
+        log('failed to load schema %s: %s', schemaPath, e);
+    }
+}
+
 async function main(): Promise<void> {
     const wasmPath = path.join(__dirname, 'paramlib-lsp.wasm');
     log('loading wasm from %s', wasmPath);
@@ -184,43 +245,9 @@ async function main(): Promise<void> {
     wasm = instance.exports as unknown as ParamlibWasm;
     log('wasm loaded');
 
-    const schemaFile = process.env['PARAMLIB_SCHEMA_FILE'];
-    log('PARAMLIB_SCHEMA_FILE=%s', schemaFile);
-
-    // Auto-detect paramlib.cpp in the working directory when no explicit file is set.
-    const autoSchemaPath = path.join(process.cwd(), 'paramlib.cpp');
-    const resolvedSchemaFile: string | null =
-        schemaFile
-            ? schemaFile
-            : fs.existsSync(autoSchemaPath)
-                ? autoSchemaPath
-                : null;
-    log('resolvedSchemaFile=%s', resolvedSchemaFile);
-
-    if (resolvedSchemaFile) {
-        const sendSchema = (): void => {
-            try {
-                const bytes = fs.readFileSync(resolvedSchemaFile);
-                wasmSendSchema(wasm, bytes);
-
-                parserManager.reset();
-
-                sendRpcToWasm({ jsonrpc: '2.0', id: 'schemaReset', method: '$/paramlib/resetSchema' });
-
-                sendRpcToWasm({ jsonrpc: '2.0', id: 'getRules', method: '$/paramlib/getParserRules' });
-
-                log('schema sent, reset + getRules requested (file=%s)', resolvedSchemaFile);
-            } catch (e) {
-                log('Failed to load schema file:', e);
-                console.error('[paramlib] Failed to load schema file:', e);
-            }
-        };
-        sendSchema();
-        try {
-            fs.watch(resolvedSchemaFile, () => { sendSchema(); });
-        } catch (e) {
-            console.error('[paramlib] fs.watch failed for schema file:', e);
-        }
+    const envSchemaFile = process.env['PARAMLIB_SCHEMA_FILE'];
+    if (envSchemaFile && fs.existsSync(envSchemaFile)) {
+        loadSchema(envSchemaFile);
     }
 
     let buf = Buffer.alloc(0);
@@ -245,8 +272,25 @@ async function main(): Promise<void> {
             try {
                 const body = JSON.parse(buf.slice(headerEnd + 4, frameEnd).toString('utf8'));
 
+                if (body.method === '$/paramlib/schemaUpdate' && body.params?.content != null) {
+                    const className = body.params.className;
+                    const uri       = body.params.uri || 'builtin:dayz';
+                    const encoded   = Buffer.from(body.params.content, 'utf8');
+
+                    if (uri.startsWith('file://')) {
+                        try {
+                            knownSchemas.add(fileURLToPath(uri));
+                        } catch (e) { log('failed to add to knownSchemas: %s', e); }
+                    }
+
+                    wasmSendSchema(wasm, uri, encoded, className);
+                    sendRpcToWasm({ jsonrpc: '2.0', id: 'getRules', method: '$/paramlib/getParserRules' });
+                    continue;
+                }
+
                 if (body.id !== undefined && body.method) {
                     const uri = body.params?.textDocument?.uri as string | undefined;
+                    if (uri) ensureSchemaLoaded(uri);
                     const wasmResults = parserManager.handleLsp(body.method, body.params, uri);
                     if (body.method === 'textDocument/diagnostic') {
                         log('textDocument/diagnostic request: uri=%s wasmResults=%j hints=%j',
@@ -266,6 +310,7 @@ async function main(): Promise<void> {
                     const uri  = body.params.textDocument.uri as string;
                     const text = body.params.textDocument.text as string;
                     log('didOpen uri=%s len=%d', uri, text.length);
+                    ensureSchemaLoaded(uri);
                     documentTexts.set(uri, text);
                     parserManager.openDocument(uri, text);
                     void parserManager.processDocument(uri, [], text);
@@ -275,6 +320,7 @@ async function main(): Promise<void> {
                         if (change.text != null) {
                             const uri  = body.params.textDocument.uri as string;
                             const text = change.text as string;
+                            ensureSchemaLoaded(uri);
                             documentTexts.set(uri, text);
                             parserManager.openDocument(uri, text);
                             void parserManager.processDocument(uri, [], text);

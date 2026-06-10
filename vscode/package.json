@@ -47,7 +47,7 @@
         "paramlib.schemaClass": {
           "type": "string",
           "default": "",
-          "markdownDescription": "Class inside `CfgSchemas` to activate. Leave empty to use the last class in the file. Run **ParamLib: Select Schema Class** to pick from the available list."
+          "markdownDescription": "Class inside `CfgSchemas` to activate. Leave empty to use the last class in the file (most specific project class). Run **ParamLib: Select Schema Class** to pick from the available list."
         },
         "paramlib.customSchemaPath": {
           "type": "string",
@@ -65,6 +65,11 @@
       {
         "command": "paramlib.selectSchemaClass",
         "title": "ParamLib: Select Schema Class",
+        "category": "ParamLib"
+      },
+      {
+        "command": "paramlib.debugInfo",
+        "title": "ParamLib: Log Debug Info to Console",
         "category": "ParamLib"
       }
     ]

@@ -1,0 +1,10 @@
+class CfgMaterials
+{
+    class Water
+    {
+        PixelShaderID="Water";
+        VertexShaderID="Water";
+        ambient[]={0.016, 0.0264, 0.04, 0.4};
+        texture="#(rgb,8,8,3)color(0.5,0.5,1.0,1)";
+    };
+};

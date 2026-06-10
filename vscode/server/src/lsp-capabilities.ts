@@ -22,7 +22,6 @@ function semTokensRange() {
         full: false, range: true,
     };
 }
-
 const METHOD_TO_CAP: Record<string, CapabilitySpec[]> = {
     'textDocument/hover':                  [{ capKey: 'hoverProvider', value: true }],
     'textDocument_hover':                  [{ capKey: 'hoverProvider', value: true }],

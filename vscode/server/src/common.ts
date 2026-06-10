@@ -3,7 +3,7 @@ export interface ParamlibWasm {
     serverSend(ptr: number, len: number): void;
     alloc(len: number): number;
     free(ptr: number, len: number): void;
-    schemaUpdate(contentPtr: number, contentLen: number, classPtr: number, classLen: number): void;
+    schemaUpdate(uriPtr: number, uriLen: number, contentPtr: number, contentLen: number, classPtr: number, classLen: number): void;
 }
 
 export function wasmSendFrame(wasm: ParamlibWasm, frame: Uint8Array): boolean {
@@ -15,9 +15,17 @@ export function wasmSendFrame(wasm: ParamlibWasm, frame: Uint8Array): boolean {
     return true;
 }
 
-export function wasmSendSchema(wasm: ParamlibWasm, jsonUtf8: Uint8Array, className?: string): void {
+export function wasmSendSchema(wasm: ParamlibWasm, uri: string, jsonUtf8: Uint8Array, className?: string): void {
+    const uriBytes = new TextEncoder().encode(uri);
+    const uriPtr = wasm.alloc(uriBytes.length);
+    if (uriPtr === 0) return;
+    new Uint8Array(wasm.memory.buffer, uriPtr, uriBytes.length).set(uriBytes);
+
     const contentPtr = wasm.alloc(jsonUtf8.length);
-    if (contentPtr === 0) return;
+    if (contentPtr === 0) {
+        wasm.free(uriPtr, uriBytes.length);
+        return;
+    }
     new Uint8Array(wasm.memory.buffer, contentPtr, jsonUtf8.length).set(jsonUtf8);
 
     const classBytes = className ? new TextEncoder().encode(className) : new Uint8Array(0);
@@ -29,7 +37,9 @@ export function wasmSendSchema(wasm: ParamlibWasm, jsonUtf8: Uint8Array, classNa
         }
     }
 
-    wasm.schemaUpdate(contentPtr, jsonUtf8.length, classPtr, classBytes.length);
+    wasm.schemaUpdate(uriPtr, uriBytes.length, contentPtr, jsonUtf8.length, classPtr, classBytes.length);
+    
+    wasm.free(uriPtr, uriBytes.length);
     wasm.free(contentPtr, jsonUtf8.length);
     if (classPtr !== 0) wasm.free(classPtr, classBytes.length);
 }

@@ -3,6 +3,15 @@ import {
     LanguageClient,
     LanguageClientOptions,
 } from 'vscode-languageclient/browser';
+import {
+    pickSchemaFile as pickSchemaFileCommon,
+    pickSchemaClass as pickSchemaClassCommon,
+    logDebugInfo as logDebugInfoCommon,
+    getEffectiveSchema,
+    getEffectiveSchemaClass,
+    registerConfigChangeListener,
+    ensureLocalSchema
+} from './common';
 
 declare const __DEV_MODE__: boolean;
 declare const __SCHEMAS_URL__: string;
@@ -10,22 +19,9 @@ declare const __SCHEMAS_URL__: string;
 let client: LanguageClient;
 let ctx: vscode.ExtensionContext;
 
-let lastSchemaClasses: string[] = [];
+let currentSchema: string | undefined;
+let currentClass: string | undefined;
 
-async function pickSchemaClass(): Promise<void> {
-    if (lastSchemaClasses.length === 0) {
-        void vscode.window.showInformationMessage('No schema loaded yet - schema class list is empty.');
-        return;
-    }
-    const picked = await vscode.window.showQuickPick(lastSchemaClasses, {
-        title: 'ParamLib: Select Schema Class',
-        placeHolder: 'Choose a CfgSchemas class to activate',
-    });
-    if (picked === undefined) return;
-    await vscode.workspace.getConfiguration('paramlib').update(
-        'schemaClass', picked, vscode.ConfigurationTarget.Workspace,
-    );
-}
 
 async function listBuiltinSchemas(): Promise<string[]> {
     const schemasUri = vscode.Uri.joinPath(ctx.extensionUri, 'schemas');
@@ -48,19 +44,22 @@ async function listBuiltinSchemas(): Promise<string[]> {
     } catch { return []; }
 }
 
-async function resolveAndSendSchema(value: string, className?: string): Promise<void> {
-    console.error(`[paramlib] resolveAndSendSchema: value=${value} className=${className}`);
+async function resolveAndSendSchema(value: string, className?: string, content?: string): Promise<void> {
+    if (content === undefined && value === currentSchema && className === currentClass) return;
     try {
         let text: string;
+        let uri: string;
         if (value.startsWith('builtin:')) {
             const name = value.slice(8);
-            if (__DEV_MODE__) {
-                const uri = vscode.Uri.joinPath(ctx.extensionUri, 'schemas', `${name}.cpp`);
-                text = new TextDecoder().decode(await vscode.workspace.fs.readFile(uri));
+            const vUri = vscode.Uri.joinPath(ctx.extensionUri, 'schemas', `${name}.cpp`);
+            uri = vUri.toString();
+            if (content !== undefined) {
+                text = content;
+            } else if (__DEV_MODE__) {
+                text = new TextDecoder().decode(await vscode.workspace.fs.readFile(vUri));
             } else {
                 try {
-                    const uri = vscode.Uri.joinPath(ctx.extensionUri, 'schemas', `${name}.cpp`);
-                    text = new TextDecoder().decode(await vscode.workspace.fs.readFile(uri));
+                    text = new TextDecoder().decode(await vscode.workspace.fs.readFile(vUri));
                 } catch {
                     const res = await fetch(`${__SCHEMAS_URL__}${name}.cpp`);
                     if (!res.ok) throw new Error(`CDN fetch failed: HTTP ${res.status}`);
@@ -68,31 +67,31 @@ async function resolveAndSendSchema(value: string, className?: string): Promise<
                 }
             }
         } else if (value.startsWith('http://') || value.startsWith('https://')) {
-            const res = await fetch(value);
-            if (!res.ok) throw new Error(`HTTP ${res.status}`);
-            text = await res.text();
+            uri = value;
+            if (content !== undefined) {
+                text = content;
+            } else {
+                const res = await fetch(value);
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                text = await res.text();
+            }
         } else {
-            text = new TextDecoder().decode(
-                await vscode.workspace.fs.readFile(vscode.Uri.file(value)),
-            );
+            const vUri = value.includes('://') ? vscode.Uri.parse(value) : vscode.Uri.file(value);
+            uri = vUri.toString();
+            if (content !== undefined) {
+                text = content;
+            } else {
+                text = new TextDecoder().decode(
+                    await vscode.workspace.fs.readFile(vUri),
+                );
+            }
         }
-        console.error(`[paramlib] sending schemaUpdate: ${text.length} chars`);
-        void client.sendNotification('$/paramlib/schemaUpdate', { content: text, className });
+        currentSchema = value;
+        currentClass = className;
+        void client.sendNotification('$/paramlib/schemaUpdate', { uri, content: text, className });
     } catch (e) { console.error('[paramlib] resolveAndSendSchema failed:', e); }
 }
 
-function getEffectiveSchemaClass(): string | undefined {
-    const cfg = vscode.workspace.getConfiguration('paramlib');
-    const cls: string = cfg.get('schemaClass', '');
-    return cls.length > 0 ? cls : undefined;
-}
-
-function getEffectiveSchema(): string {
-    const cfg = vscode.workspace.getConfiguration('paramlib');
-    const schemaFile: string = cfg.get('schemaFile', 'builtin:dayz');
-    if (schemaFile === 'custom') return cfg.get('customSchemaPath', '');
-    return schemaFile;
-}
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
     ctx = context;
@@ -129,25 +128,62 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     await client.start();
 
     const sf = getEffectiveSchema();
-    if (sf) await resolveAndSendSchema(sf, getEffectiveSchemaClass());
+    if (sf) {
+        if (sf !== 'builtin:dayz') {
+            await resolveAndSendSchema('builtin:dayz');
+        }
+        await resolveAndSendSchema(sf, getEffectiveSchemaClass());
+    }
 
-    client.sendRequest('$/paramlib/listSchemaClasses', {}).then(
-        (classes) => { lastSchemaClasses = (classes as string[]) ?? []; },
-    ).catch(() => { });
+    if (vscode.window.activeTextEditor) {
+        await ensureLocalSchema(vscode.window.activeTextEditor.document.uri, client, currentSchema, currentClass, resolveAndSendSchema);
+    }
 
     context.subscriptions.push(
-        vscode.workspace.onDidChangeConfiguration(async e => {
-            if (e.affectsConfiguration('paramlib.schemaFile') ||
-                e.affectsConfiguration('paramlib.customSchemaPath') ||
-                e.affectsConfiguration('paramlib.schemaClass')) {
-                const updated = getEffectiveSchema();
-                if (updated) await resolveAndSendSchema(updated, getEffectiveSchemaClass());
-            }
+        vscode.window.onDidChangeActiveTextEditor(async editor => {
+            if (editor) await ensureLocalSchema(editor.document.uri, client, currentSchema, currentClass, resolveAndSendSchema);
         }),
     );
 
     context.subscriptions.push(
-        vscode.commands.registerCommand('paramlib.selectSchemaClass', pickSchemaClass),
+        vscode.workspace.onDidOpenTextDocument(async doc => {
+            await ensureLocalSchema(doc.uri, client, currentSchema, currentClass, resolveAndSendSchema);
+        }),
+    );
+
+    registerConfigChangeListener(context, resolveAndSendSchema);
+
+    context.subscriptions.push(
+        vscode.workspace.onDidChangeTextDocument(async e => {
+            if (e.document.uri.path.endsWith('paramlib.cpp')) {
+                await resolveAndSendSchema(e.document.uri.toString(), getEffectiveSchemaClass(), e.document.getText());
+            }
+
+            const effective = getEffectiveSchema();
+            const vUri = effective.startsWith('builtin:')
+                ? vscode.Uri.joinPath(ctx.extensionUri, 'schemas', `${effective.slice(8)}.cpp`)
+                : (effective.includes('://') ? vscode.Uri.parse(effective) : vscode.Uri.file(effective));
+            const schemaUri = vUri.toString();
+            
+            if (e.document.uri.toString() === schemaUri) {
+                await resolveAndSendSchema(effective, getEffectiveSchemaClass(), e.document.getText());
+            }
+        })
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('paramlib.selectSchemaFile', () => pickSchemaFileCommon(listBuiltinSchemas)),
+    );
+    context.subscriptions.push(
+        vscode.commands.registerCommand('paramlib.selectSchemaClass', () => pickSchemaClassCommon(client)),
+    );
+    context.subscriptions.push(
+        vscode.commands.registerCommand('paramlib.debugInfo', async () => {
+            console.log('[ParamLib] Current Schema:', currentSchema);
+            console.log('[ParamLib] Current Class:', currentClass);
+            await logDebugInfoCommon(client);
+            void vscode.window.showInformationMessage('Debug info logged to console. (Ensure console context is "Extension Host")');
+        })
     );
     context.subscriptions.push(client);
 }

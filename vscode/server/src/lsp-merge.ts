@@ -175,6 +175,22 @@ const strategies = new Map<string, MergeStrategy>([
     
     ['textDocument/prepareRename',  (b: any, e: any) => b ?? e],
     ['workspace/executeCommand',    (b: any, e: any) => b ?? e],
+
+    ['$/paramlib/listSchemaClasses', (b, e) => {
+        const list = concatArrays(b, e);
+        const filtered = list.filter((c: any) => typeof c === 'string');
+        return Array.from(new Set(filtered)).sort();
+    }],
+    ['$/paramlib/getDebugInfo', (b, e) => {
+        const merged = shallowMergeObjects(b, e) as any;
+        if (merged && Array.isArray(merged.availableClasses)) {
+            const filtered = merged.availableClasses.filter((c: any) => 
+                typeof c === 'string'
+            );
+            merged.availableClasses = Array.from(new Set(filtered)).sort();
+        }
+        return merged;
+    }],
 ]);
 
 function locationMerge(base: any, extra: any): unknown {
@@ -241,7 +257,11 @@ function transformToFloatColor(text: string): string {
 }
 
 export function mergeLspResults(method: string, base: unknown, additions: string[], params?: any): unknown {
-    if (additions.length === 0) return base;
+    const strategy = strategies.get(method);
+
+    if (additions.length === 0) {
+        return strategy ? strategy(base, null, params) : base;
+    }
 
     let result = base;
 

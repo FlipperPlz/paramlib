@@ -98,7 +98,6 @@ export class ParserManager {
     public reset(): void {
         for (const [source, inst] of this.instances) {
             if (inst.deinit) {
-                console.error(`[parser-wasm] deinit: ${source}`);
                 inst.deinit();
             }
         }
@@ -127,7 +126,6 @@ export class ParserManager {
             if (!this.instances.has(rule.wasm_source)) {
                 try {
                     const wasmPath = this.resolveWasmPath(rule.wasm_source);
-                    console.error(`[parser-wasm] loading ${rule.wasm_source} from ${wasmPath}`);
                     let bytes: ArrayBuffer;
 
                     if (this.readFile && !wasmPath.startsWith('http')) {
@@ -143,7 +141,6 @@ export class ParserManager {
                             wasm_log: (ptr: number, len: number) => {
                                 const mem = instance.exports.memory as WebAssembly.Memory;
                                 const msg = new TextDecoder().decode(new Uint8Array(mem.buffer, ptr, len));
-                                console.error(`[parser-wasm:${rule.wasm_source}] ${msg}`);
                             }
                         } 
                     });
@@ -184,11 +181,10 @@ export class ParserManager {
                     const exportedNames: string[] = [];
                     for (const [name, val] of Object.entries(exp)) {
                         if (WASM_RESERVED.has(name) || typeof val !== 'function') continue;
-                        if (name === 'deinit') continue;   // stored separately below
+                        if (name === 'deinit') continue;
                         lsp.set(name, (json) => callWasm(val as CallableFunction, json));
                         exportedNames.push(name);
                     }
-                    console.error(`[parser-wasm] ${rule.wasm_source} exports: ${exportedNames.join(', ')}`);
 
                     const rawDeinit = exp.deinit as (() => void) | undefined;
                     this.instances.set(rule.wasm_source, {
@@ -225,22 +221,10 @@ export class ParserManager {
         const sourcesShort   = this.lspIndex.get(short) || [];
         const uniqueSources  = Array.from(new Set([...sourcesMangled, ...sourcesShort]));
 
-        if (method === 'textDocument/diagnostic') {
-            console.error(`[paramlib:handleLsp] method=${method} mangled=${mangled} short=${short}`);
-            console.error(`[paramlib:handleLsp] lspIndex keys: ${Array.from(this.lspIndex.keys()).join(', ') || '(empty)'}`);
-            console.error(`[paramlib:handleLsp] sources found: ${uniqueSources.join(', ') || '(none)'}`);
-        }
-
         const hints = uri ? (this.documentHints.get(uri) ?? []) : [];
         const doc = uri ? this.openDocuments.get(uri) : null;
         const docParams = doc?.params ?? [];
         const lineOffsets = doc?.text ? computeLineOffsets(doc.text) : [];
-
-        if (method === 'textDocument/diagnostic') {
-            console.error(`[paramlib:handleLsp] uri=${uri} hints.length=${hints.length}`);
-            if (hints.length > 0) console.error(`[paramlib:handleLsp] first hint:`, JSON.stringify(hints[0]));
-            else console.error(`[paramlib:handleLsp] NO HINTS — wasm parser has nothing to validate`);
-        }
 
         const inputJson = JSON.stringify({ params, hints, docParams, lineOffsets });
 
@@ -251,9 +235,6 @@ export class ParserManager {
             if (!handler) continue;
 
             const r = handler(inputJson);
-            if (method === 'textDocument/diagnostic') {
-                console.error(`[paramlib:handleLsp] wasm result from ${source}:`, r);
-            }
             if (r !== null) results.push(r);
         }
         return results;
@@ -283,6 +264,21 @@ export class ParserManager {
 
     public getRegisteredMethods(): string[] {
         return Array.from(this.lspIndex.keys());
+    }
+
+    public getDebugInfo(uri: string): any {
+        const doc = this.openDocuments.get(uri);
+        const hints = this.documentHints.get(uri) ?? [];
+        return {
+            uri,
+            rules: this.rules.map(r => ({
+                pattern: r.pattern,
+                wasm: r.wasm_source,
+                active: isRegexPattern(r.pattern) ? (!!doc?.text) : doc?.params.some(p => globMatch(r.pattern, p.path))
+            })),
+            hintsCount: hints.length,
+            instances: Array.from(this.instances.keys())
+        };
     }
 
     public getHintDrivenRefreshNotifications(): string[] {
@@ -336,12 +332,9 @@ export class ParserManager {
                                 length: match[0].length,
                             });
                         }
-                    } else {
-                        console.error(`[paramlib:processDocument] parse() returned null for: ${JSON.stringify(captured.slice(0, 80))}`);
                     }
                     if (match[0].length === 0) re.lastIndex++;
                 }
-                console.error(`[paramlib:processDocument] pattern=${JSON.stringify(rule.pattern)} matchCount=${matchCount} uri=${uri}`);
             } else {
                 for (const param of params) {
                     if (globMatch(rule.pattern, param.path)) {
@@ -363,19 +356,14 @@ export class ParserManager {
 
         this.documentHints.set(uri, hints);
 
-        console.error(`[paramlib:processDocument] uri=${uri} hints=${hints.length} rules=${this.rules.length} instances=${this.instances.size} isParamlessOpen=${isParamlessOpen}`);
-
         if (hints.length > 0 && !isParamlessOpen) {
-            console.error(`[paramlib:processDocument] sending parserHints + refresh:`, JSON.stringify(hints.slice(0, 3)));
             this.sendToWasm({ jsonrpc: '2.0', method: '$/paramlib/parserHints', params: { uri, hints } });
             this.sendRefreshNotifications(uri, this.getHintDrivenRefreshNotifications());
 
             const wasmDiags = this.getWasmDiagnostics(uri);
             this.wasmDiagCache.set(uri, wasmDiags);
-            console.error(`[paramlib:processDocument] wasm diag cache updated: ${wasmDiags.length} diags for ${uri}`);
             if (this.onWasmDiagsReady) this.onWasmDiagsReady(uri, wasmDiags);
         } else if (hints.length > 0 && isParamlessOpen) {
-            console.error(`[paramlib:processDocument] skipping refresh on paramless open (waiting for getDocumentParams)`);
             this.sendToWasm({ jsonrpc: '2.0', method: '$/paramlib/parserHints', params: { uri, hints } });
         } else if (!isParamlessOpen) {
             this.wasmDiagCache.set(uri, []);

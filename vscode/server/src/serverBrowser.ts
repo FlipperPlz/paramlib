@@ -78,7 +78,6 @@ async function loadWasm(): Promise<void> {
                 if (!wasm) return;
                 const bytes = new Uint8Array(wasm.memory.buffer, ptr, len);
                 const msg = new TextDecoder().decode(bytes);
-                console.log('[WASM]', msg);
             }
         },
     });
@@ -188,7 +187,7 @@ dispatchToClient = (data: Uint8Array): void => {
     } catch (e) { console.error('[parser-wasm] dispatch error:', e); }
 };
 
-let pendingSchema: { content: Uint8Array, className?: string } | null = null;
+let pendingSchemas: { uri: string, content: Uint8Array, className?: string }[] = [];
 const pendingMessages: unknown[] = [];
 
 reader.listen((message) => {
@@ -196,8 +195,7 @@ reader.listen((message) => {
 
     const m = message as { method?: string; params?: any; id?: any };
 
-    if (!m.method && m.id === undefined) return; 
-
+    if (!m.method && m.id === undefined) return;
     if (m.id !== undefined && m.method) {
         const uri        = m.params?.textDocument?.uri as string | undefined;
         const wasmResults = parserManager.handleLsp(m.method, m.params, uri);
@@ -206,13 +204,14 @@ reader.listen((message) => {
     }
 
     if (m.method === '$/paramlib/schemaUpdate' && m.params?.content != null) {
-        const className = (m.params as { content: string; className?: string }).className;
+        const className = (m.params as { uri: string; content: string; className?: string }).className;
+        const uri       = (m.params as { uri: string; content: string; className?: string }).uri || 'builtin:dayz';
         const encoded   = new TextEncoder().encode(m.params.content);
         if (wasm) {
-            wasmSendSchema(wasm, encoded, className);
+            wasmSendSchema(wasm, uri, encoded, className);
             sendToWasm({ jsonrpc: '2.0', id: 'getRules', method: '$/paramlib/getParserRules' });
         } else {
-            pendingSchema = { content: encoded, className };
+            pendingSchemas.push({ uri, content: encoded, className });
         }
         return;
     }
@@ -252,9 +251,9 @@ reader.listen((message) => {
 loadWasm().then(() => {
     for (const msg of pendingMessages) sendToWasm(msg);
     pendingMessages.length = 0;
-    if (pendingSchema) {
-        wasmSendSchema(wasm!, pendingSchema.content, pendingSchema.className);
-        pendingSchema = null;
+    for (const schema of pendingSchemas) {
+        wasmSendSchema(wasm!, schema.uri, schema.content, schema.className);
     }
+    pendingSchemas = [];
     sendToWasm({ jsonrpc: '2.0', id: 'getRules', method: '$/paramlib/getParserRules' });
 }).catch(console.error);
