@@ -23,8 +23,8 @@ jobs:
           path: zig-out/bin/paramlib-lsp${{ runner.os == 'Windows' && '.exe' || '' }}
       - uses: actions/upload-artifact@v4
         with:
-          name: paramkit-0.0.3.vsix
-          path: zig-out/vscode/paramkit-0.0.3.vsix
+          name: paramkit-0.0.4.vsix
+          path: zig-out/vscode/paramkit-0.0.4.vsix
       - uses: actions/upload-artifact@v4
         with:
           name: paramlib-lsp.wasm
