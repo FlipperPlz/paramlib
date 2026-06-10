@@ -109,7 +109,9 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
+
     const run_lsp_tests = b.addRunArtifact(lsp_tests);
+    test_step.dependOn(&run_lsp_tests.step);
     const lsp_test_step = b.step("test-lsp", "Run LSP tests");
     lsp_test_step.dependOn(&run_lsp_tests.step);
 
@@ -200,7 +202,6 @@ pub fn build(b: *std.Build) void {
         );
         install_vsix.step.dependOn(&vscode_compile.step);
 
-        // Make native LSP build depend on vscode compilation being done
         lsp_exe.step.dependOn(&vscode_compile_ts.step);
 
         default_step.dependOn(&install_vsix.step);

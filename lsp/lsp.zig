@@ -3,10 +3,11 @@ const lsp      = @import("lsp");
 const paramlib = @import("paramlib");
 const builtin  = @import("builtin");
 
-extern fn custom_log(ptr: [*]const u8, len: usize) void;
+const custom_log =  struct {
+    extern fn custom_log(ptr: [*]const u8, len: usize) void;
+}.custom_log;
 
 fn log(comptime fmt: []const u8, args: anytype) void {
-    if (builtin.is_test) return;
     var buf: [2048]u8 = undefined;
     const msg = std.fmt.bufPrint(&buf, fmt, args) catch return;
     custom_log(msg.ptr, msg.len);
@@ -71,60 +72,234 @@ pub const GetDocumentParamsResult = struct {
     params: []const DocumentParam,
 };
 
+pub const SchemaManager = struct {
+    schemas: std.StringArrayHashMapUnmanaged(SchemaState) = .empty,
+    documentHints: std.StringArrayHashMapUnmanaged([]const PrecomputedParserHint) = .empty,
+
+    pub const empty: SchemaManager = .{};
+
+    pub fn deinit(self: *SchemaManager, alloc: std.mem.Allocator) void {
+        var it = self.schemas.iterator();
+        while (it.next()) |entry| {
+            alloc.free(entry.key_ptr.*);
+            entry.value_ptr.deinit(alloc);
+        }
+        self.schemas.deinit(alloc);
+
+        var hint_it = self.documentHints.iterator();
+        while (hint_it.next()) |entry| {
+            alloc.free(entry.key_ptr.*);
+            for (entry.value_ptr.*) |h| alloc.free(h.text);
+            alloc.free(entry.value_ptr.*);
+        }
+        self.documentHints.deinit(alloc);
+        self.* = .empty;
+    }
+
+    pub fn getSchemaForUri(self: *const SchemaManager, uri: []const u8) *const SchemaState {
+        var best_match: ?*const SchemaState = null;
+        var best_len: usize = 0;
+
+        var it = self.schemas.iterator();
+        while (it.next()) |entry| {
+            const schemaUri = entry.key_ptr.*;
+            const has_slash = schemaUri.len > 0 and schemaUri[schemaUri.len - 1] == '/';
+            
+            if (std.mem.startsWith(u8, uri, schemaUri)) {
+                if (schemaUri.len > best_len) {
+                    best_len = schemaUri.len;
+                    best_match = entry.value_ptr;
+                }
+            } else if (!has_slash) {
+                var buf: [1024]u8 = undefined;
+                if (schemaUri.len < 1023) {
+                    @memcpy(buf[0..schemaUri.len], schemaUri);
+                    buf[schemaUri.len] = '/';
+                    const with_slash = buf[0 .. schemaUri.len + 1];
+                    if (std.mem.startsWith(u8, uri, with_slash)) {
+                        if (with_slash.len > best_len) {
+                            best_len = with_slash.len;
+                            best_match = entry.value_ptr;
+                        }
+                    }
+                }
+            }
+        }
+
+        if (best_match) |bm| return bm;
+        if (self.schemas.count() > 0) return &self.schemas.values()[0];
+        return &SchemaState.empty;
+    }
+
+    pub fn getSchemaKeyForUri(self: *const SchemaManager, uri: []const u8) ?[]const u8 {
+        var best_match: ?[]const u8 = null;
+        var best_len: usize = 0;
+
+        var it = self.schemas.iterator();
+        while (it.next()) |entry| {
+            const schemaUri = entry.key_ptr.*;
+            const has_slash = schemaUri.len > 0 and schemaUri[schemaUri.len - 1] == '/';
+            
+            if (std.mem.startsWith(u8, uri, schemaUri)) {
+                if (schemaUri.len > best_len) {
+                    best_len = schemaUri.len;
+                    best_match = schemaUri;
+                }
+            } else if (!has_slash) {
+                var buf: [1024]u8 = undefined;
+                if (schemaUri.len < 1023) {
+                    @memcpy(buf[0..schemaUri.len], schemaUri);
+                    buf[schemaUri.len] = '/';
+                    const with_slash = buf[0 .. schemaUri.len + 1];
+                    if (std.mem.startsWith(u8, uri, with_slash)) {
+                        if (with_slash.len > best_len) {
+                            best_len = with_slash.len;
+                            best_match = schemaUri;
+                        }
+                    }
+                }
+            }
+        }
+
+        if (best_match) |bm| return bm;
+        if (self.schemas.count() > 0) return self.schemas.keys()[0];
+        return null;
+    }
+
+    pub fn findGlobalSchemaState(self: *const SchemaManager, name: []const u8) ?*const SchemaState {
+        var it = self.schemas.iterator();
+        while (it.next()) |entry| {
+            if (entry.value_ptr.pushedSchemas.getPtr(name)) |s| return s;
+        }
+        return null;
+    }
+
+    pub fn collectAllSchemaClassNames(self: *const SchemaManager, alloc: std.mem.Allocator) ![]const []const u8 {
+        var names = std.StringArrayHashMapUnmanaged(void).empty;
+        defer names.deinit(alloc);
+
+        var it = self.schemas.iterator();
+        while (it.next()) |entry| {
+            for (entry.value_ptr.schemaClasses) |name| {
+                try names.put(alloc, name, {});
+            }
+        }
+
+        const result = try alloc.alloc([]const u8, names.count());
+        errdefer alloc.free(result);
+
+        for (names.keys(), 0..) |name, i| {
+            result[i] = try alloc.dupe(u8, name);
+        }
+
+        std.mem.sort([]const u8, result, {}, struct {
+            pub fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+                return std.mem.lessThan(u8, a, b);
+            }
+        }.lessThan);
+
+        return result;
+    }
+
+    pub fn updateSchema(self: *SchemaManager, alloc: std.mem.Allocator, schema_uri: []const u8, content: []const u8, class_name: ?[]const u8) !void {
+        const dir = if (std.mem.lastIndexOfScalar(u8, schema_uri, '/')) |idx|
+            schema_uri[0 .. idx + 1]
+        else
+            schema_uri;
+
+        if (self.schemas.getPtr(dir)) |existing| {
+            try existing.updateFromContent(self, alloc, content, class_name);
+        } else {
+            const key = try alloc.dupe(u8, dir);
+            errdefer alloc.free(key);
+            var state = SchemaState.empty;
+            try state.updateFromContent(self, alloc, content, class_name);
+            errdefer state.deinit(alloc);
+            try self.schemas.put(alloc, key, state);
+        }
+    }
+};
+
 pub const SchemaState = struct {
     stringCompletions: []StringCompletionRule = &.{},
     arrayInlays: []ArrayInlaysRule = &.{},
     parserRules: []ParserRule = &.{},
     paramDocs: []ParamDocRule = &.{},
-    documentHints: std.StringArrayHashMapUnmanaged([]const PrecomputedParserHint) = .empty,
     schemaClasses: []const []const u8 = &.{},
     projectName:   []const u8          = "",
+    selectedClass: []const u8          = "",
+    base_class:    []const u8          = "",
     pushedSchemas: std.StringArrayHashMapUnmanaged(SchemaState) = .empty,
 
     pub const empty: SchemaState = .{};
 
-    pub fn updateFromContent(self: *SchemaState, alloc: std.mem.Allocator, content: []const u8, class_name: ?[]const u8) void {
-        log("[SchemaState.updateFromContent] class_name={?s}", .{class_name});
-        const src = alloc.dupeZ(u8, content) catch return;
+    pub fn updateFromContent(self: *SchemaState, manager: *const SchemaManager, alloc: std.mem.Allocator, content: []const u8, class_name: ?[]const u8) !void {
+        const src = try alloc.dupeZ(u8, content);
         defer alloc.free(src);
         var errored = false;
-        var root = paramlib.cpp.parser.parseSource(alloc, src, &errored, .none()) catch return;
+        var root = try paramlib.cpp.parser.parseSource(alloc, src, &errored, .none());
         defer root.deinit(alloc);
 
-        const cfg = getCfgSchemasMembers(&root) orelse return;
-        for (cfg.items) |*cm| {
-            if (cm.* != .class or cm.class.members == null) continue;
-            const name = cm.class.name orelse continue;
+        const members = root.members orelse return;
 
-            const state = buildFromSchemaClass(&root, cm.class, alloc, &self.pushedSchemas, name);
+        var it_pushed = self.pushedSchemas.iterator();
+        while (it_pushed.next()) |entry| {
+            alloc.free(entry.key_ptr.*);
+            entry.value_ptr.deinit(alloc);
+        }
+        self.pushedSchemas.clearRetainingCapacity();
 
-            if (self.pushedSchemas.fetchOrderedRemove(name)) |entry| {
-                alloc.free(entry.key);
-                var s = entry.value;
-                s.deinit(alloc);
+        for (members.items) |*m| {
+            if (m.* != .class) continue;
+            const cfg = m.class;
+            if (cfg.name == null or !std.mem.eql(u8, cfg.name.?, "CfgSchemas")) continue;
+            const cfg_members = cfg.members orelse continue;
+
+            for (cfg_members.items) |*cm| {
+                if (cm.* != .class or cm.class.members == null) continue;
+                const name = cm.class.name orelse continue;
+
+                const state = try buildFromSchemaClass(manager, &root, cm.class, alloc, &self.pushedSchemas, name);
+                errdefer { var s = state; s.deinit(alloc); }
+
+                if (self.pushedSchemas.fetchOrderedRemove(name)) |entry| {
+                    alloc.free(entry.key);
+                    var s = entry.value;
+                    s.deinit(alloc);
+                }
+
+                const key = try alloc.dupe(u8, name);
+                errdefer alloc.free(key);
+                try self.pushedSchemas.put(alloc, key, state);
             }
-
-            const key = alloc.dupe(u8, name) catch { var s = state; s.deinit(alloc); continue; };
-            self.pushedSchemas.put(alloc, key, state) catch { alloc.free(key); var s = state; s.deinit(alloc); };
         }
 
         const sc = findSchemaClass(&root, alloc, class_name) orelse return;
-        var new_state = buildFromSchemaClass(sc.root_ptr, sc.class_ptr, alloc, &self.pushedSchemas, sc.class_ptr.name orelse "");
+        var new_state = try buildFromSchemaClass(manager, sc.root_ptr, sc.class_ptr, alloc, &self.pushedSchemas, sc.class_ptr.name orelse "");
+        errdefer new_state.deinit(alloc);
+
         new_state.pushedSchemas = self.pushedSchemas;
         self.pushedSchemas = .empty;
 
+        new_state.schemaClasses = try collectSchemaClassNames(&root, alloc);
+        new_state.selectedClass = try alloc.dupe(u8, sc.class_ptr.name orelse "");
+
         self.deinit(alloc);
         self.* = new_state;
-        log("[SchemaState.updateFromContent] state updated successfully", .{});
     }
 
     pub fn extractFromDocuments(
         self:      *SchemaState,
+        manager:   *const SchemaManager,
         alloc:     std.mem.Allocator,
         documents: *const std.StringArrayHashMapUnmanaged([]const u8),
-    ) void {
-        log("[SchemaState.extractFromDocuments] extracting from {d} documents", .{documents.count()});
+        dir_uri:   []const u8,
+    ) !void {
+        log("[SchemaState.extractFromDocuments] extracting from {d} documents (dir={s})", .{documents.count(), dir_uri});
         const pushed = self.pushedSchemas;
+        const selected = try alloc.dupe(u8, self.selectedClass);
+        defer alloc.free(selected);
+
         self.pushedSchemas = .empty;
         self.deinit(alloc);
         self.pushedSchemas = pushed;
@@ -139,72 +314,158 @@ pub const SchemaState = struct {
             named.deinit(alloc);
         }
 
-        var pushed_it = self.pushedSchemas.iterator();
-        while (pushed_it.next()) |entry| {
-            const key = alloc.dupe(u8, entry.key_ptr.*) catch continue;
-            const state = cloneSchemaState(entry.value_ptr.*, alloc);
-            named.put(alloc, key, state) catch { alloc.free(key); var s = state; s.deinit(alloc); };
-        }
-
         var all_names = std.ArrayList([]const u8).empty;
         defer {
             for (all_names.items) |n| alloc.free(n);
             all_names.deinit(alloc);
         }
 
-        var active: SchemaState = .empty;
-        var last_class_name: ?[]const u8 = null;
-        defer if (last_class_name) |n| alloc.free(n);
+        var pushed_it = self.pushedSchemas.iterator();
+        while (pushed_it.next()) |entry| {
+            const name = entry.key_ptr.*;
+            const key = try alloc.dupe(u8, name);
+            errdefer alloc.free(key);
+            const state = try cloneSchemaState(entry.value_ptr.*, alloc);
+            errdefer { var s = state; s.deinit(alloc); }
+            try named.put(alloc, key, state);
 
-        for (documents.values()) |text| {
-            const src = alloc.dupeZ(u8, text) catch continue;
+            const n = try alloc.dupe(u8, name);
+            errdefer alloc.free(n);
+            try all_names.append(alloc, n);
+        }
+
+        var doc_it = documents.iterator();
+        var any_has_cfg_schemas = false;
+
+        while (doc_it.next()) |entry| {
+            const uri  = entry.key_ptr.*;
+            const text = entry.value_ptr.*;
+            if (dir_uri.len > 0 and !std.mem.startsWith(u8, uri, dir_uri)) continue;
+
+            const src = try alloc.dupeZ(u8, text);
             defer alloc.free(src);
             var errored = false;
-            var root = paramlib.cpp.parser.parseSource(alloc, src, &errored, .none()) catch continue;
+            var root = try paramlib.cpp.parser.parseSource(alloc, src, &errored, .none());
             defer root.deinit(alloc);
-            const cfg = getCfgSchemasMembers(&root) orelse continue;
 
-            for (cfg.items) |*cm| {
-                if (cm.* != .class) continue;
-                const name = cm.class.name orelse continue;
+            if (getCfgSchemasMembers(&root)) |_| {
+                any_has_cfg_schemas = true;
+                break;
+            }
+        }
+
+        var active: SchemaState = .empty;
+        errdefer active.deinit(alloc);
+        doc_it = documents.iterator();
+        var last_class_def_name: ?[]const u8 = null;
+        var last_is_primary = false;
+        defer if (last_class_def_name) |n| alloc.free(n);
+
+        while (doc_it.next()) |entry| {
+            const uri  = entry.key_ptr.*;
+            const text = entry.value_ptr.*;
+            if (dir_uri.len > 0 and !std.mem.startsWith(u8, uri, dir_uri)) continue;
+
+            const src = try alloc.dupeZ(u8, text);
+            defer alloc.free(src);
+            var errored = false;
+            var root = try paramlib.cpp.parser.parseSource(alloc, src, &errored, .none());
+            defer root.deinit(alloc);
+
+            const has_cfg = getCfgSchemasMembers(&root) != null;
+            if (any_has_cfg_schemas and !has_cfg) continue;
+
+            const is_primary = std.mem.endsWith(u8, uri, "/paramlib.cpp") or std.mem.eql(u8, uri, "paramlib.cpp");
+
+            const names = try collectSchemaClassNames(&root, alloc);
+            defer {
+                for (names) |n| alloc.free(n);
+                alloc.free(names);
+            }
+
+            for (names) |name| {
                 var already = false;
                 for (all_names.items) |n| {
                     if (std.mem.eql(u8, n, name)) { already = true; break; }
                 }
                 if (!already) {
-                    const n = alloc.dupe(u8, name) catch continue;
-                    all_names.append(alloc, n) catch { alloc.free(n); };
+                    const n = try alloc.dupe(u8, name);
+                    errdefer alloc.free(n);
+                    try all_names.append(alloc, n);
                 }
-            }
 
-            for (cfg.items) |*cm| {
-                if (cm.* != .class or cm.class.members == null) continue;
-                const cls  = cm.class;
-                const name = cls.name orelse continue;
+                if (findSchemaClass(&root, alloc, name)) |sc| {
+                    if (sc.class_ptr.members != null) {
+                        const state = try buildFromSchemaClass(manager, sc.root_ptr, sc.class_ptr, alloc, &named, name);
+                        errdefer { var s = state; s.deinit(alloc); }
+                        if (named.fetchOrderedRemove(name)) |entry_rem| {
+                            alloc.free(entry_rem.key);
+                            var s = entry_rem.value;
+                            s.deinit(alloc);
+                        }
+                        const key = try alloc.dupe(u8, name);
+                        errdefer alloc.free(key);
+                        try named.put(alloc, key, state);
 
-                const state = buildFromSchemaClass(&root, cls, alloc, &named, name);
-                if (named.fetchOrderedRemove(name)) |entry| {
-                    alloc.free(entry.key);
-                    var s = entry.value;
-                    s.deinit(alloc);
+                        const is_better = if (last_class_def_name == null) true else blk: {
+                            if (is_primary and !last_is_primary) break :blk true;
+                            if (is_primary == last_is_primary) break :blk true;
+                            break :blk false;
+                        };
+
+                        if (is_better) {
+                            if (last_class_def_name) |lcn| alloc.free(lcn);
+                            last_class_def_name = try alloc.dupe(u8, name);
+                            last_is_primary = is_primary;
+                        }
+                    }
                 }
-                const key = alloc.dupe(u8, name) catch { var s = state; s.deinit(alloc); continue; };
-                named.put(alloc, key, state) catch { alloc.free(key); var s = state; s.deinit(alloc); };
-
-                active.deinit(alloc);
-                active = cloneSchemaState(state, alloc);
-                if (last_class_name) |n| alloc.free(n);
-                last_class_name = alloc.dupe(u8, name) catch null;
             }
         }
 
-        active.schemaClasses = all_names.toOwnedSlice(alloc) catch &.{};
-        all_names = .empty;
-        active.projectName = if (last_class_name) |n| alloc.dupe(u8, n) catch "" else "";
+        var final_selected_class: []const u8 = "";
+        if (selected.len > 0) {
+            final_selected_class = try alloc.dupe(u8, selected);
+        } else if (last_class_def_name) |lcdn| {
+            final_selected_class = try alloc.dupe(u8, lcdn);
+        }
+        errdefer if (final_selected_class.len > 0) alloc.free(final_selected_class);
+
+        if (final_selected_class.len > 0) {
+            if (named.get(final_selected_class)) |state| {
+                active.deinit(alloc);
+                active = try cloneSchemaState(state, alloc);
+            }
+        }
+
+        active.schemaClasses = try all_names.toOwnedSlice(alloc);
+
+        const SortCtx = struct {
+            named: *const std.StringArrayHashMapUnmanaged(SchemaState),
+            pub fn lessThan(ctx: @This(), a: []const u8, b: []const u8) bool {
+                const state_a = ctx.named.get(a);
+                const state_b = ctx.named.get(b);
+                const a_is_def = if (state_a) |s| s.stringCompletions.len > 0 or s.parserRules.len > 0 or s.paramDocs.len > 0 or s.pushedSchemas.count() > 0 or s.selectedClass.len > 0 else false;
+                const b_is_def = if (state_b) |s| s.stringCompletions.len > 0 or s.parserRules.len > 0 or s.paramDocs.len > 0 or s.pushedSchemas.count() > 0 or s.selectedClass.len > 0 else false;
+                if (a_is_def != b_is_def) return !a_is_def;
+                return std.mem.lessThan(u8, a, b);
+            }
+        };
+        const classes = @constCast(active.schemaClasses);
+        std.mem.sort([]const u8, classes, SortCtx{ .named = &named }, SortCtx.lessThan);
+
+        if (active.selectedClass.len > 0) alloc.free(active.selectedClass);
+        active.selectedClass = final_selected_class;
+
+        if (active.projectName.len > 0) alloc.free(active.projectName);
+        active.projectName = try alloc.dupe(u8, self.projectName);
+
         active.pushedSchemas = self.pushedSchemas;
         self.pushedSchemas = .empty;
+
+        self.deinit(alloc);
         self.* = active;
-        log("[SchemaState.extractFromDocuments] final state: {d} paramDocs, {d} stringCompletions, projectName='{s}'", .{active.paramDocs.len, active.stringCompletions.len, active.projectName});
+        log("[SchemaState.extractFromDocuments] final state: {d} paramDocs, {d} stringCompletions, projectName='{s}', selectedClass='{s}'", .{active.paramDocs.len, active.stringCompletions.len, active.projectName, active.selectedClass});
     }
 
     const SchemaClass = struct {
@@ -219,25 +480,51 @@ pub const SchemaState = struct {
     ) ?SchemaClass {
         _ = alloc;
         const members = root.members orelse return null;
+        var last_def: ?*const paramlib.cpp.ast.ClassAst = null;
+        var last_any: ?*const paramlib.cpp.ast.ClassAst = null;
+
+        var found_cfg = false;
         for (members.items) |*m| {
-            if (m.* != .class) continue;
-            const cfg = m.class;
-            if (cfg.name == null or !std.mem.eql(u8, cfg.name.?, "CfgSchemas")) continue;
-            const cfg_members = cfg.members orelse continue;
-            var last: ?*const paramlib.cpp.ast.ClassAst = null;
-            for (cfg_members.items) |*cm| {
-                if (cm.* != .class) continue;
-                if (class_name) |name| {
-                    if (cm.class.name != null and std.mem.eql(u8, cm.class.name.?, name))
-                        return .{ .root_ptr = root, .class_ptr = cm.class };
-                } else {
-                    last = cm.class;
+            if (m.* != .class or m.class.name == null) continue;
+            if (!std.mem.eql(u8, m.class.name.?, "CfgSchemas")) continue;
+            found_cfg = true;
+
+            if (m.class.members) |cfg_members| {
+                for (cfg_members.items) |*cm| {
+                    if (cm.* != .class) continue;
+                    const inner = cm.class;
+                    const name = inner.name orelse continue;
+
+                    if (class_name) |cn| {
+                        if (std.mem.eql(u8, cn, name))
+                            return .{ .root_ptr = root, .class_ptr = inner };
+                    } else {
+                        if (inner.members != null) last_def = inner;
+                        last_any = inner;
+                    }
                 }
             }
-            if (class_name == null) {
-                if (last) |l| return .{ .root_ptr = root, .class_ptr = l };
+        }
+
+        if (!found_cfg) {
+            for (members.items) |*m| {
+                if (m.* != .class) continue;
+                const cls = m.class;
+                const name = cls.name orelse continue;
+
+                if (class_name) |cn| {
+                    if (std.mem.eql(u8, cn, name))
+                        return .{ .root_ptr = root, .class_ptr = cls };
+                } else {
+                    if (cls.members != null) last_def = cls;
+                    last_any = cls;
+                }
             }
-            return null;
+        }
+
+        if (class_name == null) {
+            if (last_def) |ld| return .{ .root_ptr = root, .class_ptr = ld };
+            if (last_any) |la| return .{ .root_ptr = root, .class_ptr = la };
         }
         return null;
     }
@@ -245,25 +532,62 @@ pub const SchemaState = struct {
     fn collectSchemaClassNames(
         root:  *const paramlib.cpp.ast.ClassAst,
         alloc: std.mem.Allocator,
-    ) []const []const u8 {
+    ) ![]const []const u8 {
         const members = root.members orelse return &.{};
+        var list = std.ArrayList([]const u8).empty;
+        errdefer {
+            for (list.items) |n| alloc.free(n);
+            list.deinit(alloc);
+        }
+
         for (members.items) |*m| {
             if (m.* != .class) continue;
-            const cfg = m.class;
-            if (cfg.name == null or !std.mem.eql(u8, cfg.name.?, "CfgSchemas")) continue;
-            const cfg_members = cfg.members orelse return &.{};
-            var list = std.ArrayList([]const u8).empty;
-            for (cfg_members.items) |*cm| {
-                if (cm.* != .class) continue;
-                const name = cm.class.name orelse continue;
-                const duped = alloc.dupe(u8, name) catch continue;
-                list.append(alloc, duped) catch { alloc.free(duped); };
-            }
-            return list.toOwnedSlice(alloc) catch &.{};
-        }
-        return &.{};
-    }
+            const cls = m.class;
+            const name = cls.name orelse continue;
 
+            if (std.mem.eql(u8, name, "CfgSchemas")) {
+                const cfg_members = cls.members orelse continue;
+                for (cfg_members.items) |*cm| {
+                    if (cm.* != .class) continue;
+                    const inner_name = cm.class.name orelse continue;
+                    const duped = try alloc.dupe(u8, inner_name);
+                    try list.append(alloc, duped);
+                }
+            }
+        }
+
+        var i: usize = 0;
+        while (i < list.items.len) {
+            var j: usize = i + 1;
+            while (j < list.items.len) {
+                if (std.mem.eql(u8, list.items[i], list.items[j])) {
+                    const removed = list.orderedRemove(j);
+                    alloc.free(removed);
+                } else {
+                    j += 1;
+                }
+            }
+            i += 1;
+        }
+
+        const items = try list.toOwnedSlice(alloc);
+
+        const SortCtx = struct {
+            root: *const paramlib.cpp.ast.ClassAst,
+            alloc: std.mem.Allocator,
+            pub fn lessThan(ctx: @This(), a: []const u8, b: []const u8) bool {
+                const sc_a = findSchemaClass(ctx.root, ctx.alloc, a);
+                const sc_b = findSchemaClass(ctx.root, ctx.alloc, b);
+                const a_is_def = if (sc_a) |s| s.class_ptr.members != null else false;
+                const b_is_def = if (sc_b) |s| s.class_ptr.members != null else false;
+                if (a_is_def != b_is_def) return !a_is_def; // non-definitions first
+                return std.mem.lessThan(u8, a, b);
+            }
+        };
+        std.mem.sort([]const u8, items, SortCtx{ .root = root, .alloc = alloc }, SortCtx.lessThan);
+
+        return items;
+    }
 
     fn getCfgSchemasMembers(root: *const paramlib.cpp.ast.ClassAst) ?*std.ArrayList(paramlib.cpp.ast.MemberAst) {
         const top = root.members orelse return null;
@@ -276,356 +600,556 @@ pub const SchemaState = struct {
         return null;
     }
 
-    fn cloneSchemaState(src: SchemaState, alloc: std.mem.Allocator) SchemaState {
-        var comps = std.ArrayList(StringCompletionRule).empty;
-        for (src.stringCompletions) |rule| {
-            const path = alloc.dupe(u8, rule.path) catch continue;
-            const vs   = alloc.alloc([]const u8, rule.values.len) catch { alloc.free(path); continue; };
-            for (rule.values, 0..) |v, i| vs[i] = alloc.dupe(u8, v) catch "";
-            const source = if (rule.source.len > 0) alloc.dupe(u8, rule.source) catch "" else "";
-            comps.append(alloc, .{ .path = path, .values = vs, .source = source }) catch {
-                alloc.free(path);
-                for (vs) |v| alloc.free(v);
-                alloc.free(vs);
-                if (source.len > 0) alloc.free(source);
-            };
-        }
-        var arrays = std.ArrayList(ArrayInlaysRule).empty;
-        for (src.arrayInlays) |rule| {
-            const path = alloc.dupe(u8, rule.path) catch continue;
-            const ls   = alloc.alloc([]const u8, rule.labels.len) catch { alloc.free(path); continue; };
-            for (rule.labels, 0..) |l, i| ls[i] = alloc.dupe(u8, l) catch "";
-            const source = if (rule.source.len > 0) alloc.dupe(u8, rule.source) catch "" else "";
-            arrays.append(alloc, .{ .path = path, .labels = ls, .source = source }) catch {
-                alloc.free(path);
-                for (ls) |l| alloc.free(l);
-                alloc.free(ls);
-                if (source.len > 0) alloc.free(source);
-            };
-        }
-        var parsers = std.ArrayList(ParserRule).empty;
-        for (src.parserRules) |rule| {
-            const pattern = alloc.dupe(u8, rule.pattern) catch continue;
-            const wasm    = alloc.dupe(u8, rule.wasm_source) catch { alloc.free(pattern); continue; };
-            const source  = if (rule.source.len > 0) alloc.dupe(u8, rule.source) catch "" else "";
-            parsers.append(alloc, .{ .pattern = pattern, .wasm_source = wasm, .source = source }) catch {
-                alloc.free(pattern);
-                alloc.free(wasm);
-                if (source.len > 0) alloc.free(source);
-            };
-        }
-        var pdocs = std.ArrayList(ParamDocRule).empty;
-        for (src.paramDocs) |rule| {
-            const path   = alloc.dupe(u8, rule.path) catch continue;
-            const doc    = alloc.dupe(u8, rule.doc)  catch { alloc.free(path); continue; };
-            const source = if (rule.source.len > 0) alloc.dupe(u8, rule.source) catch "" else "";
-            pdocs.append(alloc, .{ .path = path, .doc = doc, .source = source }) catch {
-                alloc.free(path);
-                alloc.free(doc);
-                if (source.len > 0) alloc.free(source);
-            };
-        }
-        var docHints = std.StringArrayHashMapUnmanaged([]const PrecomputedParserHint).empty;
-        var it = src.documentHints.iterator();
-        while (it.next()) |entry| {
-            const uri = alloc.dupe(u8, entry.key_ptr.*) catch continue;
-            const hints = alloc.alloc(PrecomputedParserHint, entry.value_ptr.*.len) catch { alloc.free(uri); continue; };
-            for (entry.value_ptr.*, 0..) |h, i| {
-                hints[i] = .{
-                    .line = h.line,
-                    .character = h.character,
-                    .text = alloc.dupe(u8, h.text) catch "",
-                };
-            }
-            docHints.put(alloc, uri, hints) catch {
-                alloc.free(uri);
-                for (hints) |h| alloc.free(h.text);
-                alloc.free(hints);
-            };
-        }
-        return .{
-            .stringCompletions = comps.toOwnedSlice(alloc)   catch &.{},
-            .arrayInlays       = arrays.toOwnedSlice(alloc)  catch &.{},
-            .parserRules       = parsers.toOwnedSlice(alloc) catch &.{},
-            .paramDocs         = pdocs.toOwnedSlice(alloc)   catch &.{},
-            .documentHints     = docHints,
+    fn cloneSchemaState(src: SchemaState, alloc: std.mem.Allocator) !SchemaState {
+        var dst: SchemaState = .{
+            .stringCompletions = try alloc.alloc(StringCompletionRule, src.stringCompletions.len),
+            .arrayInlays       = try alloc.alloc(ArrayInlaysRule, src.arrayInlays.len),
+            .parserRules       = try alloc.alloc(ParserRule, src.parserRules.len),
+            .paramDocs         = try alloc.alloc(ParamDocRule, src.paramDocs.len),
             .schemaClasses     = &.{},
-            .projectName       = if (src.projectName.len > 0) alloc.dupe(u8, src.projectName) catch "" else "",
+            .projectName       = try alloc.dupe(u8, src.projectName),
+            .selectedClass     = try alloc.dupe(u8, src.selectedClass),
+            .base_class        = try alloc.dupe(u8, src.base_class),
             .pushedSchemas     = .empty,
         };
+        errdefer dst.deinit(alloc);
+
+        for (src.stringCompletions, 0..) |s, i| {
+            const values = try alloc.alloc([]const u8, s.values.len);
+            errdefer {
+                for (values[0..0]) |v| alloc.free(v);
+                alloc.free(values);
+            }
+            for (s.values, 0..) |v, j| {
+                values[j] = try alloc.dupe(u8, v);
+            }
+            dst.stringCompletions[i] = .{
+                .path   = try alloc.dupe(u8, s.path),
+                .values = values,
+                .source = try alloc.dupe(u8, s.source),
+            };
+        }
+
+        for (src.arrayInlays, 0..) |a, i| {
+            const labels = try alloc.alloc([]const u8, a.labels.len);
+            errdefer {
+                for (labels[0..0]) |l| alloc.free(l);
+                alloc.free(labels);
+            }
+            for (a.labels, 0..) |l, j| {
+                labels[j] = try alloc.dupe(u8, l);
+            }
+            dst.arrayInlays[i] = .{
+                .path   = try alloc.dupe(u8, a.path),
+                .labels = labels,
+                .source = try alloc.dupe(u8, a.source),
+            };
+        }
+
+        for (src.parserRules, 0..) |p, i| {
+            dst.parserRules[i] = .{
+                .pattern     = try alloc.dupe(u8, p.pattern),
+                .wasm_source = try alloc.dupe(u8, p.wasm_source),
+                .source      = try alloc.dupe(u8, p.source),
+            };
+        }
+
+        for (src.paramDocs, 0..) |p, i| {
+            dst.paramDocs[i] = .{
+                .path   = try alloc.dupe(u8, p.path),
+                .doc    = try alloc.dupe(u8, p.doc),
+                .source = try alloc.dupe(u8, p.source),
+            };
+        }
+
+        var sc_list = std.ArrayList([]const u8).empty;
+        errdefer {
+            for (sc_list.items) |name| alloc.free(name);
+            sc_list.deinit(alloc);
+        }
+        for (src.schemaClasses) |name| {
+            try sc_list.append(alloc, try alloc.dupe(u8, name));
+        }
+        dst.schemaClasses = try sc_list.toOwnedSlice(alloc);
+
+        var pushed_it = src.pushedSchemas.iterator();
+        while (pushed_it.next()) |entry| {
+            const key = try alloc.dupe(u8, entry.key_ptr.*);
+            errdefer alloc.free(key);
+            const state = try cloneSchemaState(entry.value_ptr.*, alloc);
+            errdefer { var s = state; s.deinit(alloc); }
+            try dst.pushedSchemas.put(alloc, key, state);
+        }
+
+        return dst;
     }
 
     fn buildFromSchemaClass(
+        manager:     *const SchemaManager,
         root:        *const paramlib.cpp.ast.ClassAst,
         schema:      *const paramlib.cpp.ast.ClassAst,
         alloc:       std.mem.Allocator,
         named:       *const std.StringArrayHashMapUnmanaged(SchemaState),
-        source_name: []const u8,
-    ) SchemaState {
+        name_for_log: []const u8,
+    ) !SchemaState {
         var base_state: SchemaState = if (schema.base) |base| blk: {
-            if (base.members != null) {
-                break :blk buildFromSchemaClass(root, base, alloc, named, base.name orelse "");
-            }
-            if (base.name) |bname| {
-                if (named.get(bname)) |existing| {
-                    break :blk cloneSchemaState(existing, alloc);
+            var bs = if (findSchemaClass(root, alloc, base.name)) |sc| b2: {
+                if (sc.class_ptr.members != null) {
+                    break :b2 try buildFromSchemaClass(manager, root, sc.class_ptr, alloc, named, base.name orelse "");
+                }
+                break :b2 SchemaState.empty;
+            } else SchemaState.empty;
+
+            if (bs.projectName.len == 0) {
+                if (named.get(base.name orelse "")) |existing| {
+                    bs = try cloneSchemaState(existing, alloc);
+                } else if (manager.findGlobalSchemaState(base.name orelse "")) |existing| {
+                    bs = try cloneSchemaState(existing.*, alloc);
                 }
             }
-            break :blk .empty;
+
+            if (bs.base_class.len > 0) alloc.free(bs.base_class);
+            bs.base_class = if (base.name) |n| try alloc.dupe(u8, n) else "";
+            break :blk bs;
         } else .empty;
 
-        var completions = std.ArrayList(StringCompletionRule).fromOwnedSlice(base_state.stringCompletions);
-        var arrays      = std.ArrayList(ArrayInlaysRule).fromOwnedSlice(base_state.arrayInlays);
-        var parsers     = std.ArrayList(ParserRule).fromOwnedSlice(base_state.parserRules);
-        var pdocs       = std.ArrayList(ParamDocRule).fromOwnedSlice(base_state.paramDocs);
-        const docHints  = base_state.documentHints;
+        if (base_state.projectName.len > 0) alloc.free(base_state.projectName);
+        base_state.projectName = alloc.dupe(u8, name_for_log) catch "";
+
+        var stringCompletions = std.ArrayList(StringCompletionRule).empty;
+        var arrayInlays       = std.ArrayList(ArrayInlaysRule).empty;
+        var parserRules       = std.ArrayList(ParserRule).empty;
+        var paramDocs         = std.ArrayList(ParamDocRule).empty;
+
+        stringCompletions.appendSlice(alloc, base_state.stringCompletions) catch {};
+        arrayInlays.appendSlice(alloc, base_state.arrayInlays) catch {};
+        parserRules.appendSlice(alloc, base_state.parserRules) catch {};
+        paramDocs.appendSlice(alloc, base_state.paramDocs) catch {};
+
+        alloc.free(base_state.stringCompletions);
+        alloc.free(base_state.arrayInlays);
+        alloc.free(base_state.parserRules);
+        alloc.free(base_state.paramDocs);
         base_state.stringCompletions = &.{};
-        base_state.arrayInlays       = &.{};
-        base_state.parserRules       = &.{};
-        base_state.paramDocs         = &.{};
-        base_state.documentHints     = .empty;
-        base_state.deinit(alloc);
+        base_state.arrayInlays = &.{};
+        base_state.parserRules = &.{};
+        base_state.paramDocs = &.{};
 
         const members = schema.members orelse {
-            return .{
-                .stringCompletions = completions.toOwnedSlice(alloc) catch &.{},
-                .arrayInlays       = arrays.toOwnedSlice(alloc)      catch &.{},
-                .parserRules       = parsers.toOwnedSlice(alloc)     catch &.{},
-                .paramDocs         = pdocs.toOwnedSlice(alloc)       catch &.{},
-                .documentHints     = docHints,
-            };
+            base_state.stringCompletions = stringCompletions.toOwnedSlice(alloc) catch &.{};
+            base_state.arrayInlays       = arrayInlays.toOwnedSlice(alloc) catch &.{};
+            base_state.parserRules       = parserRules.toOwnedSlice(alloc) catch &.{};
+            base_state.paramDocs         = paramDocs.toOwnedSlice(alloc) catch &.{};
+            return base_state;
         };
 
         for (members.items) |*m| {
-            if (m.* != .param) continue;
-            const p = &m.param;
-            const arr = switch (p.value) {
-                .array => |a| a,
-                else   => continue,
-            };
-            const is_completions  = std.mem.eql(u8, p.name, "stringCompletions");
-            const is_array_inlays = std.mem.eql(u8, p.name, "arrayInlays");
-            const is_parsers      = std.mem.eql(u8, p.name, "parsers") or std.mem.eql(u8, p.name, "parserRules");
-            const is_param_docs   = std.mem.eql(u8, p.name, "paramDocs");
-            if (!is_completions and !is_array_inlays and !is_parsers and !is_param_docs) continue;
+            switch (m.*) {
+                .param => |*p| {
+                    if (std.mem.eql(u8, p.name, "paramDocs")) {
+                        if (p.operator == .assign) {
+                            for (paramDocs.items) |rule| {
+                                alloc.free(rule.path);
+                                alloc.free(rule.doc);
+                                alloc.free(rule.source);
+                            }
+                            paramDocs.clearRetainingCapacity();
+                        }
+                        const outer_arr = switch (p.value) { .array => |a| a, else => continue };
+                        for (outer_arr) |*v| {
+                            const inner = switch (v.*) { .array => |a| a, else => continue };
+                            if (inner.len < 2) continue;
+                            const path = switch (inner[0]) { .string => |s| s, else => continue };
+                            const doc  = switch (inner[1]) { .string => |s| s, else => continue };
 
-            if (p.operator == .assign) {
-                if (is_completions) {
-                    for (completions.items) |r| {
-                        alloc.free(r.path);
-                        for (r.values) |v| alloc.free(v);
-                        alloc.free(r.values);
+                            if (p.operator == .subAssign) {
+                                var i: usize = 0;
+                                while (i < paramDocs.items.len) {
+                                    if (std.mem.eql(u8, paramDocs.items[i].path, path)) {
+                                        const entry = paramDocs.orderedRemove(i);
+                                        alloc.free(entry.path);
+                                        alloc.free(entry.doc);
+                                        alloc.free(entry.source);
+                                    } else i += 1;
+                                }
+                            } else {
+                                paramDocs.append(alloc, .{
+                                    .path   = alloc.dupe(u8, path) catch "",
+                                    .doc    = alloc.dupe(u8, doc) catch "",
+                                    .source = alloc.dupe(u8, name_for_log) catch "",
+                                }) catch {};
+                            }
+                        }
+                        continue;
                     }
-                    completions.clearRetainingCapacity();
-                } else if (is_array_inlays) {
-                    for (arrays.items) |r| {
-                        alloc.free(r.path);
-                        for (r.labels) |l| alloc.free(l);
-                        alloc.free(r.labels);
+
+                    if (std.mem.eql(u8, p.name, "stringCompletions")) {
+                        if (p.operator == .assign) {
+                            for (stringCompletions.items) |rule| {
+                                alloc.free(rule.path);
+                                for (rule.values) |v| alloc.free(v);
+                                alloc.free(rule.values);
+                                alloc.free(rule.source);
+                            }
+                            stringCompletions.clearRetainingCapacity();
+                        }
+                        const outer_arr = switch (p.value) { .array => |a| a, else => continue };
+                        for (outer_arr) |*v| {
+                            const inner = switch (v.*) { .array => |a| a, else => continue };
+                            if (inner.len < 2) continue;
+                            const path = switch (inner[0]) { .string => |s| s, else => continue };
+                            const vals = switch (inner[1]) { .array  => |a| a, else => continue };
+
+                            if (p.operator == .subAssign) {
+                                var i: usize = 0;
+                                while (i < stringCompletions.items.len) {
+                                    if (std.mem.eql(u8, stringCompletions.items[i].path, path)) {
+                                        const entry = stringCompletions.orderedRemove(i);
+                                        alloc.free(entry.path);
+                                        for (entry.values) |val| alloc.free(val);
+                                        alloc.free(entry.values);
+                                        alloc.free(entry.source);
+                                    } else i += 1;
+                                }
+                            } else {
+                                var values = std.ArrayList([]const u8).empty;
+                                for (vals) |*val| {
+                                    switch (val.*) { .string => |s| values.append(alloc, alloc.dupe(u8, s) catch "") catch {}, else => {} }
+                                }
+                                stringCompletions.append(alloc, .{
+                                    .path   = alloc.dupe(u8, path) catch "",
+                                    .values = values.toOwnedSlice(alloc) catch &.{},
+                                    .source = alloc.dupe(u8, name_for_log) catch "",
+                                }) catch {};
+                            }
+                        }
+                        continue;
                     }
-                    arrays.clearRetainingCapacity();
-                } else if (is_parsers) {
-                    for (parsers.items) |r| {
-                        alloc.free(r.pattern);
-                        alloc.free(r.wasm_source);
+
+                    if (std.mem.eql(u8, p.name, "arrayInlays")) {
+                        if (p.operator == .assign) {
+                            for (arrayInlays.items) |rule| {
+                                alloc.free(rule.path);
+                                for (rule.labels) |l| alloc.free(l);
+                                alloc.free(rule.labels);
+                                alloc.free(rule.source);
+                            }
+                            arrayInlays.clearRetainingCapacity();
+                        }
+                        const outer_arr = switch (p.value) { .array => |a| a, else => continue };
+                        for (outer_arr) |*v| {
+                            const inner = switch (v.*) { .array => |a| a, else => continue };
+                            if (inner.len < 2) continue;
+                            const path = switch (inner[0]) { .string => |s| s, else => continue };
+                            const labs = switch (inner[1]) { .array  => |a| a, else => continue };
+
+                            if (p.operator == .subAssign) {
+                                var i: usize = 0;
+                                while (i < arrayInlays.items.len) {
+                                    if (std.mem.eql(u8, arrayInlays.items[i].path, path)) {
+                                        const entry = arrayInlays.orderedRemove(i);
+                                        alloc.free(entry.path);
+                                        for (entry.labels) |l| alloc.free(l);
+                                        alloc.free(entry.labels);
+                                        alloc.free(entry.source);
+                                    } else i += 1;
+                                }
+                            } else {
+                                var labels = std.ArrayList([]const u8).empty;
+                                for (labs) |*lab| {
+                                    switch (lab.*) { .string => |s| labels.append(alloc, alloc.dupe(u8, s) catch "") catch {}, else => {} }
+                                }
+                                arrayInlays.append(alloc, .{
+                                    .path   = alloc.dupe(u8, path) catch "",
+                                    .labels = labels.toOwnedSlice(alloc) catch &.{},
+                                    .source = alloc.dupe(u8, name_for_log) catch "",
+                                }) catch {};
+                            }
+                        }
+                        continue;
                     }
-                    parsers.clearRetainingCapacity();
-                } else {
-                    for (pdocs.items) |r| {
-                        alloc.free(r.path);
-                        alloc.free(r.doc);
+
+                    if (std.mem.eql(u8, p.name, "parsers")) {
+                        if (p.operator == .assign) {
+                            for (parserRules.items) |rule| {
+                                alloc.free(rule.pattern);
+                                alloc.free(rule.wasm_source);
+                                alloc.free(rule.source);
+                            }
+                            parserRules.clearRetainingCapacity();
+                        }
+                        const outer_arr = switch (p.value) { .array => |a| a, else => continue };
+                        for (outer_arr) |*v| {
+                            const inner = switch (v.*) { .array => |a| a, else => continue };
+                            if (inner.len < 2) continue;
+                            const pattern = switch (inner[0]) { .string => |s| s, else => continue };
+                            const wasm    = switch (inner[1]) { .string => |s| s, else => continue };
+
+                            if (p.operator == .subAssign) {
+                                var i: usize = 0;
+                                while (i < parserRules.items.len) {
+                                    if (std.mem.eql(u8, parserRules.items[i].pattern, pattern)) {
+                                        const entry = parserRules.orderedRemove(i);
+                                        alloc.free(entry.pattern);
+                                        alloc.free(entry.wasm_source);
+                                        alloc.free(entry.source);
+                                    } else i += 1;
+                                }
+                            } else {
+                                parserRules.append(alloc, .{
+                                    .pattern     = alloc.dupe(u8, pattern) catch "",
+                                    .wasm_source = alloc.dupe(u8, wasm) catch "",
+                                    .source      = alloc.dupe(u8, name_for_log) catch "",
+                                }) catch {};
+                            }
+                        }
+                        continue;
                     }
-                    pdocs.clearRetainingCapacity();
-                }
-            }
 
-            for (arr) |*entry| {
-                const pair = switch (entry.*) {
-                    .array => |a| a,
-                    else   => continue,
-                };
-                if (pair.len < 2) continue;
-
-                if (is_parsers) {
-                    const pat = switch (pair[0]) {
-                        .string => |s| s,
-                        else    => continue,
-                    };
-                    const wasm = switch (pair[1]) {
-                        .string => |s| s,
-                        else    => continue,
-                    };
-                    parsers.append(alloc, .{
-                        .pattern     = alloc.dupe(u8, pat)  catch continue,
-                        .wasm_source = alloc.dupe(u8, wasm) catch continue,
-                        .source      = if (source_name.len > 0) alloc.dupe(u8, source_name) catch "" else "",
-                    }) catch {};
-                    continue;
-                }
-
-                if (is_param_docs) {
-                    const path_str = switch (pair[0]) {
-                        .string => |s| s,
-                        else    => continue,
-                    };
-                    const doc_str = switch (pair[1]) {
-                        .string => |s| s,
-                        else    => continue,
-                    };
-                    const path = alloc.dupe(u8, path_str) catch continue;
-                    const doc  = alloc.dupe(u8, doc_str)  catch { alloc.free(path); continue; };
-
-                    pdocs.append(alloc, .{
-                        .path   = path,
-                        .doc    = doc,
-                        .source = if (source_name.len > 0) alloc.dupe(u8, source_name) catch "" else "",
-                    }) catch {
-                        alloc.free(path);
-                        alloc.free(doc);
-                    };
-
-                    continue;
-                }
-
-                const path_str = switch (pair[0]) {
-                    .string => |s| s,
-                    else    => continue,
-                };
-                const path = alloc.dupe(u8, path_str) catch continue;
-
-                if (p.operator == .subAssign) {
-                    if (is_completions) {
-                        const sub_inner = switch (pair[1]) {
-                            .array => |a| a,
-                            else => { alloc.free(path); continue; },
-                        };
-                        var i: usize = completions.items.len;
-                        while (i > 0) {
-                            i -= 1;
-                            const rule = completions.items[i];
-                            if (std.mem.eql(u8, rule.path, path)) {
-                                if (rule.values.len == sub_inner.len) {
-                                    var match = true;
-                                    for (sub_inner, 0..) |*el, j| {
-                                        const s = switch (el.*) { .string => |s| s, else => "" };
-                                        if (!std.mem.eql(u8, rule.values[j], s)) { match = false; break; }
-                                    }
-                                    if (match) {
-                                        const r = completions.orderedRemove(i);
-                                        alloc.free(r.path);
-                                        for (r.values) |v| alloc.free(v);
-                                        alloc.free(r.values);
-                                        if (r.source.len > 0) alloc.free(r.source);
-                                    }
+                    if (std.mem.startsWith(u8, p.name, "doc_")) {
+                        const path = p.name[4..];
+                        if (p.operator == .subAssign) {
+                            var i: usize = 0;
+                            while (i < paramDocs.items.len) {
+                                if (std.mem.eql(u8, paramDocs.items[i].path, path)) {
+                                    const entry = paramDocs.orderedRemove(i);
+                                    alloc.free(entry.path);
+                                    alloc.free(entry.doc);
+                                    alloc.free(entry.source);
+                                } else i += 1;
+                            }
+                        } else {
+                            if (p.operator == .assign) {
+                                var i: usize = 0;
+                                while (i < paramDocs.items.len) {
+                                    if (std.mem.eql(u8, paramDocs.items[i].path, path)) {
+                                        const entry = paramDocs.orderedRemove(i);
+                                        alloc.free(entry.path);
+                                        alloc.free(entry.doc);
+                                        alloc.free(entry.source);
+                                    } else i += 1;
                                 }
                             }
+                            const doc  = switch (p.value) {
+                                .string => |s| s,
+                                else    => continue,
+                            };
+                            paramDocs.append(alloc, .{
+                                .path   = alloc.dupe(u8, path) catch "",
+                                .doc    = alloc.dupe(u8, doc) catch "",
+                                .source = alloc.dupe(u8, name_for_log) catch "",
+                            }) catch {};
                         }
-                    } else if (is_array_inlays) {
-                        const sub_inner = switch (pair[1]) {
-                            .array => |a| a,
-                            else => { alloc.free(path); continue; },
-                        };
-                        var i: usize = arrays.items.len;
-                        while (i > 0) {
-                            i -= 1;
-                            const rule = arrays.items[i];
-                            if (std.mem.eql(u8, rule.path, path)) {
-                                if (rule.labels.len == sub_inner.len) {
-                                    var match = true;
-                                    for (sub_inner, 0..) |*el, j| {
-                                        const s = switch (el.*) { .string => |s| s, else => "" };
-                                        if (!std.mem.eql(u8, rule.labels[j], s)) { match = false; break; }
-                                    }
-                                    if (match) {
-                                        const r = arrays.orderedRemove(i);
-                                        alloc.free(r.path);
-                                        for (r.labels) |l| alloc.free(l);
-                                        alloc.free(r.labels);
-                                        if (r.source.len > 0) alloc.free(r.source);
-                                    }
+                        continue;
+                    }
+
+                    if (std.mem.startsWith(u8, p.name, "parser_")) {
+                        const pattern = p.name[7..];
+                        if (p.operator == .subAssign) {
+                            var i: usize = 0;
+                            while (i < parserRules.items.len) {
+                                if (std.mem.eql(u8, parserRules.items[i].pattern, pattern)) {
+                                    const entry = parserRules.orderedRemove(i);
+                                    alloc.free(entry.pattern);
+                                    alloc.free(entry.wasm_source);
+                                    alloc.free(entry.source);
+                                } else i += 1;
+                            }
+                        } else {
+                            if (p.operator == .assign) {
+                                var i: usize = 0;
+                                while (i < parserRules.items.len) {
+                                    if (std.mem.eql(u8, parserRules.items[i].pattern, pattern)) {
+                                        const entry = parserRules.orderedRemove(i);
+                                        alloc.free(entry.pattern);
+                                        alloc.free(entry.wasm_source);
+                                        alloc.free(entry.source);
+                                    } else i += 1;
                                 }
                             }
+                            const wasm    = switch (p.value) {
+                                .string => |s| s,
+                                else    => continue,
+                            };
+                            parserRules.append(alloc, .{
+                                .pattern     = alloc.dupe(u8, pattern) catch "",
+                                .wasm_source = alloc.dupe(u8, wasm) catch "",
+                                .source      = alloc.dupe(u8, name_for_log) catch "",
+                            }) catch {};
                         }
-                    } else if (is_parsers) {
-                        const wasm = switch (pair[1]) { .string => |s| s, else => "" };
-                        var i: usize = parsers.items.len;
-                        while (i > 0) {
-                            i -= 1;
-                            const rule = parsers.items[i];
-                            if (std.mem.eql(u8, rule.pattern, path) and std.mem.eql(u8, rule.wasm_source, wasm)) {
-                                const r = parsers.orderedRemove(i);
-                                alloc.free(r.pattern);
-                                alloc.free(r.wasm_source);
-                                if (r.source.len > 0) alloc.free(r.source);
-                            }
-                        }
-                    } else if (is_param_docs) {
-                        const doc = switch (pair[1]) { .string => |s| s, else => "" };
-                        var i: usize = pdocs.items.len;
-                        while (i > 0) {
-                            i -= 1;
-                            const rule = pdocs.items[i];
-                            if (std.mem.eql(u8, rule.path, path) and std.mem.eql(u8, rule.doc, doc)) {
-                                const r = pdocs.orderedRemove(i);
-                                alloc.free(r.path);
-                                alloc.free(r.doc);
-                                if (r.source.len > 0) alloc.free(r.source);
-                            }
-                        }
+                        continue;
                     }
-                    alloc.free(path);
-                    continue;
-                }
 
-                const inner = switch (pair[1]) {
-                    .array => |a| a,
-                    else   => { alloc.free(path); continue; },
-                };
-                if (is_completions) {
-                    const vs = alloc.alloc([]const u8, inner.len) catch { alloc.free(path); continue; };
-                    for (inner, 0..) |*el, i| {
-                        vs[i] = switch (el.*) {
-                            .string => |s| alloc.dupe(u8, s) catch "",
-                            else    => "",
-                        };
-                    }
-                    completions.append(alloc, .{
-                        .path   = path,
-                        .values = vs,
-                        .source = if (source_name.len > 0) alloc.dupe(u8, source_name) catch "" else "",
-                    }) catch {
-                        alloc.free(path);
-                        for (vs) |v| alloc.free(v);
-                        alloc.free(vs);
+                    const arr = switch (p.value) {
+                        .array => |a| a,
+                        else   => continue,
                     };
-                } else if (is_array_inlays) {
-                    const ls = alloc.alloc([]const u8, inner.len) catch { alloc.free(path); continue; };
-                    for (inner, 0..) |*el, i| {
-                        ls[i] = switch (el.*) {
-                            .string => |s| alloc.dupe(u8, s) catch "",
-                            else    => "",
-                        };
+                    var values = std.ArrayList([]const u8).empty;
+                    for (arr) |*v| {
+                        switch (v.*) {
+                            .string => |s| values.append(alloc, alloc.dupe(u8, s) catch "") catch {},
+                            else    => {},
+                        }
                     }
-                    arrays.append(alloc, .{
-                        .path   = path,
-                        .labels = ls,
-                        .source = if (source_name.len > 0) alloc.dupe(u8, source_name) catch "" else "",
-                    }) catch {
-                        alloc.free(path);
-                        for (ls) |l| alloc.free(l);
-                        alloc.free(ls);
-                    };
-                }
+
+                    if (std.mem.startsWith(u8, p.name, "inlay_")) {
+                        const path = p.name[6..];
+                        if (p.operator == .subAssign) {
+                            var i: usize = 0;
+                            while (i < arrayInlays.items.len) {
+                                if (std.mem.eql(u8, arrayInlays.items[i].path, path)) {
+                                    const entry = arrayInlays.orderedRemove(i);
+                                    alloc.free(entry.path);
+                                    for (entry.labels) |l| alloc.free(l);
+                                    alloc.free(entry.labels);
+                                    alloc.free(entry.source);
+                                } else i += 1;
+                            }
+                            for (values.items) |v| alloc.free(v);
+                            values.deinit(alloc);
+                        } else {
+                            if (p.operator == .assign) {
+                                var i: usize = 0;
+                                while (i < arrayInlays.items.len) {
+                                    if (std.mem.eql(u8, arrayInlays.items[i].path, path)) {
+                                        const entry = arrayInlays.orderedRemove(i);
+                                        alloc.free(entry.path);
+                                        for (entry.labels) |l| alloc.free(l);
+                                        alloc.free(entry.labels);
+                                        alloc.free(entry.source);
+                                    } else i += 1;
+                                }
+                            }
+                            arrayInlays.append(alloc, .{
+                                .path   = alloc.dupe(u8, path) catch "",
+                                .labels = values.toOwnedSlice(alloc) catch &.{},
+                                .source = alloc.dupe(u8, name_for_log) catch "",
+                            }) catch {};
+                        }
+                    } else {
+                        if (p.operator == .subAssign) {
+                            var i: usize = 0;
+                            while (i < stringCompletions.items.len) {
+                                if (std.mem.eql(u8, stringCompletions.items[i].path, p.name)) {
+                                    const entry = stringCompletions.orderedRemove(i);
+                                    alloc.free(entry.path);
+                                    for (entry.values) |v| alloc.free(v);
+                                    alloc.free(entry.values);
+                                    alloc.free(entry.source);
+                                } else i += 1;
+                            }
+                            for (values.items) |v| alloc.free(v);
+                            values.deinit(alloc);
+                        } else {
+                            if (p.operator == .assign) {
+                                var i: usize = 0;
+                                while (i < stringCompletions.items.len) {
+                                    if (std.mem.eql(u8, stringCompletions.items[i].path, p.name)) {
+                                        const entry = stringCompletions.orderedRemove(i);
+                                        alloc.free(entry.path);
+                                        for (entry.values) |v| alloc.free(v);
+                                        alloc.free(entry.values);
+                                        alloc.free(entry.source);
+                                    } else i += 1;
+                                }
+                            }
+                            stringCompletions.append(alloc, .{
+                                .path   = alloc.dupe(u8, p.name) catch "",
+                                .values = values.toOwnedSlice(alloc) catch &.{},
+                                .source = alloc.dupe(u8, name_for_log) catch "",
+                            }) catch {};
+                        }
+                    }
+                },
+                .delete => |*d| {
+                    const name = d.* orelse continue;
+                    if (std.mem.startsWith(u8, name, "doc_")) {
+                        const path = name[4..];
+                        var i: usize = 0;
+                        while (i < paramDocs.items.len) {
+                            if (std.mem.eql(u8, paramDocs.items[i].path, path)) {
+                                const entry = paramDocs.orderedRemove(i);
+                                alloc.free(entry.path);
+                                alloc.free(entry.doc);
+                                alloc.free(entry.source);
+                            } else i += 1;
+                        }
+                    } else if (std.mem.startsWith(u8, name, "parser_")) {
+                        const pattern = name[7..];
+                        var i: usize = 0;
+                        while (i < parserRules.items.len) {
+                            if (std.mem.eql(u8, parserRules.items[i].pattern, pattern)) {
+                                const entry = parserRules.orderedRemove(i);
+                                alloc.free(entry.pattern);
+                                alloc.free(entry.wasm_source);
+                                alloc.free(entry.source);
+                            } else i += 1;
+                        }
+                    } else if (std.mem.startsWith(u8, name, "inlay_")) {
+                        const path = name[6..];
+                        var i: usize = 0;
+                        while (i < arrayInlays.items.len) {
+                            if (std.mem.eql(u8, arrayInlays.items[i].path, path)) {
+                                const entry = arrayInlays.orderedRemove(i);
+                                alloc.free(entry.path);
+                                for (entry.labels) |l| alloc.free(l);
+                                alloc.free(entry.labels);
+                                alloc.free(entry.source);
+                            } else i += 1;
+                        }
+                    } else if (std.mem.eql(u8, name, "paramDocs")) {
+                        for (paramDocs.items) |entry| {
+                            alloc.free(entry.path);
+                            alloc.free(entry.doc);
+                            alloc.free(entry.source);
+                        }
+                        paramDocs.clearRetainingCapacity();
+                    } else if (std.mem.eql(u8, name, "stringCompletions")) {
+                        for (stringCompletions.items) |entry| {
+                            alloc.free(entry.path);
+                            for (entry.values) |v| alloc.free(v);
+                            alloc.free(entry.values);
+                            alloc.free(entry.source);
+                        }
+                        stringCompletions.clearRetainingCapacity();
+                    } else if (std.mem.eql(u8, name, "arrayInlays")) {
+                        for (arrayInlays.items) |entry| {
+                            alloc.free(entry.path);
+                            for (entry.labels) |l| alloc.free(l);
+                            alloc.free(entry.labels);
+                            alloc.free(entry.source);
+                        }
+                        arrayInlays.clearRetainingCapacity();
+                    } else if (std.mem.eql(u8, name, "parsers")) {
+                        for (parserRules.items) |entry| {
+                            alloc.free(entry.pattern);
+                            alloc.free(entry.wasm_source);
+                            alloc.free(entry.source);
+                        }
+                        parserRules.clearRetainingCapacity();
+                    } else {
+                        var i: usize = 0;
+                        while (i < stringCompletions.items.len) {
+                            if (std.mem.eql(u8, stringCompletions.items[i].path, name)) {
+                                const entry = stringCompletions.orderedRemove(i);
+                                alloc.free(entry.path);
+                                for (entry.values) |v| alloc.free(v);
+                                alloc.free(entry.values);
+                                alloc.free(entry.source);
+                            } else i += 1;
+                        }
+                    }
+                },
+                else => {},
             }
         }
 
-        return .{
-            .stringCompletions = completions.toOwnedSlice(alloc) catch &.{},
-            .arrayInlays       = arrays.toOwnedSlice(alloc)      catch &.{},
-            .parserRules       = parsers.toOwnedSlice(alloc)     catch &.{},
-            .paramDocs         = pdocs.toOwnedSlice(alloc)       catch &.{},
-            .documentHints     = docHints,
-        };
+        base_state.stringCompletions = stringCompletions.toOwnedSlice(alloc) catch &.{};
+        base_state.arrayInlays       = arrayInlays.toOwnedSlice(alloc) catch &.{};
+        base_state.parserRules       = parserRules.toOwnedSlice(alloc) catch &.{};
+        base_state.paramDocs         = paramDocs.toOwnedSlice(alloc) catch &.{};
+
+        return base_state;
     }
 
     pub fn deinit(self: *SchemaState, alloc: std.mem.Allocator) void {
@@ -663,20 +1187,16 @@ pub const SchemaState = struct {
         if (self.paramDocs.len > 0) alloc.free(self.paramDocs);
         self.paramDocs = &.{};
 
-        var it = self.documentHints.iterator();
-        while (it.next()) |entry| {
-            alloc.free(entry.key_ptr.*);
-            for (entry.value_ptr.*) |h| alloc.free(h.text);
-            alloc.free(entry.value_ptr.*);
-        }
-        self.documentHints.deinit(alloc);
-
         for (self.schemaClasses) |name| alloc.free(name);
         if (self.schemaClasses.len > 0) alloc.free(self.schemaClasses);
         self.schemaClasses = &.{};
 
         if (self.projectName.len > 0) alloc.free(self.projectName);
         self.projectName = "";
+        if (self.selectedClass.len > 0) alloc.free(self.selectedClass);
+        self.selectedClass = "";
+        if (self.base_class.len > 0) alloc.free(self.base_class);
+        self.base_class = "";
 
         var pushed_it = self.pushedSchemas.iterator();
         while (pushed_it.next()) |entry| {
@@ -685,6 +1205,33 @@ pub const SchemaState = struct {
         }
         self.pushedSchemas.deinit(alloc);
         self.pushedSchemas = .empty;
+    }
+
+    pub fn collectInheritanceChain(self: *const SchemaState, manager: ?*const SchemaManager, alloc: std.mem.Allocator) ![]const []const u8 {
+        var list = std.ArrayList([]const u8).empty;
+        errdefer {
+            for (list.items) |n| alloc.free(n);
+            list.deinit(alloc);
+        }
+
+        var current_name = self.selectedClass;
+        while (current_name.len > 0) {
+            try list.insert(alloc, 0, try alloc.dupe(u8, current_name));
+            
+            if (self.pushedSchemas.get(current_name)) |state| {
+                current_name = state.base_class;
+            } else if (manager) |m| {
+                if (m.findGlobalSchemaState(current_name)) |state| {
+                    current_name = state.base_class;
+                } else {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+
+        return list.toOwnedSlice(alloc);
     }
 
     pub fn valuesFor(self: *const SchemaState, param_path: []const u8) ?[]const []const u8 {
@@ -725,188 +1272,127 @@ pub const SchemaState = struct {
                 return rule;
             }
         }
-        log("[docFor] no match found", .{});
         return null;
     }
-};
 
-test "schema: forward decl base resolved from same document" {
-    const src =
-        \\class CfgSchemas {
-        \\    class DayZ {
-        \\        stringCompletions[] = {{"Foo.bar", {"a", "b"}}};
-        \\    };
-        \\    class DayZ;
-        \\    class MyProject : DayZ {
-        \\        stringCompletions[] += {{"Foo.baz", {"x"}}};
-        \\    };
-        \\};
-    ;
-    var docs: std.StringArrayHashMapUnmanaged([]const u8) = .{};
-    defer docs.deinit(std.testing.allocator);
-    try docs.put(std.testing.allocator, "file://a.cpp", src);
+    test "rule inheritance and operators" {
+        const alloc = std.testing.allocator;
 
-    var state: SchemaState = .empty;
-    defer state.deinit(std.testing.allocator);
-    state.extractFromDocuments(std.testing.allocator, &docs);
+        const schema_src =
+            \\class CfgSchemas {
+            \\    class Base {
+            \\        stringCompletions[] = {
+            \\            {"Base/Path", {"V1", "V2"}}
+            \\        };
+            \\        doc_Base = "Base doc";
+            \\    };
+            \\    class Derived : Base {
+            \\        stringCompletions[] += {
+            \\            {"Derived/Path", {"V3"}}
+            \\        };
+            \\        doc_Base = "Derived doc override";
+            \\        doc_Derived = "Derived doc";
+            \\    };
+            \\    class DerivedReplace : Base {
+            \\        stringCompletions[] = {
+            \\            {"New/Path", {"V4"}}
+            \\        };
+            \\    };
+            \\    class DerivedSub : Base {
+            \\        stringCompletions[] -= {
+            \\            {"Base/Path", {}}
+            \\        };
+            \\        delete doc_Base;
+            \\    };
+            \\};
+        ;
 
-    try std.testing.expect(state.valuesFor("Foo.bar") != null);
-    try std.testing.expect(state.valuesFor("Foo.baz") != null);
-}
+        var manager = SchemaManager.empty;
+        defer manager.deinit(alloc);
 
-test "schema: forward decl base resolved across two documents" {
-    const base_src =
-        \\class CfgSchemas {
-        \\    class DayZ {
-        \\        stringCompletions[] = {{"Weapon.type", {"Rifle", "Pistol"}}};
-        \\    };
-        \\};
-    ;
-    const proj_src =
-        \\class CfgSchemas {
-        \\    class DayZ;
-        \\    class MyProject : DayZ {
-        \\        stringCompletions[] += {{"Vehicle.type", {"Car", "Truck"}}};
-        \\    };
-        \\};
-    ;
+        try manager.updateSchema(alloc, "file:///path/to/schema.cpp", schema_src, "Derived");
+        const state = manager.getSchemaForUri("file:///path/to/data.rvmat");
 
-    var docs: std.StringArrayHashMapUnmanaged([]const u8) = .{};
-    defer docs.deinit(std.testing.allocator);
-    try docs.put(std.testing.allocator, "file://dayz.cpp",   base_src);
-    try docs.put(std.testing.allocator, "file://mymod.cpp",  proj_src);
+        try std.testing.expect(state.valuesFor("Base/Path") != null);
+        try std.testing.expectEqual(@as(usize, 2), state.valuesFor("Base/Path").?.len);
+        try std.testing.expect(state.valuesFor("Derived/Path") != null);
+        try std.testing.expectEqual(@as(usize, 1), state.valuesFor("Derived/Path").?.len);
 
-    var state: SchemaState = .empty;
-    defer state.deinit(std.testing.allocator);
-    state.extractFromDocuments(std.testing.allocator, &docs);
+        try std.testing.expectEqualStrings("Derived doc override", state.docFor("Base").?);
+        try std.testing.expectEqualStrings("Derived doc", state.docFor("Derived").?);
 
-    try std.testing.expect(state.valuesFor("Weapon.type") != null);
-    try std.testing.expect(state.valuesFor("Vehicle.type") != null);
+        try manager.updateSchema(alloc, "file:///path/to/schema.cpp", schema_src, "DerivedReplace");
+        const state2 = manager.getSchemaForUri("file:///path/to/data.rvmat");
+        try std.testing.expect(state2.valuesFor("Base/Path") == null);
+        try std.testing.expect(state2.valuesFor("New/Path") != null);
 
-    var saw_dayz = false;
-    var saw_myproject = false;
-    for (state.schemaClasses) |name| {
-        if (std.mem.eql(u8, name, "DayZ"))      saw_dayz      = true;
-        if (std.mem.eql(u8, name, "MyProject")) saw_myproject = true;
+        try manager.updateSchema(alloc, "file:///path/to/schema.cpp", schema_src, "DerivedSub");
+        const state3 = manager.getSchemaForUri("file:///path/to/data.rvmat");
+        try std.testing.expect(state3.valuesFor("Base/Path") == null);
+        try std.testing.expect(state3.docFor("Base") == null);
     }
-    try std.testing.expect(saw_dayz);
-    try std.testing.expect(saw_myproject);
-}
 
-test "schema: forward decl base resolved when base doc added after derived doc" {
-    const base_src =
-        \\class CfgSchemas {
-        \\    class DayZ {
-        \\        stringCompletions[] = {{"Item.slot", {"Primary", "Secondary"}}};
-        \\    };
-        \\};
-    ;
-    const proj_src =
-        \\class CfgSchemas {
-        \\    class DayZ;
-        \\    class MyMod : DayZ {};
-        \\};
-    ;
+    test "collectInheritanceChain works" {
+        const alloc = std.testing.allocator;
+        const schema_src =
+            \\class CfgSchemas {
+            \\    class DayZ { rules = 1; };
+            \\    class MyProject : DayZ { rules = 2; };
+            \\};
+        ;
+        var manager = SchemaManager.empty;
+        defer manager.deinit(alloc);
 
-    var docs: std.StringArrayHashMapUnmanaged([]const u8) = .{};
-    defer docs.deinit(std.testing.allocator);
-    try docs.put(std.testing.allocator, "file://mymod.cpp",  proj_src);
-    try docs.put(std.testing.allocator, "file://dayz.cpp",   base_src);
+        try manager.updateSchema(alloc, "file:///root/paramlib.cpp", schema_src, "MyProject");
+        const state = manager.getSchemaForUri("file:///root/data.rvmat");
 
-    var state: SchemaState = .empty;
-    defer state.deinit(std.testing.allocator);
-    state.extractFromDocuments(std.testing.allocator, &docs);
+        const chain = try state.collectInheritanceChain(&manager, alloc);
+        defer {
+            for (chain) |n| alloc.free(n);
+            alloc.free(chain);
+        }
 
-    try std.testing.expect(state.valuesFor("Item.slot") != null);
-}
+        try std.testing.expectEqual(@as(usize, 2), chain.len);
+        try std.testing.expectEqualStrings("DayZ", chain[0]);
+        try std.testing.expectEqualStrings("MyProject", chain[1]);
+    }
 
-test "schema: forward decl internal schema" {
-    var state: SchemaState = .empty;
-    defer state.deinit(std.testing.allocator);
+    test "inheritance chain across files" {
+        const alloc = std.testing.allocator;
+        const root_src =
+            \\class CfgSchemas {
+            \\    class DayZ { rules = 1; };
+            \\    class MyProject : DayZ { rules = 2; };
+            \\};
+        ;
+        const leaf_src =
+            \\class CfgSchemas {
+            \\    class MyProject;
+            \\    class NextProject : MyProject { rules = 3; };
+            \\};
+        ;
 
-    const internal_src =
-        \\class CfgSchemas {
-        \\    class DayZ {
-        \\        stringCompletions[] = {{"Foo.bar", {"a", "b"}}};
-        \\    };
-        \\};
-    ;
-    state.updateFromContent(std.testing.allocator, internal_src, "DayZ");
+        var manager = SchemaManager.empty;
+        defer manager.deinit(alloc);
 
-    const proj_src =
-        \\class CfgSchemas {
-        \\    class DayZ;
-        \\    class MyProject : DayZ {
-        \\        stringCompletions[] += {{"Foo.baz", {"x"}}};
-        \\    };
-        \\};
-    ;
-    var docs: std.StringArrayHashMapUnmanaged([]const u8) = .{};
-    defer docs.deinit(std.testing.allocator);
-    try docs.put(std.testing.allocator, "file://paramlib.cpp", proj_src);
+        try manager.updateSchema(alloc, "file:///root/paramlib.cpp", root_src, "MyProject");
+        try manager.updateSchema(alloc, "file:///root/next/paramlib.cpp", leaf_src, "NextProject");
 
-    state.extractFromDocuments(std.testing.allocator, &docs);
+        const state = manager.getSchemaForUri("file:///root/next/data.rvmat");
+        try std.testing.expectEqualStrings("NextProject", state.selectedClass);
 
-    try std.testing.expect(state.valuesFor("Foo.bar") != null);
-    try std.testing.expect(state.valuesFor("Foo.baz") != null);
-}
+        const chain = try state.collectInheritanceChain(&manager, alloc);
+        defer {
+            for (chain) |n| alloc.free(n);
+            alloc.free(chain);
+        }
 
-test "schema: array -= operator" {
-    var state: SchemaState = .empty;
-    defer state.deinit(std.testing.allocator);
-
-    const src =
-        \\class CfgSchemas {
-        \\    class Base {
-        \\        stringCompletions[] = {
-        \\            {"A", {"1"}},
-        \\            {"B", {"2"}}
-        \\        };
-        \\    };
-        \\    class Project : Base {
-        \\        stringCompletions[] -= {{"A", {"1"}}};
-        \\    };
-        \\};
-    ;
-    var docs: std.StringArrayHashMapUnmanaged([]const u8) = .{};
-    defer docs.deinit(std.testing.allocator);
-    try docs.put(std.testing.allocator, "file://paramlib.cpp", src);
-
-    state.extractFromDocuments(std.testing.allocator, &docs);
-
-    try std.testing.expect(state.valuesFor("A") == null);
-    try std.testing.expect(state.valuesFor("B") != null);
-}
-
-test "schema: array -= operator requires value match" {
-    var state: SchemaState = .empty;
-    defer state.deinit(std.testing.allocator);
-
-    const src =
-        \\class CfgSchemas {
-        \\    class Base {
-        \\        stringCompletions[] = {
-        \\            {"A", {"1"}},
-        \\            {"A", {"2"}}
-        \\        };
-        \\    };
-        \\    class Project : Base {
-        \\        stringCompletions[] -= {{"A", {"1"}}};
-        \\    };
-        \\};
-    ;
-    var docs: std.StringArrayHashMapUnmanaged([]const u8) = .{};
-    defer docs.deinit(std.testing.allocator);
-    try docs.put(std.testing.allocator, "file://paramlib.cpp", src);
-
-    state.extractFromDocuments(std.testing.allocator, &docs);
-
-    const vals = state.valuesFor("A");
-    try std.testing.expect(vals != null);
-    try std.testing.expectEqual(@as(usize, 1), vals.?.len);
-    try std.testing.expectEqualStrings("2", vals.?[0]);
-}
-
+        try std.testing.expectEqual(@as(usize, 3), chain.len);
+        try std.testing.expectEqualStrings("DayZ", chain[0]);
+        try std.testing.expectEqualStrings("MyProject", chain[1]);
+        try std.testing.expectEqualStrings("NextProject", chain[2]);
+    }
+};
 fn globMatch(pattern: []const u8, str: []const u8) bool {
     return globMatchAt(pattern, 0, str, 0);
 }
@@ -974,7 +1460,6 @@ fn stripArraySuffix(path: []const u8) []const u8 {
     return path;
 }
 
-
 const RequestMethods = union(enum) {
     initialize:                           lsp.types.InitializeParams,
     shutdown,
@@ -1001,12 +1486,12 @@ const NotificationMethods = union(enum) {
 pub const Message = lsp.Message(RequestMethods, NotificationMethods, .{});
 
 pub fn handleMessage(
-    documents: *std.StringArrayHashMapUnmanaged([]const u8),
-    schema:    *SchemaState,
-    allocator: std.mem.Allocator,
-    io:        std.Io,
-    message:   std.json.Parsed(Message),
-    transport: *lsp.Transport,
+    documents:      *std.StringArrayHashMapUnmanaged([]const u8),
+    schema_manager: *SchemaManager,
+    allocator:      std.mem.Allocator,
+    io:             std.Io,
+    message:        std.json.Parsed(Message),
+    transport:      *lsp.Transport,
 ) !void {
     switch (message.value) {
         .request => |req| switch (req.params) {
@@ -1053,6 +1538,7 @@ pub fn handleMessage(
             .@"textDocument/hover" => |params| {
                 var arena = std.heap.ArenaAllocator.init(allocator);
                 defer arena.deinit();
+                const schema = schema_manager.getSchemaForUri(params.textDocument.uri);
                 const result = hover(documents, schema, arena.allocator(), params);
                 try transport.writeResponse(io, allocator, req.id,
                     ?lsp.types.Hover, result,
@@ -1106,6 +1592,7 @@ pub fn handleMessage(
             .@"textDocument/completion" => |params| {
                 var arena = std.heap.ArenaAllocator.init(allocator);
                 defer arena.deinit();
+                const schema = schema_manager.getSchemaForUri(params.textDocument.uri);
                 const result = completion(documents, schema, arena.allocator(), params);
                 try transport.writeResponse(io, allocator, req.id,
                     ?lsp.types.completion.Result, result,
@@ -1116,7 +1603,8 @@ pub fn handleMessage(
             .@"textDocument/inlayHint" => |params| {
                 var arena = std.heap.ArenaAllocator.init(allocator);
                 defer arena.deinit();
-                const result = inlayHints(documents, schema, arena.allocator(), params);
+                const schema = schema_manager.getSchemaForUri(params.textDocument.uri);
+                const result = inlayHints(documents, schema, &schema_manager.documentHints, arena.allocator(), params);
                 try transport.writeResponse(io, allocator, req.id,
                     ?[]const lsp.types.InlayHint, result,
                     .{ .emit_null_optional_fields = false },
@@ -1125,13 +1613,104 @@ pub fn handleMessage(
 
             .other => |method_params| {
                 if (std.mem.eql(u8, method_params.method, "$/paramlib/listSchemaClasses")) {
+                    const uri = if (method_params.params) |pars| blk: {
+                        const Pars = struct { textDocument: lsp.types.TextDocument.Identifier };
+                        const parsed = std.json.parseFromValue(Pars, allocator, pars, .{ .ignore_unknown_fields = true }) catch null;
+                        if (parsed) |p| {
+                            defer p.deinit();
+                            break :blk try allocator.dupe(u8, p.value.textDocument.uri);
+                        }
+                        break :blk null;
+                    } else null;
+                    defer if (uri) |u| allocator.free(u);
+
+                    const schema = if (uri) |u| schema_manager.getSchemaForUri(u) else &SchemaState.empty;
+                    const names = if (schema != &SchemaState.empty and schema.selectedClass.len > 0)
+                        try schema.collectInheritanceChain(schema_manager, allocator)
+                    else
+                        try schema_manager.collectAllSchemaClassNames(allocator);
+
+                    defer {
+                        for (names) |n| allocator.free(n);
+                        allocator.free(names);
+                    }
                     try transport.writeResponse(io, allocator, req.id,
-                        []const []const u8, schema.schemaClasses,
+                        []const []const u8, names,
                         .{ .emit_null_optional_fields = false },
                     );
-                } else if (std.mem.eql(u8, method_params.method, "$/paramlib/getParserRules")) {
+                } else if (std.mem.eql(u8, method_params.method, "$/paramlib/listClassesInContent")) {
+                    var list = std.ArrayList([]const u8).empty;
+                    defer {
+                        for (list.items) |n| allocator.free(n);
+                        list.deinit(allocator);
+                    }
+
+                    if (method_params.params) |pars| {
+                        const Pars = struct { content: []const u8 };
+                        const parsed = std.json.parseFromValue(Pars, allocator, pars, .{ .ignore_unknown_fields = true }) catch null;
+                        if (parsed) |p| {
+                            defer p.deinit();
+                            const src: ?[:0]const u8 = allocator.dupeZ(u8, p.value.content) catch null;
+                            defer if (src) |s| allocator.free(s);
+
+                            if (src) |s| {
+                                var errored = false;
+                                var root = paramlib.cpp.parser.parseSource(allocator, s, &errored, .none()) catch return;
+                                defer root.deinit(allocator);
+
+                                const names = SchemaState.collectSchemaClassNames(&root, allocator) catch &.{};
+                                defer {
+                                    for (names) |n| allocator.free(n);
+                                    allocator.free(names);
+                                }
+                                for (names) |n| {
+                                    try list.append(allocator, try allocator.dupe(u8, n));
+                                }
+                            }
+                        }
+                    }
+
                     try transport.writeResponse(io, allocator, req.id,
-                        []const ParserRule, schema.parserRules,
+                        []const []const u8, list.items,
+                        .{ .emit_null_optional_fields = false },
+                    );
+                } else if (std.mem.eql(u8, method_params.method, "$/paramlib/getDebugInfo")) {
+                    if (method_params.params) |pars| {
+                        const Pars = struct { uri: []const u8 };
+                        const parsed = std.json.parseFromValue(Pars, allocator, pars, .{ .ignore_unknown_fields = true }) catch null;
+                        if (parsed) |p| {
+                            defer p.deinit();
+                            const schema = schema_manager.getSchemaForUri(p.value.uri);
+                            const chain = try schema.collectInheritanceChain(schema_manager, allocator);
+                            defer {
+                                for (chain) |n| allocator.free(n);
+                                allocator.free(chain);
+                            }
+                            const result = .{
+                                .uri = p.value.uri,
+                                .rules = schema.parserRules,
+                                .hintsCount = if (schema_manager.documentHints.get(p.value.uri)) |h| h.len else 0,
+                                .selectedClass = schema.selectedClass,
+                                .availableClasses = chain,
+                                .instances = &.{},
+                            };
+                            try transport.writeResponse(io, allocator, req.id,
+                                @TypeOf(result), result,
+                                .{ .emit_null_optional_fields = false },
+                            );
+                        }
+                    }
+                } else if (std.mem.eql(u8, method_params.method, "$/paramlib/ping")) {
+                    try transport.writeResponse(io, allocator, req.id, []const u8, "pong", .{});
+                } else if (std.mem.eql(u8, method_params.method, "$/paramlib/getParserRules")) {
+                    var list = std.ArrayListUnmanaged(ParserRule).empty;
+                    defer list.deinit(allocator);
+                    var it = schema_manager.schemas.iterator();
+                    while (it.next()) |entry| {
+                        try list.appendSlice(allocator, entry.value_ptr.parserRules);
+                    }
+                    try transport.writeResponse(io, allocator, req.id,
+                        []const ParserRule, list.items,
                         .{ .emit_null_optional_fields = false },
                     );
                 } else if (std.mem.eql(u8, method_params.method, "$/paramlib/getDocumentParams")) {
@@ -1179,14 +1758,23 @@ pub fn handleMessage(
                     }
                     try transport.writeResponse(io, allocator, req.id, void, {}, .{});
                 } else if (std.mem.eql(u8, method_params.method, "$/paramlib/resetSchema")) {
-                    var hint_it = schema.documentHints.iterator();
+                    var hint_it = schema_manager.documentHints.iterator();
                     while (hint_it.next()) |entry| {
                         allocator.free(entry.key_ptr.*);
                         for (entry.value_ptr.*) |h| allocator.free(h.text);
                         allocator.free(entry.value_ptr.*);
                     }
-                    schema.documentHints.deinit(allocator);
-                    schema.documentHints = .empty;
+                    schema_manager.documentHints.deinit(allocator);
+                    schema_manager.documentHints = .empty;
+
+                    var it = schema_manager.schemas.iterator();
+                    while (it.next()) |entry| {
+                        allocator.free(entry.key_ptr.*);
+                        entry.value_ptr.deinit(allocator);
+                    }
+                    schema_manager.schemas.deinit(allocator);
+                    schema_manager.schemas = .empty;
+
                     for (documents.keys()) |uri| {
                         try publishDiagnostics(transport, io, allocator, documents, uri);
                     }
@@ -1206,7 +1794,11 @@ pub fn handleMessage(
                 const uri  = try allocator.dupe(u8, params.textDocument.uri);
                 const text = try allocator.dupe(u8, params.textDocument.text);
                 try documents.put(allocator, uri, text);
-                schema.extractFromDocuments(allocator, documents);
+                
+                if (schema_manager.getSchemaKeyForUri(params.textDocument.uri)) |key| {
+                    const schema = schema_manager.schemas.getPtr(key).?;
+                    try schema.extractFromDocuments(schema_manager, allocator, documents, key);
+                }
                 try publishDiagnostics(transport, io, allocator, documents, params.textDocument.uri);
             },
 
@@ -1222,7 +1814,10 @@ pub fn handleMessage(
                         slot.* = try allocator.dupe(u8, new_text);
                     }
                 }
-                schema.extractFromDocuments(allocator, documents);
+                if (schema_manager.getSchemaKeyForUri(params.textDocument.uri)) |key| {
+                    const schema = schema_manager.schemas.getPtr(key).?;
+                    try schema.extractFromDocuments(schema_manager, allocator, documents, key);
+                }
                 try publishDiagnostics(transport, io, allocator, documents, params.textDocument.uri);
             },
 
@@ -1233,7 +1828,10 @@ pub fn handleMessage(
                         slot.* = try allocator.dupe(u8, text);
                     }
                 }
-                schema.extractFromDocuments(allocator, documents);
+                if (schema_manager.getSchemaKeyForUri(params.textDocument.uri)) |key| {
+                    const schema = schema_manager.schemas.getPtr(key).?;
+                    try schema.extractFromDocuments(schema_manager, allocator, documents, key);
+                }
                 try publishDiagnostics(transport, io, allocator, documents, params.textDocument.uri);
             },
 
@@ -1250,7 +1848,7 @@ pub fn handleMessage(
                     const parsed = std.json.parseFromValue(ParserHintsParams, allocator, method_params.params.?, .{ .ignore_unknown_fields = true }) catch return;
                     defer parsed.deinit();
 
-                    if (schema.documentHints.fetchOrderedRemove(parsed.value.uri)) |entry| {
+                    if (schema_manager.documentHints.fetchOrderedRemove(parsed.value.uri)) |entry| {
                         allocator.free(entry.key);
                         for (entry.value) |h| allocator.free(h.text);
                         allocator.free(entry.value);
@@ -1268,18 +1866,26 @@ pub fn handleMessage(
                             .text = allocator.dupe(u8, h.text) catch "",
                         };
                     }
-                    schema.documentHints.put(allocator, uri, hints) catch {
+                    schema_manager.documentHints.put(allocator, uri, hints) catch {
                         allocator.free(uri);
                         for (hints) |hint| allocator.free(hint.text);
                         allocator.free(hints);
                     };
                 } else if (std.mem.eql(u8, method_params.method, "$/paramlib/schemaUpdate")) {
                     if (method_params.params == null) return;
-                    const UpdateParams = struct { content: []const u8, className: ?[]const u8 = null };
+                    const UpdateParams = struct { uri: []const u8, content: []const u8, className: ?[]const u8 = null };
                     const parsed = std.json.parseFromValue(UpdateParams, allocator, method_params.params.?, .{ .ignore_unknown_fields = true }) catch return;
                     defer parsed.deinit();
-                    schema.updateFromContent(allocator, parsed.value.content, parsed.value.className);
-                    schema.extractFromDocuments(allocator, documents);
+                    schema_manager.updateSchema(allocator, parsed.value.uri, parsed.value.content, parsed.value.className) catch return;
+                    
+                    const dir = if (std.mem.lastIndexOfScalar(u8, parsed.value.uri, '/')) |idx|
+                        parsed.value.uri[0 .. idx + 1]
+                    else
+                        parsed.value.uri;
+                    
+                    if (schema_manager.schemas.getPtr(dir)) |s| {
+                        s.extractFromDocuments(schema_manager, allocator, documents, dir) catch {};
+                    }
                 }
             },
         },
@@ -1293,8 +1899,8 @@ const HoverNode = union(enum) {
     param: *const paramlib.cpp.ast.ParameterAst,
 };
 
-fn findNodeAtOffset(class: *const paramlib.cpp.ast.ClassAst, offset: u32) ?HoverNode {
-    const members = class.members orelse return null;
+fn findNodeAtOffset(cls: *const paramlib.cpp.ast.ClassAst, offset: u32) ?HoverNode {
+    const members = cls.members orelse return null;
     for (members.items) |*member| {
         switch (member.*) {
             .class => |c| {
@@ -2021,6 +2627,7 @@ fn findElemPositionsAt(
 fn inlayHints(
     documents: *const std.StringArrayHashMapUnmanaged([]const u8),
     schema:    *const SchemaState,
+    documentHints: *const std.StringArrayHashMapUnmanaged([]const PrecomputedParserHint),
     arena:     std.mem.Allocator,
     params:    lsp.types.InlayHint.Params,
 ) ?[]const lsp.types.InlayHint {
@@ -2037,7 +2644,7 @@ fn inlayHints(
 
     collectArrayInlayHints(&root, &root, schema, &line_table, arena, &hints);
 
-    if (schema.documentHints.get(params.textDocument.uri)) |precomputed| {
+    if (documentHints.get(params.textDocument.uri)) |precomputed| {
         for (precomputed) |ph| {
             if (std.mem.startsWith(u8, ph.text, "texture:")) continue;
             if (std.mem.startsWith(u8, ph.text, "color:")) continue;
@@ -2279,4 +2886,39 @@ fn completion(
     return lsp.types.completion.Result{
         .completion_items = items.items,
     };
+}
+
+
+test "inheritance chain with multiple CfgSchemas blocks" {
+    const alloc = std.testing.allocator;
+    const merged_src =
+        \\class CfgSchemas {
+        \\    class DayZ { rules = 1; };
+        \\    class MyProject : DayZ { rules = 2; };
+        \\};
+        \\class CfgSchemas {
+        \\    class MyProject;
+        \\    class NextProject : MyProject { rules = 3; };
+        \\};
+    ;
+
+    var manager = SchemaManager.empty;
+    defer manager.deinit(alloc);
+
+    try manager.updateSchema(alloc, "file:///root/next/paramlib.cpp", merged_src, null);
+
+    const state = manager.getSchemaForUri("file:///root/next/data.rvmat");
+    
+    try std.testing.expectEqualStrings("NextProject", state.selectedClass);
+
+    const chain = try state.collectInheritanceChain(&manager, alloc);
+    defer {
+        for (chain) |n| alloc.free(n);
+        alloc.free(chain);
+    }
+
+    try std.testing.expectEqual(@as(usize, 3), chain.len);
+    try std.testing.expectEqualStrings("DayZ", chain[0]);
+    try std.testing.expectEqualStrings("MyProject", chain[1]);
+    try std.testing.expectEqualStrings("NextProject", chain[2]);
 }

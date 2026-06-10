@@ -13,7 +13,7 @@ var tx_len: usize = 0;
 var reader: std.Io.Reader = undefined;
 var writer: std.Io.Writer = undefined;
 var documents: std.StringArrayHashMapUnmanaged([]const u8) = .empty;
-var schema: parLsp.SchemaState = .empty;
+var schema_manager: parLsp.SchemaManager = .empty;
 
 fn readJsonMessage(
     _: *lsp.Transport,
@@ -68,7 +68,7 @@ extern fn wasm_log(ptr: [*]const u8, len: usize) void;
 
 export fn serverSend(ptr: [*]const u8, len: u32) u32 {
     @memcpy(rx_buf[0..len], ptr[0..len]);
-    reader = std.Io.Reader.fixed(rx_buf[0..len]);
+    reader = std.Io.Reader.fixed(rx_buf[0..RX_SIZE]);
     tx_len = 0;
 
     const json_message = wasm_transport.readJsonMessage(undefined, allocator) catch return 1;
@@ -79,22 +79,31 @@ export fn serverSend(ptr: [*]const u8, len: u32) u32 {
     ) catch return 2;
     defer msg.deinit();
 
-    parLsp.handleMessage(&documents, &schema, allocator, undefined, msg, &wasm_transport) catch return 3;
+    parLsp.handleMessage(&documents, &schema_manager, allocator, undefined, msg, &wasm_transport) catch return 3;
 
     if (tx_len > 0) clientSend(tx_buf[0..tx_len].ptr, @intCast(tx_len));
 
     return 0;
 }
 
-export fn schemaUpdate(content_ptr: [*]const u8, content_len: u32, class_ptr: [*]const u8, class_len: u32) void {
+export fn schemaUpdate(uri_ptr: [*]const u8, uri_len: u32, content_ptr: [*]const u8, content_len: u32, class_ptr: [*]const u8, class_len: u32) void {
     const class_name: ?[]const u8 = if (class_len > 0) class_ptr[0..class_len] else null;
-    schema.updateFromContent(allocator, content_ptr[0..content_len], class_name);
-    schema.extractFromDocuments(allocator, &documents);
+    const uri = uri_ptr[0..uri_len];
+    schema_manager.updateSchema(allocator, uri, content_ptr[0..content_len], class_name) catch return;
+
+    const dir = if (std.mem.lastIndexOfScalar(u8, uri, '/')) |idx|
+        uri[0 .. idx + 1]
+    else
+        uri;
+
+    if (schema_manager.schemas.getPtr(dir)) |s| {
+        s.extractFromDocuments(&schema_manager, allocator, &documents, dir) catch return;
+    }
 }
 
 export fn deinit() void {
     for (documents.keys())   |k| allocator.free(k);
     for (documents.values()) |v| allocator.free(v);
     documents.deinit(allocator);
-    schema.deinit(allocator);
+    schema_manager.deinit(allocator);
 }

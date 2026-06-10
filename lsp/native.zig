@@ -16,12 +16,12 @@ pub export fn custom_log(ptr: [*]const u8, len: usize) void {
 
 pub fn startServer(io: std.Io, allocator: std.mem.Allocator, transport: *lsp.Transport) !void {
     var documents: std.StringArrayHashMapUnmanaged([]const u8) = .empty;
-    var schema: parLsp.SchemaState = .empty;
+    var schema_manager: parLsp.SchemaManager = .empty;
     defer {
         for (documents.keys())   |k| allocator.free(k);
         for (documents.values()) |v| allocator.free(v);
         documents.deinit(allocator);
-        schema.deinit(allocator);
+        schema_manager.deinit(allocator);
     }
 
     while (true) {
@@ -33,6 +33,6 @@ pub fn startServer(io: std.Io, allocator: std.mem.Allocator, transport: *lsp.Tra
         );
         defer msg.deinit();
 
-        try parLsp.handleMessage(&documents, &schema, allocator, io, msg, transport);
+        try parLsp.handleMessage(&documents, &schema_manager, allocator, io, msg, transport);
     }
 }
