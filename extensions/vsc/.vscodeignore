@@ -1,0 +1,16 @@
+.vscode-test-web/**
+src/ts/**
+src/zig/**
+.zig-cache/**
+zig-out/**
+zig-pkg/**
+scripts/**
+node_modules/**
+bun.lock
+tsconfig.json
+tsconfig.root.json
+build.zig
+build.zig.zon
+**/*.map
+**/*.ts
+**/.eslintrc*

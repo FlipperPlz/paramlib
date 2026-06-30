@@ -1,0 +1,25 @@
+{
+  "stringCompletions": [
+    {
+      "path": "some.path",
+      "values": ["val1", "val2"],
+      "source": "manual"
+    }
+  ],
+  "arrayInlays": [],
+  "parserRules": [
+    {
+      "pattern": "*.txt",
+      "wasm_source": "core",
+      "source": "config"
+    }
+  ],
+  "paramDocs": [],
+  "schemaClasses": [
+    "ClassA", "ClassB"
+  ],
+  "projectName": "MyProject",
+  "selectedClass": "ClassA",
+  "base_class": "Base",
+  "pushedSchemas": {}
+}

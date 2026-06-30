@@ -1,0 +1,18 @@
+{
+  "compilerOptions": {
+    "module": "Preserve",
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "exactOptionalPropertyTypes": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "types": ["bun-types"],
+    "noEmit": true
+  },
+  "include": ["./**/*.ts"]
+}

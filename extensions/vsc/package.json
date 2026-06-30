@@ -1,0 +1,59 @@
+{
+  "name": "paramkit",
+  "displayName": "ParamKit",
+  "description": "Arma/DayZ config language support: parser and LSP implemented in Zig WASM with modular sub-parser plugins",
+  "version": "1.0.0",
+  "private": true,
+  "publisher": "flipperplz",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/FlipperPlz/paramlib"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "activationEvents": [],
+  "main": "./dist/extension.js",
+  "browser": "./dist/web/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "paramfile",
+        "extensions": [
+          ".cpp",
+          ".rvmat"
+        ],
+        "aliases": [
+          "Param Config",
+          "DayZ Config"
+        ]
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "bun run build",
+    "build": "bun run build:zig && bun run build:ts",
+    "build:ts": "bun run scripts/build.ts --production",
+    "build:zig": "bun run scripts/build-zig.ts",
+    "watch": "bun run scripts/build.ts --watch",
+    "typecheck": "tsc -p tsconfig.root.json --noEmit",
+    "package": "bun run build && bunx vsce package --out ../../zig-out/paramkit/vsc/paramkit.vsix",
+    "test-web": "bun run build && bunx @vscode/test-web --browserType=chromium --extensionDevelopmentPath=. ."
+  },
+  "devDependencies": {
+    "@types/bun": "^1.1.0",
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "@vscode/test-web": "^0.0.56",
+    "@vscode/vsce": "^2.24.0",
+    "typescript": "^5.4.0"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1",
+    "vscode-languageserver": "^9.0.1",
+    "vscode-languageserver-textdocument": "^1.0.11"
+  }
+}

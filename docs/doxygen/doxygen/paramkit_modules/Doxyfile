@@ -1,0 +1,20 @@
+# Doxyfile for paramkit_modules
+PROJECT_NAME           = "paramkit_modules"
+OUTPUT_DIRECTORY       = .
+GENERATE_LATEX         = NO
+GENERATE_MAN           = NO
+GENERATE_RTF           = NO
+CASE_SENSE_NAMES       = NO
+INPUT                  = ../../../modules/color/src ../../../modules/texture_source/src ../../../extensions/vsc/src/zig/modules
+RECURSIVE              = YES
+FILE_PATTERNS          = *.zig
+EXTENSION_MAPPING      = zig=C
+GENERATE_XML           = YES
+XML_OUTPUT             = xml
+QUIET                  = YES
+JAVADOC_AUTOBRIEF      = YES
+EXTRACT_ALL            = YES
+EXTRACT_PRIVATE        = YES
+EXTRACT_STATIC         = YES
+DISTRIBUTE_GROUP_DOC   = YES
+WARN_IF_UNDOCUMENTED   = NO

@@ -1,0 +1,20 @@
+# Doxyfile for paramlib
+PROJECT_NAME           = "paramlib"
+OUTPUT_DIRECTORY       = .
+GENERATE_LATEX         = NO
+GENERATE_MAN           = NO
+GENERATE_RTF           = NO
+CASE_SENSE_NAMES       = NO
+INPUT                  = ../../../lib/src
+RECURSIVE              = YES
+FILE_PATTERNS          = *.zig
+EXTENSION_MAPPING      = zig=C
+GENERATE_XML           = YES
+XML_OUTPUT             = xml
+QUIET                  = YES
+JAVADOC_AUTOBRIEF      = YES
+EXTRACT_ALL            = YES
+EXTRACT_PRIVATE        = YES
+EXTRACT_STATIC         = YES
+DISTRIBUTE_GROUP_DOC   = YES
+WARN_IF_UNDOCUMENTED   = NO

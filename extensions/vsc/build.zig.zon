@@ -1,0 +1,29 @@
+.{
+    .name = .vsc_zig_modules,
+    .version = "1.0.0",
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .lsp_kit = .{
+            .url = "git+https://github.com/zigtools/lsp-kit.git#ec325a3c33d1da7708cf513355208f74d9560580",
+            .hash = "lsp_kit-0.1.0-bi_PL_kyDACVTEhLaMq2-PJx0MocqRyjXDAN0ybMUyQQ",
+        },
+        .paramlib = .{
+            .path = "../../lib",
+        },
+        .paramlsp = .{
+            .path = "../../lsp",
+        },
+        .color = .{
+            .path = "../../modules/color",
+        },
+        .texture_source = .{
+            .path = "../../modules/texture_source",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src/zig",
+    },
+    .fingerprint = 0xae0d5ca9ead17e6f,
+}

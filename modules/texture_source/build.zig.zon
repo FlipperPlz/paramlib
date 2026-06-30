@@ -1,0 +1,20 @@
+.{
+    .name = .texture_source,
+    .version = "1.0.0",
+    .minimum_zig_version = "0.16.0-dev.2736+3b515fbed",
+    .dependencies = .{
+        .lsp_kit = .{
+            .url = "git+https://github.com/zigtools/lsp-kit.git#ec325a3c33d1da7708cf513355208f74d9560580",
+            .hash = "lsp_kit-0.1.0-bi_PL_kyDACVTEhLaMq2-PJx0MocqRyjXDAN0ybMUyQQ",
+        },
+        .paramlib = .{
+            .path = "../../lib",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+    .fingerprint = 0x30f2b6716ac76786,
+}
